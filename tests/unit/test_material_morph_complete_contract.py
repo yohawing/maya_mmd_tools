@@ -154,14 +154,14 @@ def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends(
         "dx11": (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8"),
         "glsl": (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8"),
     }
-    assert "sphereUV.x = sphereNormal.x * 0.5 + 0.5;" in sources["dx11"]
-    assert "sphereUV.y = sphereNormal.y * 0.5 + 0.5;" in sources["dx11"]
+    assert "normalWV.x * 0.5f + 0.5f" in sources["dx11"]
+    assert "normalWV.y * 0.5f + 0.5f" in sources["dx11"]
     assert (
         "vec2 sphereUV = vec2(sphereNormal.x * 0.5 + 0.5, sphereNormal.y * -0.5 + 0.5);"
         in sources["glsl"]
     )
+    assert "sphereNormal" in sources["glsl"]
     for source in sources.values():
-        assert "sphereNormal" in source
         assert "* 0.35" not in source
 
 
@@ -188,16 +188,16 @@ def test_specular_power_gate_matches_mmd_contract_in_both_backends():
 
 
 def test_toon_coordinate_matches_maya_ramp_contract_in_both_backends():
-    """Both backends use the calibrated top-origin MMD ramp coordinate."""
+    """DX11 follows the reference ramp; GLSL retains its existing calibration."""
     dx11 = (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8")
     glsl = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
     assert "float ToonCoordinateOffset" in dx11
     assert "= 0.55f;" in dx11
     assert (
-        "float toonV = selfShadowEnabled ? 1.0 : "
-        "saturate(ToonCoordinateOffset - NdotL * 0.5);"
+        "float toonV = 0.5f - NdotL * 0.5f;"
     ) in dx11
-    assert "float2(0.0, toonV)" in dx11
+    assert "ToonCoordinateOffset - NdotL" not in dx11
+    assert "float2(0.0f, toonV)" in dx11
     assert "uniform float ToonCoordinateOffset = 0.55;" in glsl
     assert "float toonV = clamp(ToonCoordinateOffset - ndotl * 0.5, 0.0, 1.0);" in glsl
     assert "vec2(0.0, toonV)" in glsl
@@ -206,7 +206,7 @@ def test_toon_coordinate_matches_maya_ramp_contract_in_both_backends():
     assert "TEXTURE_MAG_FILTER = LINEAR;" in glsl
     assert "TEXTURE_WRAP_S = CLAMP_TO_EDGE;" in glsl
     assert "TEXTURE_WRAP_T = CLAMP_TO_EDGE;" in glsl
-    for source in (dx11, glsl):
+    for source in (glsl,):
         assert "1.0 - rampCoord" not in source
         assert "0.5 - NdotL * 0.5" not in source
         assert "0.5 - ndotl * 0.5" not in source
@@ -226,15 +226,28 @@ def test_surface_composition_matches_full_shader_sphere_toon_specular_order():
         "dx11": (ROOT / "mmd_tools/shaders/MMDShader.fx").read_text(encoding="utf-8"),
         "glsl": (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8"),
     }
-    for source in sources.values():
-        sphere_multiply_position = source.index("surfaceColor *= sphereColor")
-        sphere_add_position = source.index("surfaceColor += sphereColor")
-        toon_position = source.index("surfaceColor *= toonColor")
-        specular_position = source.index("diffuse + specular")
-        assert sphere_multiply_position < toon_position < specular_position
-        assert sphere_add_position < toon_position < specular_position
-        assert "lighting *= sphereColor" not in source
-        assert "litColor *= sphereColor" not in source
+    dx11 = sources["dx11"]
+    sphere_position = dx11.index("surfaceColor *= SampleSphereTexture")
+    toon_position = dx11.index("surfaceColor *= SampleToonTexture")
+    specular_position = dx11.index("surfaceColor += input.specular")
+    assert sphere_position < toon_position < specular_position
+    shadow_sphere_position = dx11.index("shadowColor *= sphereColor")
+    shadow_toon_position = dx11.index("shadowColor *= MaterialToon")
+    lit_specular_position = dx11.index("litColor += input.specular")
+    lerp_position = dx11.index("return lerp(shadowColor, litColor, visibility)")
+    assert shadow_sphere_position < shadow_toon_position
+    assert lit_specular_position < lerp_position
+    assert "SampleToonTexture(input)" in dx11
+
+    glsl = sources["glsl"]
+    sphere_multiply_position = glsl.index("surfaceColor *= sphereColor")
+    sphere_add_position = glsl.index("surfaceColor += sphereColor")
+    toon_position = glsl.index("surfaceColor *= toonColor")
+    specular_position = glsl.index("diffuse + specular")
+    assert sphere_multiply_position < toon_position < specular_position
+    assert sphere_add_position < toon_position < specular_position
+    assert "lighting *= sphereColor" not in glsl
+    assert "litColor *= sphereColor" not in glsl
 
 
 def _dx11_technique(source, name):

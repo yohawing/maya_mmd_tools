@@ -158,9 +158,9 @@ float3 AmbientColor<
     int UIOrder = 204;
 > = {0.3f, 0.3f, 0.3f};
 
-// The generated MMD ramp is bright at V=0 and dark at V=1.  Maya's file
-// texture path samples the authored top-origin ramp with a small calibrated
-// offset; keep that calibration explicit instead of hiding it in N.L math.
+// Kept for shader-uniform ABI compatibility with existing Maya material
+// nodes.  The reference shader uses 0.5 - N.L * 0.5 directly; this legacy
+// control is intentionally not part of the ramp calculation.
 float ToonCoordinateOffset<
     string UIGroup = "Lighting";
     string UIName = "Toon Coordinate Offset";
@@ -320,6 +320,10 @@ struct VS_OUTPUT
     float3 worldPosition : TEXCOORD4;
     float4 shadowCoord  : TEXCOORD5;
     float3 worldNormal  : NORMAL;
+    float4 baseColor    : TEXCOORD6;
+    float3 eye          : TEXCOORD7;
+    float2 sphereUV     : TEXCOORD8;
+    float3 specular     : TEXCOORD9;
 };
 
 //--------------------------------------------------------------------------------------
@@ -338,7 +342,6 @@ float CalculateShadow(float4 shadowCoord, Texture2D shadowMap)
         shadowPos.y < -1.0f || shadowPos.y > 1.0f ||
         shadowPos.z < 0.0f || shadowPos.z > 1.0f)
         return 1.0f;
-
     // Convert to texture coordinates
     float2 shadowUV = shadowPos.xy * 0.5f + 0.5f;
     shadowUV.y = 1.0f - shadowUV.y; // Flip Y for Maya
@@ -366,8 +369,42 @@ VS_OUTPUT MainVS(VS_INPUT input)
     output.position = mul(localPos, WorldViewProjection);
     output.worldPosition = worldPos.xyz;
 
-    // Transform normal
+    // The Maya world/inverse-transpose adapter remains the source of the
+    // vertex normal.  The reference shader normalizes this value per vertex;
+    // the pixel shaders deliberately consume the interpolated raw value for
+    // toon and self-shadow decisions.
     output.worldNormal = normalize(mul(input.normal, (float3x3)WorldInverseTranspose));
+
+    // Reference Basic_VS/BufferShadow_VS values mapped to Maya's inputs.
+    // AmbientColor is the imported PMX ambient term here.  The reference
+    // AmbientColor/EgColor slots are host-composed to this flat PMX base so a
+    // no-toon material has no additional N.L diffuse term.
+    output.baseColor = float4(
+        saturate(DiffuseColorRGB * MMDLightColor + AmbientColor),
+        DiffuseColorA);
+    output.eye = mul(float4(0.0f, 0.0f, 0.0f, 1.0f), ViewInv).xyz
+                 - worldPos.xyz;
+
+    // Reference sphere coordinates use the normalized vertex normal in view
+    // space and the authored top-origin Y direction.  Main texture UV keeps
+    // Maya's existing V flip below.
+    float3 normalWV = mul(output.worldNormal, (float3x3)View);
+    output.sphereUV = float2(
+        normalWV.x * 0.5f + 0.5f,
+        normalWV.y * 0.5f + 0.5f);
+
+    // The reference computes Blinn-Phong specular per vertex and carries it
+    // through COLOR1.  MMDLightColor is the Maya host mapping of both the
+    // reference light diffuse and light specular terms.
+    output.specular = float3(0.0f, 0.0f, 0.0f);
+    if (Shininess > 0.0)
+    {
+        float3 lightDir = -normalize(MMDLightDirection);
+        float3 halfVector = normalize(normalize(output.eye) + lightDir);
+        float specularFactor = pow(
+            saturate(dot(halfVector, output.worldNormal)), Shininess);
+        output.specular = SpecularColor * MMDLightColor * specularFactor;
+    }
 
     // Pass through UV
     output.texCoord0 = float2(input.texCoord0.x, 1.0 - input.texCoord0.y); // Flip V for Maya
@@ -382,133 +419,138 @@ VS_OUTPUT MainVS(VS_INPUT input)
 }
 
 //--------------------------------------------------------------------------------------
-// Main Pass Pixel Shader
+// Shared texture operations and reference Basic/BufferShadow composition
 //--------------------------------------------------------------------------------------
+float4 SampleMainTexture(float2 uv)
+{
+    float4 texColor = float4(1.0, 1.0, 1.0, 1.0);
+    if (HasMainTexture != 0)
+    {
+        texColor = MainTexture.Sample(LinearSampler, uv);
+        texColor = texColor * MainTextureMultiply + MainTextureAdd;
+    }
+    return texColor;
+}
+
+float3 SampleSphereTexture(float2 uv)
+{
+    if (HasSphereTexture == 0)
+        return float3(1.0, 1.0, 1.0);
+
+    float4 sphereSample = SphereTexture.Sample(LinearSampler, uv);
+    return (sphereSample * SphereTextureMultiply + SphereTextureAdd).rgb;
+}
+
+float3 SampleToonTexture(VS_OUTPUT input)
+{
+    float3 lightDir = -normalize(MMDLightDirection);
+    float NdotL = dot(input.worldNormal, lightDir);
+    float toonV = 0.5f - NdotL * 0.5f;
+    float4 toonSample = ToonTexture.Sample(
+        ToonSampler, float2(0.0f, toonV));
+    return (toonSample * ToonTextureMultiply + ToonTextureAdd).rgb;
+}
+
+float3 ComputeBasicColor(VS_OUTPUT input, out float opacity)
+{
+    // Reference Basic_PS order: base -> main texture -> sphere -> toon ->
+    // interpolated vertex specular.  The base was composed in MainVS using
+    // the Maya PMX flat-material adapter above.
+    float4 texColor = SampleMainTexture(input.texCoord0);
+    float3 surfaceColor = input.baseColor.rgb * texColor.rgb;
+
+    if (SphereMode == 1 && HasSphereTexture != 0)
+    {
+        surfaceColor *= SampleSphereTexture(input.sphereUV);
+    }
+    else if (SphereMode == 2 && HasSphereTexture != 0)
+    {
+        surfaceColor += SampleSphereTexture(input.sphereUV);
+    }
+
+    if (HasToonTexture != 0)
+    {
+        surfaceColor *= SampleToonTexture(input);
+    }
+
+    surfaceColor += input.specular;
+    opacity = texColor.a * DiffuseColorA * Opacity;
+    clip(opacity - 0.003);
+
+    // Keep Maya's existing projected-shadow scalar as the final adapter for
+    // the ordinary Basic composition.  Native self shadow supplies its own
+    // visibility to ComputeBufferShadowColor below.
+    float shadow = CalculateShadow(input.shadowCoord, Light0ShadowMap);
+    return surfaceColor * shadow;
+}
+
+float3 ComputeBufferShadowColor(VS_OUTPUT input, float visibility,
+                                bool insideProjection, out float opacity)
+{
+    // Reference BufferShadow_PS keeps independent lit/shadow chains.  Both
+    // start from the same host-composed flat base and receive the main and
+    // sphere texture operations before the shadow-only toon multiplier.
+    float4 texColor = SampleMainTexture(input.texCoord0);
+    float3 litColor = input.baseColor.rgb * texColor.rgb;
+    float3 shadowColor = input.baseColor.rgb * texColor.rgb;
+
+    if (SphereMode == 1 && HasSphereTexture != 0)
+    {
+        float3 sphereColor = SampleSphereTexture(input.sphereUV);
+        litColor *= sphereColor;
+        shadowColor *= sphereColor;
+    }
+    else if (SphereMode == 2 && HasSphereTexture != 0)
+    {
+        float3 sphereColor = SampleSphereTexture(input.sphereUV);
+        litColor += sphereColor;
+        shadowColor += sphereColor;
+    }
+
+    // Specular is part of the lit chain before the final reference lerp.
+    litColor += input.specular;
+
+    opacity = texColor.a * DiffuseColorA * Opacity;
+    clip(opacity - 0.003);
+
+    // BufferShadow_PS returns the complete lit chain outside the projected
+    // region.  This also prevents a toon ramp from being introduced there.
+    if (!insideProjection)
+        return litColor;
+
+    if (HasToonTexture != 0)
+    {
+        // The reference shadow chain uses MaterialToon, the representative
+        // dark-end color, rather than the per-pixel Basic toon ramp.
+        float4 toonShadowSample = ToonTexture.Sample(
+            ToonSampler, float2(0.0f, 1.0f));
+        float3 MaterialToon = (
+            toonShadowSample * ToonTextureMultiply + ToonTextureAdd).rgb;
+        shadowColor *= MaterialToon;
+        float3 lightDir = -normalize(MMDLightDirection);
+        visibility = min(
+            saturate(dot(input.worldNormal, lightDir) * 3.0f), visibility);
+    }
+
+    return lerp(shadowColor, litColor, visibility);
+}
+
 float3 ComputeMmdLitColorWithSelfShadow(VS_OUTPUT input, out float opacity,
                                       bool selfShadowEnabled,
                                       float selfShadowVisibility,
                                       bool insideSelfShadow)
 {
-    // Normalize inputs
-    float3 normal = normalize(input.worldNormal);
-    float3 viewDir = normalize(mul(float4(0.0,0.0,0.0,1.0), ViewInv).xyz - input.worldPosition);
-    // The imported PMX normals already carry the Maya Z-mirror and the mesh
-    // winding is reversed during conversion. Keep those authored normals for
-    // the dot product; a view-facing flip would change corner normals on the
-    // visible edge bands and is not equivalent to Three's primitive-facing
-    // DoubleSide handling.
-    // MMDLightDirection is the direction the light travels (light's world -Z);
-    // negate to get the surface -> light vector used by the lighting model.
-    float3 lightDir = -normalize(MMDLightDirection);
-    float3 lightColor = MMDLightColor;
+    if (!selfShadowEnabled)
+        return ComputeBasicColor(input, opacity);
 
-    // Sample textures. dx11Shader feeds the effect raw gamma (sRGB) texels even
-    // under CM-on, which is the space MMD's lighting math expects, so sample as-is.
-    float4 texColor = float4(1.0, 1.0, 1.0, 1.0);
-    if (HasMainTexture != 0)
-    {
-        texColor = MainTexture.Sample(LinearSampler, input.texCoord0);
-        texColor = texColor * MainTextureMultiply + MainTextureAdd;
-    }
-
-    // Calculate shadow
-    float shadow = CalculateShadow(input.shadowCoord, Light0ShadowMap);
-
-    // Three uploads toon maps with flipY=true. Maya's file texture sampling is
-    // top-origin, so convert the same signed coordinate back to the authored
-    // image row while retaining Three's positive-lighting direction.
-    // Preserve the linearly interpolated world normal for the toon-ramp
-    // coordinate. Normalizing here per pixel changes the corner-normal
-    // interpolation that the reference MMD shader uses; the normalized
-    // `normal` above remains the specular/lighting normal.
-    float NdotL = dot(input.worldNormal, lightDir);
-    float toonV = selfShadowEnabled ? 1.0 : saturate(ToonCoordinateOffset - NdotL * 0.5);
-    float3 toonColor = selfShadowEnabled ? float3(0.0, 0.0, 0.0) : float3(1.0, 1.0, 1.0);
-    if (HasToonTexture != 0)
-    {
-        // The MMD contract samples the first column of the vertical ramp.
-        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.0, toonV));
-        float4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
-        toonColor = factoredToon.rgb;
-    }
-    // MMD's material base is authored diffuse * light + ambient.  N.L selects
-    // the toon ramp when present; it must not become an extra Lambert
-    // multiplier on the authored material base.
-    float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
-
-    // Sphere mapping
-    float3 sphereColor = float3(1.0, 1.0, 1.0);
-    if (SphereMode > 0 && HasSphereTexture != 0)
-    {
-        // Three's WebGPU MMD path normalizes the interpolated view normal for
-        // lighting, but deliberately uses the raw interpolated normal for the
-        // sphere UV.  Re-normalizing here expands the UV radius on beveled
-        // faces and makes the sphere map fade too aggressively at the edges.
-        float3 sphereNormal = mul(float4(input.worldNormal, 0.0), View).xyz;
-        float2 sphereUV;
-        sphereUV.x = sphereNormal.x * 0.5 + 0.5;
-        sphereUV.y = sphereNormal.y * 0.5 + 0.5;
-        float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUV);
-        float4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
-        sphereColor = factoredSphere.rgb;
-    }
-
-    // FullShader order: base/texture -> sphere -> toon -> specular. Applying
-    // sphere after specular incorrectly tints highlights in multiply mode.
-    float3 surfaceColor = materialBase;
-    if (SphereMode == 1 && HasSphereTexture != 0) // Multiply
-        surfaceColor *= sphereColor;
-    else if (SphereMode == 2 && HasSphereTexture != 0) // Add
-        surfaceColor += sphereColor;
-    float combinedVisibility = 1.0;
-    if (selfShadowEnabled)
-    {
-        // Self shadow switches the material's tone curve as a whole. The lit
-        // branch has no ordinary toon-ramp multiplier; outside the shadow
-        // projection it remains fully lit, including specular.
-        if (insideSelfShadow)
-        {
-            combinedVisibility = HasToonTexture != 0
-                ? min(saturate(dot(normal, lightDir) * 3.0), selfShadowVisibility)
-                : selfShadowVisibility;
-            surfaceColor = lerp(surfaceColor * toonColor, surfaceColor,
-                                combinedVisibility);
-        }
-    }
-    else if (HasToonTexture != 0)
-        surfaceColor *= toonColor;
-
-    // Projected shadows remain a separate Maya viewport factor.
-    float3 diffuse = surfaceColor * shadow;
-
-    // MMD skips specular completely when the authored power is non-positive.
-    // Positive powers use the Blinn-Phong half vector without an extra N.L gate.
-    float3 specular = float3(0.0, 0.0, 0.0);
-    if (Shininess > 0.0)
-    {
-        float3 halfVec = normalize(lightDir + viewDir);
-        float NdotH = saturate(dot(normal, halfVec));
-        float specFactor = pow(NdotH, Shininess);
-        specular = SpecularColor * specFactor * lightColor * shadow;
-    }
-
-    float3 litColor = diffuse + specular * combinedVisibility;
-
-    // Apply opacity
-    opacity = texColor.a * DiffuseColorA * Opacity;
-
-    // MMD parity (mmd-shading-notes §8): discard fully transparent fragments.
-    // This is essential now that transparent materials write depth -- without
-    // it, alpha==0 texels of cutout textures (hair, ribbons) would still write
-    // depth and punch black holes / halos into whatever is behind them.
-    clip(opacity - 0.003);
-
-    return litColor;
+    return ComputeBufferShadowColor(
+        input, selfShadowVisibility, insideSelfShadow, opacity)
+        * CalculateShadow(input.shadowCoord, Light0ShadowMap);
 }
 
 float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
 {
-    return ComputeMmdLitColorWithSelfShadow(input, opacity, false, 1.0, true);
+    return ComputeBasicColor(input, opacity);
 }
 
 float4 MainPS(VS_OUTPUT input) : SV_TARGET
