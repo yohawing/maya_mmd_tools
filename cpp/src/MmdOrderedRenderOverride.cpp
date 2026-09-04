@@ -25,6 +25,7 @@
 #include <maya/MMatrix.h>
 #include <maya/MObjectHandle.h>
 #include <maya/MSelectionList.h>
+#include <maya/MStateManager.h>
 #include <maya/MStatus.h>
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
@@ -330,6 +331,7 @@ public:
             }
             int selfShadowMode = 0;
             if (!bindMaterial(shader, plan.material) ||
+                (!plan.outline && !bindToonSampler(shader)) ||
                 !setBodyShadowParameters(shader, plan, selfShadowMode) ||
                 !setFrameParameters(shader, drawContext, plan.world) ||
                 shader->updateParameters(drawContext) != MStatus::kSuccess ||
@@ -1201,6 +1203,32 @@ private:
             !toonPath.empty(), nullptr);
     }
 
+    bool bindToonSampler(MShaderInstance* shader)
+    {
+        // Maya's native effect instance left this sampler wrapped at V=1 even
+        // though the FX declaration requests clamp, mixing the white top texel
+        // into the authored toon bottom texel. Bind the runtime state directly.
+        if (!toonSampler_) {
+            MHWRender::MSamplerStateDesc description;
+            description.filter = MHWRender::MSamplerState::kMinMagMipLinear;
+            description.addressU = MHWRender::MSamplerState::kTexClamp;
+            description.addressV = MHWRender::MSamplerState::kTexClamp;
+            description.addressW = MHWRender::MSamplerState::kTexClamp;
+            toonSampler_ = MHWRender::MStateManager::acquireSamplerState(
+                description);
+            if (!toonSampler_) {
+                fail("failed to acquire ordered ToonSampler state");
+                return false;
+            }
+        }
+        if (shader->setParameter("ToonSampler", *toonSampler_) !=
+            MStatus::kSuccess) {
+            fail("failed to bind ordered ToonSampler state");
+            return false;
+        }
+        return true;
+    }
+
     bool setFrameParameters(MShaderInstance* shader,
                             const MHWRender::MDrawContext& drawContext,
                             const MMatrix& world)
@@ -1284,7 +1312,8 @@ private:
                 fail("ordered preflight shader bind failed");
                 return false;
             }
-            const bool bodyModeReset =
+            const bool toonSamplerBound = plan.outline || bindToonSampler(shader);
+            const bool bodyModeReset = toonSamplerBound &&
                 shader->setParameter("NativeSelfShadowMode", 0) ==
                 MStatus::kSuccess;
             const bool frameParametersReady =
@@ -1378,6 +1407,10 @@ private:
             }
         }
         textures_.clear();
+        if (toonSampler_) {
+            MHWRender::MStateManager::releaseSamplerState(toonSampler_);
+            toonSampler_ = nullptr;
+        }
         D3DRelease::release(inputLayout_);
         D3DRelease::release(vertexBuffer_);
         D3DRelease::release(indexBuffer_);
@@ -1395,6 +1428,7 @@ private:
 
     std::unordered_map<std::string, MShaderInstance*> shaders_;
     std::unordered_map<std::string, MTexture*> textures_;
+    const MHWRender::MSamplerState* toonSampler_ = nullptr;
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
     ID3D11InputLayout* inputLayout_ = nullptr;
