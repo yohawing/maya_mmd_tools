@@ -1574,8 +1574,13 @@ class TestFastMorphMetadata(unittest.TestCase):
         candidates.return_value = [plugin_path]
         basic_materials.return_value = None
         cmds_mod = sys.modules["maya.cmds"]
-        cmds_mod.nodeType = MagicMock(return_value="mmdRenderShape")
-        with patch.object(Path, "exists", return_value=True), patch.object(
+        with patch.object(
+            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+        ), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(
+            cmds_mod, "nodeType", return_value="mmdRenderShape"
+        ) as node_type, patch.object(
             cmds_mod, "loadPlugin", create=True
         ) as load_plugin, patch.object(
             cmds_mod,
@@ -1590,7 +1595,7 @@ class TestFastMorphMetadata(unittest.TestCase):
             result = fast_import("model.pmx", vp2_ownership=True)
 
         self.assertEqual(result, "root")
-        cmds_mod.nodeType.assert_called_once_with("renderShape")
+        node_type.assert_called_once_with("renderShape")
         load_plugin.assert_called_once()
         fast_load.assert_called_once_with(
             f="model.pmx",
@@ -1722,8 +1727,11 @@ class TestFastMorphMetadata(unittest.TestCase):
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
         candidates.return_value = [plugin_path]
         cmds_mod = sys.modules["maya.cmds"]
-        cmds_mod.delete = MagicMock()
-        with patch.object(Path, "exists", return_value=True), patch.object(
+        with patch.object(
+            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+        ), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(cmds_mod, "delete") as delete, patch.object(
             cmds_mod, "loadPlugin", create=True
         ), patch.object(
             cmds_mod, "mmdFastLoad", create=True, return_value=["root", "mesh"]
@@ -1732,7 +1740,7 @@ class TestFastMorphMetadata(unittest.TestCase):
 
         self.assertIsNone(result)
         fast_load.assert_called_once()
-        cmds_mod.delete.assert_called_once_with("root")
+        delete.assert_called_once_with("root")
         basic_materials.assert_not_called()
         root_metadata.assert_not_called()
 
@@ -1753,9 +1761,13 @@ class TestFastMorphMetadata(unittest.TestCase):
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
         candidates.return_value = [plugin_path]
         cmds_mod = sys.modules["maya.cmds"]
-        cmds_mod.nodeType = MagicMock(return_value="mesh")
-        cmds_mod.delete = MagicMock()
-        with patch.object(Path, "exists", return_value=True), patch.object(
+        with patch.object(
+            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+        ), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(
+            cmds_mod, "nodeType", return_value="mesh"
+        ) as node_type, patch.object(cmds_mod, "delete") as delete, patch.object(
             cmds_mod, "loadPlugin", create=True
         ), patch.object(
             cmds_mod,
@@ -1767,7 +1779,8 @@ class TestFastMorphMetadata(unittest.TestCase):
 
         self.assertIsNone(result)
         fast_load.assert_called_once()
-        cmds_mod.delete.assert_called_once_with("root")
+        node_type.assert_called_once_with("wrongShape")
+        delete.assert_called_once_with("root")
         basic_materials.assert_not_called()
         root_metadata.assert_not_called()
 
@@ -1797,9 +1810,14 @@ class TestFastMorphMetadata(unittest.TestCase):
         morph_metadata.return_value = ["sourceBlendShape"]
         material_runtime.return_value = {"success": True}
         cmds_mod = sys.modules["maya.cmds"]
-        cmds_mod.nodeType = MagicMock(return_value="mmdRenderShape")
         shared_pmx = SimpleNamespace()
-        with patch.object(Path, "exists", return_value=True), patch.object(
+        with patch.object(
+            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+        ), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(
+            cmds_mod, "nodeType", return_value="mmdRenderShape"
+        ), patch.object(
             cmds_mod, "loadPlugin", create=True
         ), patch.object(
             cmds_mod,
@@ -1871,7 +1889,11 @@ class TestFastMorphMetadata(unittest.TestCase):
         def node_type(node):
             return "mmdMorphController" if node == "partialController" else "mmdRenderShape"
 
-        with patch.object(Path, "exists", return_value=True), patch.object(
+        with patch.object(
+            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+        ), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(
             cmds_mod, "loadPlugin", create=True
         ), patch.object(
             cmds_mod,
