@@ -640,15 +640,15 @@ private:
 
     const char* casterTechniqueFor(const DrawPlan& plan) const
     {
-        return plan.order.pass == mmd::MmdDrawPass::Cutout
+        return (plan.order.pass == mmd::MmdDrawPass::Cutout ||
+                plan.order.pass == mmd::MmdDrawPass::Transparent)
                    ? "MMDNativeCasterCutout"
                    : "MMDNativeCaster";
     }
 
     bool isCasterPlan(const DrawPlan& plan) const
     {
-        return !plan.outline && plan.material.selfShadowMap &&
-               plan.order.pass != mmd::MmdDrawPass::Transparent;
+        return !plan.outline && plan.material.selfShadowMap;
     }
 
     MStatus fail(const std::string& message)
