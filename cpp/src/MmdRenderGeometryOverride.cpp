@@ -12,6 +12,8 @@
 
 #include <maya/MDataHandle.h>
 #include <maya/MHWGeometry.h>
+#include <maya/MHWGeometryUtilities.h>
+#include <maya/MColor.h>
 #include <maya/MFnData.h>
 #include <maya/MGlobal.h>
 #include <maya/MPlug.h>
@@ -357,7 +359,7 @@ void MmdRenderGeometryOverride::updateDG()
 }
 
 void MmdRenderGeometryOverride::updateRenderItems(
-    const MDagPath& /*path*/, MHWRender::MRenderItemList& list)
+    const MDagPath& path, MHWRender::MRenderItemList& list)
 {
     if (!shape_) {
         return;
@@ -406,7 +408,8 @@ void MmdRenderGeometryOverride::updateRenderItems(
                                  std::size_t queueIndex) {
         MRenderItem* wireItem = findOrCreateItem(
             list, renderItemName(queueGeometry, queueIndex, false, true),
-            MGeometry::kWireframe, MRenderItem::NonMaterialSceneItem);
+            MGeometry::kWireframe, MRenderItem::NonMaterialSceneItem,
+            MGeometry::kLines);
         if (!wireItem) {
             if (shape_->recordRenderFallbackReason(
                     "could not create a native wireframe render item")) {
@@ -420,7 +423,13 @@ void MmdRenderGeometryOverride::updateRenderItems(
             wireShader_ = shaderManager->getStockShader(
                 MShaderManager::k3dSolidShader);
         }
-        if (!wireShader_ || !wireItem->setShader(wireShader_)) {
+        const MColor wireColor = MGeometryUtilities::wireframeColor(path);
+        const float solidColor[4] = {
+            wireColor.r, wireColor.g, wireColor.b, wireColor.a};
+        if (!wireShader_ ||
+            wireShader_->setParameter("solidColor", solidColor) !=
+                MStatus::kSuccess ||
+            !wireItem->setShader(wireShader_)) {
             if (shape_->recordRenderFallbackReason(
                     "native wireframe shader is unavailable")) {
                 MGlobal::displayError(
@@ -434,6 +443,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
         // selection only until a stable source-component contract exists.
         wireItem->setSelectionMask(
             MSelectionMask(MSelectionMask::kSelectMeshes));
+        wireItem->depthPriority(MRenderItem::sActiveWireDepthPriority);
         wireItem->castsShadows(false);
         wireItem->receivesShadows(false);
         return true;
@@ -844,6 +854,19 @@ void MmdRenderGeometryOverride::populateGeometry(
             failClosed("render item has no valid index data");
             return;
         }
+        const bool wire =
+            item->primitive() == MHWRender::MGeometry::kLines;
+        if (wire && indices.size() % 3U != 0U) {
+            failClosed("wire render item has incomplete triangle index data");
+            return;
+        }
+        const std::size_t outputIndexCount =
+            wire ? (indices.size() / 3U) * 6U : indices.size();
+        if (outputIndexCount == 0U ||
+            outputIndexCount > std::numeric_limits<unsigned int>::max()) {
+            failClosed("render item index data is too large");
+            return;
+        }
         MHWRender::MIndexBuffer* indexBuffer =
             data.createIndexBuffer(MHWRender::MGeometry::kUnsignedInt32);
         if (!indexBuffer) {
@@ -852,21 +875,42 @@ void MmdRenderGeometryOverride::populateGeometry(
         }
         uint32_t* destination =
             static_cast<uint32_t*>(indexBuffer->acquire(
-                static_cast<unsigned int>(indices.size()), false));
+                static_cast<unsigned int>(outputIndexCount), false));
         if (!destination) {
             failClosed("could not acquire an index buffer");
             return;
         }
-        for (std::size_t index = 0; index < indices.size(); ++index) {
-            destination[index] =
-                queueGeometry->second->vertexOffset + indices[index];
+        if (wire) {
+            std::size_t outputIndex = 0U;
+            for (std::size_t index = 0; index < indices.size(); index += 3U) {
+                const uint32_t a = indices[index];
+                const uint32_t b = indices[index + 1U];
+                const uint32_t c = indices[index + 2U];
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + a;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + b;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + b;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + c;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + c;
+                destination[outputIndex++] =
+                    queueGeometry->second->vertexOffset + a;
+            }
+        } else {
+            for (std::size_t index = 0; index < indices.size(); ++index) {
+                destination[index] =
+                    queueGeometry->second->vertexOffset + indices[index];
+            }
         }
         indexBuffer->commit(destination);
         if (!item->associateWithIndexBuffer(indexBuffer)) {
             failClosed("could not associate an index buffer");
             return;
         }
-        associatedIndexCount += indices.size();
+        associatedIndexCount += outputIndexCount;
     }
 
     if (!positionBufferCommitted || associatedIndexCount == 0U) {
