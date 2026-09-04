@@ -545,6 +545,15 @@ void MmdRenderGeometryOverride::updateRenderItems(
         return;
     }
 
+    std::vector<bool> mainTextureAvailability;
+    mainTextureAvailability.reserve(shape_->geometry().queueInputs.size());
+    for (const mmd::MmdRenderQueueInput& input :
+         shape_->geometry().queueInputs) {
+        mainTextureAvailability.push_back(
+            acquireNativeTexture(input.mainTexturePath, textureManager) !=
+            nullptr);
+    }
+    shape_->updateMainTextureAvailability(mainTextureAvailability);
     const MmdRenderShape::GeometryData& geometry = shape_->geometry();
     auto configureWireItem = [&](const MmdRenderShape::QueueGeometry& queueGeometry,
                                  std::size_t queueIndex) {

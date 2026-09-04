@@ -1343,9 +1343,105 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
         }
     }
     if (valuesChanged) {
+        resyncMaterialQueue(geometry_.queueInputs);
         clearRenderItemWitness();
         clearMaterialBindingDiagnostics();
     }
+}
+
+bool MmdRenderShape::updateMainTextureAvailability(
+    const std::vector<bool>& availability)
+{
+    if (availability.size() != geometry_.queueInputs.size()) {
+        return false;
+    }
+
+    bool changed = false;
+    for (std::size_t index = 0U; index < geometry_.queueInputs.size();
+         ++index) {
+        if (geometry_.queueInputs[index].mainTextureAvailable !=
+            availability[index]) {
+            changed = true;
+            break;
+        }
+    }
+    if (!changed) {
+        return true;
+    }
+    std::vector<mmd::MmdRenderQueueInput> nextInputs = geometry_.queueInputs;
+    for (std::size_t index = 0U; index < nextInputs.size(); ++index) {
+        nextInputs[index].mainTextureAvailable = availability[index];
+    }
+    if (!resyncMaterialQueue(nextInputs)) {
+        return false;
+    }
+    clearRenderItemWitness();
+    clearMaterialBindingDiagnostics();
+    return true;
+}
+
+bool MmdRenderShape::resyncMaterialQueue(
+    const std::vector<mmd::MmdRenderQueueInput>& nextInputs)
+{
+    const std::vector<mmd::MmdRenderQueueEntry> nextQueue =
+        mmd::buildMmdRenderQueue(nextInputs);
+    const std::size_t queueSize = geometry_.queueGeometry.size();
+    if (nextQueue.size() != nextInputs.size() || queueSize != nextInputs.size()) {
+        MGlobal::displayError(
+            "[mmdRenderShape] Material update changed queue size.");
+        return false;
+    }
+
+    std::vector<std::size_t> sourceIndexByInput(nextInputs.size(), queueSize);
+    for (std::size_t candidateIndex = 0; candidateIndex < queueSize;
+         ++candidateIndex) {
+        const std::size_t inputIndex =
+            geometry_.queueGeometry[candidateIndex].entry.inputIndex;
+        if (inputIndex >= sourceIndexByInput.size() ||
+            sourceIndexByInput[inputIndex] != queueSize) {
+            MGlobal::displayError(
+                "[mmdRenderShape] Material update has duplicate or invalid input index.");
+            return false;
+        }
+        sourceIndexByInput[inputIndex] = candidateIndex;
+    }
+
+    bool orderChanged = geometry_.renderQueue.size() != nextQueue.size();
+    if (!orderChanged) {
+        for (std::size_t index = 0; index < nextQueue.size(); ++index) {
+            if (geometry_.renderQueue[index].inputIndex !=
+                    nextQueue[index].inputIndex ||
+                geometry_.queueGeometry[index].entry.inputIndex !=
+                    nextQueue[index].inputIndex) {
+                orderChanged = true;
+                break;
+            }
+        }
+    }
+    if (!orderChanged) {
+        for (std::size_t index = 0; index < nextQueue.size(); ++index) {
+            QueueGeometry& item = geometry_.queueGeometry[index];
+            item.entry = nextQueue[index];
+            item.material = nextInputs[nextQueue[index].inputIndex];
+        }
+        geometry_.queueInputs = nextInputs;
+        geometry_.renderQueue = nextQueue;
+        return true;
+    }
+
+    std::vector<QueueGeometry> reordered;
+    reordered.reserve(nextQueue.size());
+    for (const mmd::MmdRenderQueueEntry& entry : nextQueue) {
+        QueueGeometry item = std::move(
+            geometry_.queueGeometry[sourceIndexByInput[entry.inputIndex]]);
+        item.entry = entry;
+        item.material = nextInputs[entry.inputIndex];
+        reordered.push_back(std::move(item));
+    }
+    geometry_.queueInputs = nextInputs;
+    geometry_.renderQueue = nextQueue;
+    geometry_.queueGeometry = std::move(reordered);
+    return true;
 }
 
 bool MmdRenderShape::applyMaterialAlphaUpdates(
@@ -1388,46 +1484,9 @@ bool MmdRenderShape::applyMaterialAlphaUpdates(
         }
     }
 
-    const std::vector<mmd::MmdRenderQueueEntry> nextQueue =
-        mmd::buildMmdRenderQueue(nextInputs);
-
-    const std::size_t queueSize = geometry_.queueGeometry.size();
-    if (queueSize != nextInputs.size()) {
-        MGlobal::displayError(
-            "[mmdRenderShape] Queue alpha update changed queue size.");
+    if (!resyncMaterialQueue(nextInputs)) {
         return false;
     }
-    std::vector<std::size_t> sourceIndexByInput(
-        geometry_.queueInputs.size(), queueSize);
-    for (std::size_t candidateIndex = 0; candidateIndex < queueSize;
-         ++candidateIndex) {
-        const std::size_t inputIndex =
-            geometry_.queueGeometry[candidateIndex].entry.inputIndex;
-        if (inputIndex >= sourceIndexByInput.size() ||
-            sourceIndexByInput[inputIndex] != queueSize) {
-            MGlobal::displayError(
-                "[mmdRenderShape] Queue alpha update has duplicate or invalid input index.");
-            return false;
-        }
-        sourceIndexByInput[inputIndex] = candidateIndex;
-    }
-
-    std::vector<QueueGeometry> reordered;
-    reordered.reserve(nextQueue.size());
-    for (std::size_t queueIndex = 0; queueIndex < nextQueue.size();
-         ++queueIndex) {
-        const mmd::MmdRenderQueueEntry& entry = nextQueue[queueIndex];
-        QueueGeometry item =
-            std::move(geometry_.queueGeometry[
-                sourceIndexByInput[entry.inputIndex]]);
-        item.entry = entry;
-        item.material = nextInputs[entry.inputIndex];
-        reordered.push_back(std::move(item));
-    }
-
-    geometry_.queueInputs = std::move(nextInputs);
-    geometry_.renderQueue = nextQueue;
-    geometry_.queueGeometry = std::move(reordered);
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;

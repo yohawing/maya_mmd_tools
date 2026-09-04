@@ -53,6 +53,36 @@ MmdDrawPass classifyMmdDrawPass(const std::string& transparencyMode,
     return MmdDrawPass::Opaque;
 }
 
+MmdDrawPass classifyMmdDrawPass(const MmdRenderQueueInput& input)
+{
+    const std::string mode = normalizedMode(input.transparencyMode);
+    if (mode == "cutout" || mode == "alphatest" || mode == "alpha-test" ||
+        mode == "alpha_test" || mode == "transparent" ||
+        mode == "translucent" || mode == "blend") {
+        return classifyMmdDrawPass(mode, input.diffuseAlpha);
+    }
+
+    float effectiveAlpha = input.diffuseAlpha;
+    if (!input.mainTexturePath.empty() && input.mainTextureAvailable &&
+        std::isfinite(input.mainTextureMultiply[3]) &&
+        std::isfinite(input.mainTextureAdd[3])) {
+        // The native shader applies this factor to sampled texture alpha.  A
+        // texture classified opaque at import has alpha 1, so the queue must
+        // use the same effective alpha for a material-morph update.  The
+        // factor is meaningful only after the Maya texture handle exists.
+        effectiveAlpha *= input.mainTextureMultiply[3] +
+                          input.mainTextureAdd[3];
+    }
+    // "opaque" is the import-time default for a texture known to be opaque.
+    // Once a morph changes its alpha factor, classify that effective value
+    // instead of treating the import-time label as an explicit override.
+    if (mode == "opaque" && !input.mainTexturePath.empty() &&
+        input.mainTextureAvailable) {
+        return classifyMmdDrawPass("", effectiveAlpha);
+    }
+    return classifyMmdDrawPass(mode, effectiveAlpha);
+}
+
 const char* mmdDrawPassName(MmdDrawPass pass)
 {
     switch (pass) {
@@ -76,8 +106,7 @@ std::vector<MmdRenderQueueEntry> buildMmdRenderQueue(
         const MmdRenderQueueInput& input = inputs[inputIndex];
         queue.push_back({input.materialIndex,
                          input.submeshIndex,
-                         classifyMmdDrawPass(input.transparencyMode,
-                                             input.diffuseAlpha),
+                         classifyMmdDrawPass(input),
                          inputIndex});
     }
 

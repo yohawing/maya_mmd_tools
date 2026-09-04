@@ -126,8 +126,12 @@ public:
     /** Pull present DG alpha elements and apply only changed effective values. */
     void updateEvaluatedMaterialAlpha();
 
-    /** Pull present DG material-value records without rebuilding the queue. */
+    /** Pull present DG material-value records without rebuilding vertex buffers. */
     void updateEvaluatedMaterialValues();
+
+    /** Synchronize transient main-texture availability in one queue rebuild. */
+    bool updateMainTextureAvailability(
+        const std::vector<bool>& availability);
 
     /** Swap two adjacent material indices without rebuilding geometry buffers. */
     bool reindexMaterialQueue(std::size_t firstIndex, std::size_t secondIndex);
@@ -248,6 +252,9 @@ public:
     std::string materialBindingDiagnosticsJson() const;
 
 private:
+    bool resyncMaterialQueue(
+        const std::vector<mmd::MmdRenderQueueInput>& nextInputs);
+
     bool applyMaterialAlphaUpdates(
         const std::vector<std::pair<std::size_t, float>>& updates);
 

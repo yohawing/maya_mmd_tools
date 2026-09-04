@@ -51,6 +51,9 @@ struct MmdRenderQueueInput {
     int sphereMode = 0;
     int sharedToonIndex = -1;
     std::string mainTexturePath;
+    // Transient VP2 fact set from the texture manager's actual acquisition.
+    // It is intentionally false until the override has acquired the handle.
+    bool mainTextureAvailable = false;
     std::string sphereTexturePath;
     std::string toonTexturePath;
     bool doubleSided = false;
@@ -83,6 +86,9 @@ struct MmdRenderQueueEntry {
  */
 MmdDrawPass classifyMmdDrawPass(const std::string& transparencyMode,
                                 float diffuseAlpha);
+
+/** Classify one material, including the main-texture alpha factor when used. */
+MmdDrawPass classifyMmdDrawPass(const MmdRenderQueueInput& input);
 
 /** Return the stable diagnostic name for a pass bucket. */
 const char* mmdDrawPassName(MmdDrawPass pass);
