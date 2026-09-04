@@ -63,6 +63,8 @@ public:
     static void setPluginLoadPath(const MString& loadPath);
     static void markRegistered(bool registered);
     static void registerReceiverShader(MHWRender::MShaderInstance* shader);
+    // The caller owns the shader while refreshing it after material binding.
+    static bool refreshReceiverShaderParameters(MHWRender::MShaderInstance* shader);
     static bool beginReceiverShaderRetire(MHWRender::MShaderInstance* shader);
     static void finishReceiverShaderRetire(MHWRender::MShaderInstance* shader);
     static void setReceiverProbe(bool enabled);
@@ -80,7 +82,7 @@ private:
     void releaseShader();
     bool buildCasterSelection(MSelectionList& selection) const;
     bool bindReceiverShader(MHWRender::MShaderInstance* shader);
-    bool updateReceiverShaderParameters(MHWRender::MShaderInstance* shader);
+    static bool updateReceiverShaderParameters(MHWRender::MShaderInstance* shader);
 
     CasterSceneRender* casterOperation_ = nullptr;
     MHWRender::MRenderTargetManager* targetManager_ = nullptr;

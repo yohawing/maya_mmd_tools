@@ -1043,6 +1043,21 @@ bool MmdNativeCasterRenderOverride::updateReceiverShaderParameters(
     return true;
 }
 
+bool MmdNativeCasterRenderOverride::refreshReceiverShaderParameters(
+    MHWRender::MShaderInstance* shader)
+{
+    {
+        std::lock_guard<std::mutex> lock(gReceiverMutex);
+        if (!gOverrideSetup || gReceiverBindings.count(shader) == 0U) {
+            return true;
+        }
+    }
+    // Material updates reset native diagnostics. Restore the current caster
+    // frame only for a shader whose target assignment is already established,
+    // before MRenderItem publishes that shader again.
+    return updateReceiverShaderParameters(shader);
+}
+
 void MmdNativeCasterRenderOverride::registerReceiverShader(
     MHWRender::MShaderInstance* shader)
 {

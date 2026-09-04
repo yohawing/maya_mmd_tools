@@ -594,7 +594,10 @@ void MmdRenderGeometryOverride::updateRenderItems(
         }
         diagnostic.shaderAvailable = true;
         const bool parameterBindingSuccess = setNativeMaterialParameters(
-            materialShader, queueGeometry.material, textureManager, &diagnostic);
+            materialShader, queueGeometry.material, textureManager, &diagnostic) &&
+            (outline || !queueGeometry.material.selfShadow ||
+             MmdNativeCasterRenderOverride::refreshReceiverShaderParameters(
+                 materialShader));
         diagnostic.parameterBindingSuccess = parameterBindingSuccess;
         if (!parameterBindingSuccess) {
             shape_->recordMaterialBindingDiagnostic(diagnostic);
