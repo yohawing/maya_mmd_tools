@@ -1173,7 +1173,10 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn(
             "saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb", dx11
         )
-        self.assertIn("toonColor = float3(1.0, 1.0, 1.0)", dx11)
+        self.assertIn(
+            "toonColor = selfShadowEnabled ? float3(0.0, 0.0, 0.0) : "
+            "float3(1.0, 1.0, 1.0)", dx11
+        )
         self.assertNotIn("toonColor = rampCoord.xxx", dx11)
         self.assertIn("float3 diffuse = surfaceColor * shadow", dx11)
         self.assertIn("surfaceColor *= toonColor;", dx11)
