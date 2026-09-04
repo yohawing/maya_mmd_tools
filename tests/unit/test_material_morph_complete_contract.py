@@ -155,7 +155,7 @@ def test_sphere_mapping_uses_half_range_view_normal_projection_in_both_backends(
         "glsl": (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8"),
     }
     assert "sphereUV.x = sphereNormal.x * 0.5 + 0.5;" in sources["dx11"]
-    assert "sphereUV.y = sphereNormal.y * -0.5 + 0.5;" in sources["dx11"]
+    assert "sphereUV.y = sphereNormal.y * 0.5 + 0.5;" in sources["dx11"]
     assert (
         "vec2 sphereUV = vec2(sphereNormal.x * 0.5 + 0.5, sphereNormal.y * -0.5 + 0.5);"
         in sources["glsl"]
@@ -193,7 +193,10 @@ def test_toon_coordinate_matches_maya_ramp_contract_in_both_backends():
     glsl = (ROOT / "mmd_tools/shaders/MMDShader.ogsfx").read_text(encoding="utf-8")
     assert "float ToonCoordinateOffset" in dx11
     assert "= 0.55f;" in dx11
-    assert "float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);" in dx11
+    assert (
+        "float toonV = selfShadowEnabled ? 1.0 : "
+        "saturate(ToonCoordinateOffset - NdotL * 0.5);"
+    ) in dx11
     assert "float2(0.0, toonV)" in dx11
     assert "uniform float ToonCoordinateOffset = 0.55;" in glsl
     assert "float toonV = clamp(ToonCoordinateOffset - ndotl * 0.5, 0.0, 1.0);" in glsl
@@ -286,7 +289,7 @@ def test_dx11_effect_has_material_order_translucent_depth_contract():
         assert "CompileShader(vs_5_0, EdgeVSTranslucent())" in edge_pass
     assert 'float DevicePixelRatio< string UIWidget = "None"; > = 1.0f;' in source
     assert "logicalEdgeSize = EdgeSize * max(DevicePixelRatio, 1.0e-5)" in source
-    assert "screenNormal / (safeScreenSize * 0.45) * logicalEdgeSize * clipPos.w" in source
+    assert "screenNormal / (safeScreenSize * 0.40) * logicalEdgeSize * clipPos.w" in source
     assert "output.position.z += 1.0e-2 * output.position.w;" in source
     assert "EdgeSize * 4.0" not in source
 
