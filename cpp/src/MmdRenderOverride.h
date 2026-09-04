@@ -43,6 +43,23 @@ public:
     MStatus setup(const MString& destination) override;
     MStatus cleanup() override;
 
+    struct FrameResources {
+        // The matrix and bias are snapshots for one preparation call.  The
+        // targets are owned by this override and remain borrowed until the
+        // override releases them; cleanup may retain them while receiver
+        // assignments are still registered.  Callers must not release or
+        // retain ownership of these pointers.  Cached shader assignments keep
+        // the existing receiver registry retirement contract.
+        MHWRender::MRenderTarget* colorTarget = nullptr;
+        MHWRender::MRenderTarget* depthTarget = nullptr;
+        MMatrix lightViewProjection;
+        float depthBias = 0.0F;
+        bool ready = false;
+    };
+
+    MStatus prepareFrameResources(const MSelectionList& selection,
+                                  FrameResources& resources);
+
     static void setPluginLoadPath(const MString& loadPath);
     static void markRegistered(bool registered);
     static void registerReceiverShader(MHWRender::MShaderInstance* shader);
