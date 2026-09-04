@@ -1,3 +1,4 @@
+import json
 import socket
 import tempfile
 import threading
@@ -23,7 +24,13 @@ class TestMayaCommandPort(unittest.TestCase):
         with mock.patch.object(maya_commandport.platform, "system", return_value="Windows"), mock.patch.object(
             maya_commandport,
             "_run_powershell",
-            return_value='{"ProcessId":1234,"Name":"maya.exe"}',
+            return_value=json.dumps(
+                {
+                    "ProcessId": 1234,
+                    "Name": "maya.exe",
+                    "CommandLine": f'maya.exe -script "{commandport_script.resolve()}"',
+                }
+            ),
         ) as run_powershell:
             self.assertEqual(1234, maya_commandport.find_maya_process_id(commandport_script))
 
@@ -32,12 +39,14 @@ class TestMayaCommandPort(unittest.TestCase):
         self.assertIn("commandport_7720.mel", query)
         self.assertIn("''quote''", query)
         self.assertIn("maya.exe", query)
+        self.assertIn("(Test-MayaScriptArgument", query)
+        self.assertNotIn("Contains(", query)
 
     def test_terminate_maya_process_rechecks_exact_process_before_stopping(self):
         commandport_script = Path("F:/temp/commandport_7720.mel")
         with mock.patch.object(maya_commandport.platform, "system", return_value="Windows"), mock.patch.object(
             maya_commandport,
-            "is_maya_process_for_script",
+            "query_maya_process_for_script",
             side_effect=[True, False],
         ), mock.patch.object(maya_commandport, "_run_powershell") as run_powershell:
             self.assertTrue(maya_commandport.terminate_maya_process(1234, commandport_script))
@@ -46,6 +55,64 @@ class TestMayaCommandPort(unittest.TestCase):
         self.assertIn("ProcessId -eq 1234", script)
         self.assertIn("Stop-Process", script)
         self.assertIn("commandport_7720.mel", script)
+
+    def test_terminate_maya_process_does_not_stop_when_script_ownership_is_lost(self):
+        commandport_script = Path("F:/temp/commandport_7720.mel")
+        with mock.patch.object(
+            maya_commandport.platform, "system", return_value="Windows"
+        ), mock.patch.object(
+            maya_commandport, "query_maya_process_for_script", return_value=False
+        ), mock.patch.object(maya_commandport, "_run_powershell") as run_powershell:
+            self.assertFalse(
+                maya_commandport.terminate_maya_process(1234, commandport_script)
+            )
+
+        run_powershell.assert_not_called()
+
+    def test_process_query_failure_is_not_treated_as_process_exit(self):
+        commandport_script = Path("F:/temp/commandport_7720.mel")
+        with mock.patch.object(
+            maya_commandport.platform, "system", return_value="Windows"
+        ), mock.patch.object(
+            maya_commandport, "_run_powershell", return_value=None
+        ):
+            self.assertIsNone(
+                maya_commandport.query_maya_process_for_script(
+                    1234, commandport_script
+                )
+            )
+            self.assertFalse(
+                maya_commandport.wait_for_maya_process_exit(
+                    1234, commandport_script, timeout=1
+                )
+            )
+            self.assertFalse(
+                maya_commandport.terminate_maya_process(1234, commandport_script)
+            )
+
+    def test_listener_query_distinguishes_closed_port_from_query_failure(self):
+        with mock.patch.object(
+            maya_commandport.platform, "system", return_value="Windows"
+        ), mock.patch.object(
+            maya_commandport, "_run_powershell", return_value='{"OwningProcess":1234}'
+        ) as run_powershell:
+            self.assertEqual(1234, maya_commandport.find_commandport_listener_process_id(7720))
+
+        query = run_powershell.call_args.args[0]
+        self.assertIn("Get-NetTCPConnection -State Listen", query)
+        self.assertIn("LocalPort -eq 7720", query)
+        self.assertNotIn("-LocalPort 7720", query)
+
+        with mock.patch.object(
+            maya_commandport.platform, "system", return_value="Windows"
+        ), mock.patch.object(maya_commandport, "_run_powershell", return_value=""):
+            self.assertIsNone(maya_commandport.find_commandport_listener_process_id(7720))
+
+        with mock.patch.object(
+            maya_commandport.platform, "system", return_value="Windows"
+        ), mock.patch.object(maya_commandport, "_run_powershell", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "TCP listener"):
+                maya_commandport.find_commandport_listener_process_id(7720)
 
     def test_wait_for_port_close_polls_until_closed(self):
         with mock.patch.object(
