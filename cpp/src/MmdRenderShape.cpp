@@ -6,6 +6,8 @@
 #include "MmdRenderShape.h"
 
 #include <maya/MArgDatabase.h>
+#include <maya/MFnAttribute.h>
+#include <maya/MFnCompoundAttribute.h>
 #include <maya/MFnDependencyNode.h>
 #include <maya/MFnData.h>
 #include <maya/MFnMesh.h>
@@ -26,6 +28,7 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
 namespace {
@@ -62,7 +65,187 @@ bool hasFiniteMaterial(const mmd::MmdRenderQueueInput& input)
            finiteColor(input.diffuseColor) &&
            finiteColor(input.specularColor) &&
            finiteColor(input.ambientColor) &&
-           finiteColor(input.edgeColor);
+           finiteColor(input.edgeColor) &&
+           finiteColor(input.mainTextureMultiply) &&
+           finiteColor(input.mainTextureAdd) &&
+           finiteColor(input.sphereTextureMultiply) &&
+           finiteColor(input.sphereTextureAdd) &&
+           finiteColor(input.toonTextureMultiply) &&
+           finiteColor(input.toonTextureAdd);
+}
+
+void configureMaterialAttribute(MFnAttribute& attribute)
+{
+    attribute.setWritable(true);
+    attribute.setReadable(true);
+    attribute.setStorable(true);
+    attribute.setKeyable(false);
+    attribute.setDisconnectBehavior(MFnAttribute::kNothing);
+}
+
+MObject createMaterialFloat3Attribute(const char* name,
+                                      const char* shortName,
+                                      float defaultValue,
+                                      MStatus* status)
+{
+    MFnNumericAttribute numeric;
+    MObject attribute = numeric.create(
+        name, shortName, MFnNumericData::k3Float, defaultValue, status);
+    if (status && *status) {
+        configureMaterialAttribute(numeric);
+    }
+    return attribute;
+}
+
+MObject createMaterialFloatAttribute(const char* name,
+                                     const char* shortName,
+                                     float defaultValue,
+                                     MStatus* status)
+{
+    MFnNumericAttribute numeric;
+    MObject attribute = numeric.create(
+        name, shortName, MFnNumericData::kFloat, defaultValue, status);
+    if (status && *status) {
+        configureMaterialAttribute(numeric);
+    }
+    return attribute;
+}
+
+MObject createMaterialFloat4Attribute(const char* name,
+                                      const char* shortName,
+                                      float defaultValue,
+                                      MStatus* status)
+{
+    MFnNumericAttribute numeric;
+    MObject components[4];
+    const char* suffixes[4] = {"R", "G", "B", "A"};
+    for (unsigned int index = 0U; index < 4U; ++index) {
+        const MString componentName = MString(name) + suffixes[index];
+        const MString componentShortName =
+            MString(shortName) + suffixes[index];
+        components[index] = numeric.create(
+            componentName, componentShortName, MFnNumericData::kFloat,
+            defaultValue, status);
+        if (!status || !*status) {
+            return MObject::kNullObj;
+        }
+        configureMaterialAttribute(numeric);
+    }
+
+    MFnCompoundAttribute compound;
+    MObject attribute = compound.create(name, shortName, status);
+    if (!status || !*status) {
+        return MObject::kNullObj;
+    }
+    for (const MObject& component : components) {
+        *status = compound.addChild(component);
+        if (!*status) {
+            return MObject::kNullObj;
+        }
+    }
+    configureMaterialAttribute(compound);
+    return attribute;
+}
+
+bool isMaterialValuesPlug(const MPlug& plug)
+{
+    MPlug current = plug;
+    while (!current.isNull()) {
+        if (current.attribute() == MmdRenderShape::aMaterialValues) {
+            return true;
+        }
+        MStatus status;
+        const MPlug parent = current.parent(&status);
+        if (!status || parent.isNull()) {
+            return false;
+        }
+        current = parent;
+    }
+    return false;
+}
+
+bool readMaterialValuesChild(const MPlug& element,
+                             unsigned int childIndex,
+                             float* values,
+                             unsigned int valueCount)
+{
+    MStatus status;
+    const MPlug field = element.child(childIndex, &status);
+    if (!status || field.isNull()) {
+        return false;
+    }
+    if (valueCount == 1U) {
+        const float value = field.asFloat(&status);
+        if (!status || !std::isfinite(value)) {
+            return false;
+        }
+        values[0] = value;
+        return true;
+    }
+
+    const unsigned int componentCount = field.numChildren(&status);
+    if (!status || componentCount != valueCount) {
+        return false;
+    }
+    for (unsigned int index = 0U; index < valueCount; ++index) {
+        const MPlug component = field.child(index, &status);
+        if (!status || component.isNull()) {
+            return false;
+        }
+        const float value = component.asFloat(&status);
+        if (!status || !std::isfinite(value)) {
+            return false;
+        }
+        values[index] = value;
+    }
+    return true;
+}
+
+enum MaterialValuesChild : unsigned int {
+    kDiffuseColorRGB = 0U,
+    kSpecularColor,
+    kShininess,
+    kAmbientColor,
+    kEdgeColorRGB,
+    kEdgeColorA,
+    kEdgeSize,
+    kMainTextureMultiply,
+    kMainTextureAdd,
+    kSphereTextureMultiply,
+    kSphereTextureAdd,
+    kToonTextureMultiply,
+    kToonTextureAdd,
+};
+
+bool readMaterialValuesRecord(const MPlug& element,
+                              mmd::MmdRenderQueueInput& material)
+{
+    return
+        readMaterialValuesChild(element, kDiffuseColorRGB,
+                                material.diffuseColor.data(), 3U) &&
+        readMaterialValuesChild(element, kSpecularColor,
+                                material.specularColor.data(), 3U) &&
+        readMaterialValuesChild(element, kShininess, &material.specularPower,
+                                1U) &&
+        readMaterialValuesChild(element, kAmbientColor,
+                                material.ambientColor.data(), 3U) &&
+        readMaterialValuesChild(element, kEdgeColorRGB,
+                                material.edgeColor.data(), 3U) &&
+        readMaterialValuesChild(element, kEdgeColorA, &material.edgeAlpha,
+                                1U) &&
+        readMaterialValuesChild(element, kEdgeSize, &material.edgeSize, 1U) &&
+        readMaterialValuesChild(element, kMainTextureMultiply,
+                                material.mainTextureMultiply.data(), 4U) &&
+        readMaterialValuesChild(element, kMainTextureAdd,
+                                material.mainTextureAdd.data(), 4U) &&
+        readMaterialValuesChild(element, kSphereTextureMultiply,
+                                material.sphereTextureMultiply.data(), 4U) &&
+        readMaterialValuesChild(element, kSphereTextureAdd,
+                                material.sphereTextureAdd.data(), 4U) &&
+        readMaterialValuesChild(element, kToonTextureMultiply,
+                                material.toonTextureMultiply.data(), 4U) &&
+        readMaterialValuesChild(element, kToonTextureAdd,
+                                material.toonTextureAdd.data(), 4U);
 }
 
 bool hasFinitePoint(const MPoint& point)
@@ -167,6 +350,26 @@ void appendJsonFloat(std::ostringstream& stream,
     stream << jsonEscape(key) << ':' << std::setprecision(9) << value;
 }
 
+void appendJsonFloatArray(std::ostringstream& stream,
+                          const char* key,
+                          const float* values,
+                          unsigned int valueCount,
+                          bool& first)
+{
+    if (!first) {
+        stream << ',';
+    }
+    first = false;
+    stream << jsonEscape(key) << ":[";
+    for (unsigned int index = 0U; index < valueCount; ++index) {
+        if (index != 0U) {
+            stream << ',';
+        }
+        stream << std::setprecision(9) << values[index];
+    }
+    stream << ']';
+}
+
 void appendJsonInt(std::ostringstream& stream,
                    const char* key,
                    int value,
@@ -187,6 +390,8 @@ const MString MmdRenderShape::drawDbClassification(
 const MString MmdRenderShape::drawRegistrantId(kMmdRenderShapeRegistrantId);
 MObject MmdRenderShape::aInputMesh;
 MObject MmdRenderShape::aMaterialAlpha;
+MObject MmdRenderShape::aMaterialValues;
+MObject MmdRenderShape::aMaterialValueChildren[13];
 MObject MmdRenderShape::aProxyReady;
 MObject MmdRenderShape::aSourceVisibility;
 
@@ -233,6 +438,64 @@ MStatus MmdRenderShape::initialize()
     // unchanged rather than applying the attribute default to all materials.
     numericAttribute.setDisconnectBehavior(MFnAttribute::kNothing);
     status = addAttribute(aMaterialAlpha);
+    if (!status) {
+        return status;
+    }
+
+    const MObject materialValueChildren[] = {
+        createMaterialFloat3Attribute(
+            "DiffuseColorRGB", "dcrgb", 1.0F, &status),
+        createMaterialFloat3Attribute(
+            "SpecularColor", "sc", 0.0F, &status),
+        createMaterialFloatAttribute(
+            "Shininess", "sh", 0.0F, &status),
+        createMaterialFloat3Attribute(
+            "AmbientColor", "ac", 0.3F, &status),
+        createMaterialFloat3Attribute(
+            "EdgeColorRGB", "ecrgb", 0.0F, &status),
+        createMaterialFloatAttribute(
+            "EdgeColorA", "eca", 1.0F, &status),
+        createMaterialFloatAttribute(
+            "EdgeSize", "es", 0.0F, &status),
+        createMaterialFloat4Attribute(
+            "MainTextureMultiply", "mtm", 1.0F, &status),
+        createMaterialFloat4Attribute(
+            "MainTextureAdd", "mta", 0.0F, &status),
+        createMaterialFloat4Attribute(
+            "SphereTextureMultiply", "stm", 1.0F, &status),
+        createMaterialFloat4Attribute(
+            "SphereTextureAdd", "sta", 0.0F, &status),
+        createMaterialFloat4Attribute(
+            "ToonTextureMultiply", "ttm", 1.0F, &status),
+        createMaterialFloat4Attribute(
+            "ToonTextureAdd", "tta", 0.0F, &status),
+    };
+    if (!status) {
+        return status;
+    }
+    for (unsigned int index = 0U; index < 13U; ++index) {
+        aMaterialValueChildren[index] = materialValueChildren[index];
+    }
+    // The scalar children above are deliberately material input values, not
+    // queue controls.  Keep their authored values available through a sparse
+    // PMX-indexed compound array and leave absent records untouched.
+    MFnCompoundAttribute materialValuesAttribute;
+    aMaterialValues = materialValuesAttribute.create(
+        "materialValues", "mv", &status);
+    if (!status) {
+        return status;
+    }
+    for (const MObject& child : materialValueChildren) {
+        status = materialValuesAttribute.addChild(child);
+        if (!status) {
+            return status;
+        }
+    }
+    materialValuesAttribute.setArray(true);
+    materialValuesAttribute.setIndexMatters(true);
+    materialValuesAttribute.setUsesArrayDataBuilder(true);
+    configureMaterialAttribute(materialValuesAttribute);
+    status = addAttribute(aMaterialValues);
     if (!status) {
         return status;
     }
@@ -293,6 +556,21 @@ MStatus MmdRenderShape::preEvaluation(
         if (evaluationNode.dirtyPlugExists(aMaterialAlpha, &status) &&
             status) {
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+        } else if (evaluationNode.dirtyPlugExists(aMaterialValues, &status) &&
+                   status) {
+            MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+        } else {
+            bool materialValuesDirty = false;
+            for (const MObject& child : aMaterialValueChildren) {
+                if (evaluationNode.dirtyPlugExists(child, &status) &&
+                    status) {
+                    materialValuesDirty = true;
+                    break;
+                }
+            }
+            if (materialValuesDirty) {
+                MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+            }
         }
     }
     return MS::kSuccess;
@@ -301,7 +579,8 @@ MStatus MmdRenderShape::preEvaluation(
 MStatus MmdRenderShape::setDependentsDirty(const MPlug& plug,
                                            MPlugArray& /*plugArray*/)
 {
-    if (!plug.isNull() && plug.attribute() == aMaterialAlpha) {
+    if (!plug.isNull() &&
+        (plug.attribute() == aMaterialAlpha || isMaterialValuesPlug(plug))) {
         MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
     }
     return MS::kSuccess;
@@ -959,6 +1238,116 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
     }
 }
 
+void MmdRenderShape::updateEvaluatedMaterialValues()
+{
+    MPlug valuesPlug(thisMObject(), aMaterialValues);
+    if (valuesPlug.isNull()) {
+        return;
+    }
+
+    MStatus valuesCountStatus;
+    const unsigned int valuesCount =
+        valuesPlug.evaluateNumElements(&valuesCountStatus);
+    if (!valuesCountStatus) {
+        return;
+    }
+
+    std::vector<std::pair<std::size_t, mmd::MmdRenderQueueInput>> updates;
+    updates.reserve(valuesCount);
+    for (unsigned int physicalIndex = 0U; physicalIndex < valuesCount;
+         ++physicalIndex) {
+        MStatus elementStatus;
+        const MPlug element = valuesPlug.elementByPhysicalIndex(
+            physicalIndex, &elementStatus);
+        if (!elementStatus || element.isNull()) {
+            continue;
+        }
+        const unsigned int materialIndex = element.logicalIndex(&elementStatus);
+        if (!elementStatus) {
+            continue;
+        }
+
+        mmd::MmdRenderQueueInput materialValues;
+        if (!readMaterialValuesRecord(element, materialValues)) {
+            MGlobal::displayError(
+                "[mmdRenderShape] Material value record rejected: "
+                "missing or non-finite numeric value.");
+            continue;
+        }
+        updates.emplace_back(materialIndex, std::move(materialValues));
+    }
+    if (updates.empty()) {
+        return;
+    }
+
+    std::unordered_map<std::size_t, std::size_t> updateIndexByMaterial;
+    updateIndexByMaterial.reserve(updates.size());
+    for (std::size_t updateIndex = 0U; updateIndex < updates.size();
+         ++updateIndex) {
+        updateIndexByMaterial.emplace(updates[updateIndex].first, updateIndex);
+    }
+
+    const auto applyValues = [](mmd::MmdRenderQueueInput& destination,
+                                const mmd::MmdRenderQueueInput& source) {
+        destination.diffuseColor = source.diffuseColor;
+        destination.specularColor = source.specularColor;
+        destination.specularPower = source.specularPower;
+        destination.ambientColor = source.ambientColor;
+        destination.edgeColor = source.edgeColor;
+        destination.edgeAlpha = source.edgeAlpha;
+        destination.edgeSize = source.edgeSize;
+        destination.mainTextureMultiply = source.mainTextureMultiply;
+        destination.mainTextureAdd = source.mainTextureAdd;
+        destination.sphereTextureMultiply = source.sphereTextureMultiply;
+        destination.sphereTextureAdd = source.sphereTextureAdd;
+        destination.toonTextureMultiply = source.toonTextureMultiply;
+        destination.toonTextureAdd = source.toonTextureAdd;
+    };
+    const auto valuesEqual = [](const mmd::MmdRenderQueueInput& left,
+                                const mmd::MmdRenderQueueInput& right) {
+        return left.diffuseColor == right.diffuseColor &&
+               left.specularColor == right.specularColor &&
+               left.specularPower == right.specularPower &&
+               left.ambientColor == right.ambientColor &&
+               left.edgeColor == right.edgeColor &&
+               left.edgeAlpha == right.edgeAlpha &&
+               left.edgeSize == right.edgeSize &&
+               left.mainTextureMultiply == right.mainTextureMultiply &&
+               left.mainTextureAdd == right.mainTextureAdd &&
+               left.sphereTextureMultiply == right.sphereTextureMultiply &&
+               left.sphereTextureAdd == right.sphereTextureAdd &&
+               left.toonTextureMultiply == right.toonTextureMultiply &&
+               left.toonTextureAdd == right.toonTextureAdd;
+    };
+
+    bool valuesChanged = false;
+    for (mmd::MmdRenderQueueInput& input : geometry_.queueInputs) {
+        const auto updateIt = updateIndexByMaterial.find(input.materialIndex);
+        if (updateIt != updateIndexByMaterial.end()) {
+            const auto& update = updates[updateIt->second].second;
+            if (!valuesEqual(input, update)) {
+                applyValues(input, update);
+                valuesChanged = true;
+            }
+        }
+    }
+    for (QueueGeometry& queueGeometry : geometry_.queueGeometry) {
+        const auto updateIt = updateIndexByMaterial.find(
+            queueGeometry.entry.materialIndex);
+        if (updateIt != updateIndexByMaterial.end()) {
+            const auto& update = updates[updateIt->second].second;
+            if (!valuesEqual(queueGeometry.material, update)) {
+                applyValues(queueGeometry.material, update);
+                valuesChanged = true;
+            }
+        }
+    }
+    if (valuesChanged) {
+        clearRenderItemWitness();
+        clearMaterialBindingDiagnostics();
+    }
+}
+
 bool MmdRenderShape::applyMaterialAlphaUpdates(
     const std::vector<std::pair<std::size_t, float>>& updates)
 {
@@ -1261,6 +1650,54 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
         appendJsonBool(stream, "uvStreamAvailable",
                        diagnostic.uvStreamAvailable, first);
         appendJsonFloat(stream, "diffuseAlpha", diagnostic.diffuseAlpha, first);
+        if (!first) {
+            stream << ',';
+        }
+        first = false;
+        stream << jsonEscape("materialValues") << ':' << '{';
+        bool materialValuesFirst = true;
+        appendJsonFloatArray(stream, "DiffuseColorRGB",
+                             diagnostic.materialValuesDiffuseColor.data(), 3U,
+                             materialValuesFirst);
+        appendJsonFloat(stream, "DiffuseColorA", diagnostic.diffuseAlpha,
+                        materialValuesFirst);
+        appendJsonFloatArray(stream, "SpecularColor",
+                             diagnostic.materialValuesSpecularColor.data(), 3U,
+                             materialValuesFirst);
+        appendJsonFloat(stream, "Shininess", diagnostic.materialValuesShininess,
+                        materialValuesFirst);
+        appendJsonFloatArray(stream, "AmbientColor",
+                             diagnostic.materialValuesAmbientColor.data(), 3U,
+                             materialValuesFirst);
+        appendJsonFloatArray(stream, "EdgeColorRGB",
+                             diagnostic.materialValuesEdgeColorRGB.data(), 3U,
+                             materialValuesFirst);
+        appendJsonFloat(stream, "EdgeColorA", diagnostic.materialValuesEdgeColorA,
+                        materialValuesFirst);
+        appendJsonFloat(stream, "EdgeSize", diagnostic.materialValuesEdgeSize,
+                        materialValuesFirst);
+        appendJsonFloatArray(
+            stream, "MainTextureMultiply",
+            diagnostic.materialValuesMainTextureMultiply.data(), 4U,
+            materialValuesFirst);
+        appendJsonFloatArray(stream, "MainTextureAdd",
+                             diagnostic.materialValuesMainTextureAdd.data(), 4U,
+                             materialValuesFirst);
+        appendJsonFloatArray(
+            stream, "SphereTextureMultiply",
+            diagnostic.materialValuesSphereTextureMultiply.data(), 4U,
+            materialValuesFirst);
+        appendJsonFloatArray(stream, "SphereTextureAdd",
+                             diagnostic.materialValuesSphereTextureAdd.data(), 4U,
+                             materialValuesFirst);
+        appendJsonFloatArray(
+            stream, "ToonTextureMultiply",
+            diagnostic.materialValuesToonTextureMultiply.data(), 4U,
+            materialValuesFirst);
+        appendJsonFloatArray(stream, "ToonTextureAdd",
+                             diagnostic.materialValuesToonTextureAdd.data(), 4U,
+                             materialValuesFirst);
+        stream << '}';
         appendJsonBool(stream, "textureAlphaBlend",
                        diagnostic.textureAlphaBlend, first);
         appendJsonBool(stream, "effectiveTransparent",

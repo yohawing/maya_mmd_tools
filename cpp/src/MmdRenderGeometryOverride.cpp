@@ -290,6 +290,16 @@ bool MmdRenderGeometryOverride::setNativeMaterialParameters(
         shader->setParameter("EdgeColorRGB", material.edgeColor.data()) &&
         shader->setParameter("EdgeColorA", material.edgeAlpha) &&
         shader->setParameter("EdgeSize", material.edgeSize) &&
+        shader->setParameter("MainTextureMultiply",
+                             material.mainTextureMultiply.data()) &&
+        shader->setParameter("MainTextureAdd", material.mainTextureAdd.data()) &&
+        shader->setParameter("SphereTextureMultiply",
+                             material.sphereTextureMultiply.data()) &&
+        shader->setParameter("SphereTextureAdd",
+                             material.sphereTextureAdd.data()) &&
+        shader->setParameter("ToonTextureMultiply",
+                             material.toonTextureMultiply.data()) &&
+        shader->setParameter("ToonTextureAdd", material.toonTextureAdd.data()) &&
         shader->setParameter("SphereMode", material.sphereMode) &&
         shader->setParameter("HasMainTexture", 0) &&
         shader->setParameter("HasSphereTexture", 0) &&
@@ -466,6 +476,7 @@ void MmdRenderGeometryOverride::updateDG()
     }
 
     shape_->updateEvaluatedMaterialAlpha();
+    shape_->updateEvaluatedMaterialValues();
 
     MPlug inputPlug(shape_->thisMObject(), MmdRenderShape::aInputMesh);
     if (inputPlug.isNull()) {
@@ -598,6 +609,31 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.technique = technique;
         diagnostic.uvStreamAvailable = queueGeometry.uvStreamAvailable;
         diagnostic.diffuseAlpha = queueGeometry.material.diffuseAlpha;
+        diagnostic.materialValuesDiffuseColor =
+            queueGeometry.material.diffuseColor;
+        diagnostic.materialValuesSpecularColor =
+            queueGeometry.material.specularColor;
+        diagnostic.materialValuesShininess =
+            queueGeometry.material.specularPower;
+        diagnostic.materialValuesAmbientColor =
+            queueGeometry.material.ambientColor;
+        diagnostic.materialValuesEdgeColorRGB =
+            queueGeometry.material.edgeColor;
+        diagnostic.materialValuesEdgeColorA =
+            queueGeometry.material.edgeAlpha;
+        diagnostic.materialValuesEdgeSize = queueGeometry.material.edgeSize;
+        diagnostic.materialValuesMainTextureMultiply =
+            queueGeometry.material.mainTextureMultiply;
+        diagnostic.materialValuesMainTextureAdd =
+            queueGeometry.material.mainTextureAdd;
+        diagnostic.materialValuesSphereTextureMultiply =
+            queueGeometry.material.sphereTextureMultiply;
+        diagnostic.materialValuesSphereTextureAdd =
+            queueGeometry.material.sphereTextureAdd;
+        diagnostic.materialValuesToonTextureMultiply =
+            queueGeometry.material.toonTextureMultiply;
+        diagnostic.materialValuesToonTextureAdd =
+            queueGeometry.material.toonTextureAdd;
         diagnostic.selfShadowMap = queueGeometry.material.selfShadowMap;
         diagnostic.selfShadow = queueGeometry.material.selfShadow;
         diagnostic.textureAlphaBlend = effectiveTransparent;

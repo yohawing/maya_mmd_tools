@@ -23,6 +23,7 @@
 #include <maya/MString.h>
 #include <maya/MTypeId.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -44,6 +45,11 @@ public:
     // PMX material indices; absent elements leave the queue's base alpha
     // untouched.
     static MObject aMaterialAlpha;
+    // Optional authored/evaluated material values.  Array logical indices are
+    // PMX material indices; absent elements leave the queue's base values
+    // untouched.
+    static MObject aMaterialValues;
+    static MObject aMaterialValueChildren[13];
     // Internal, non-persistent DG input.  VP2 publishes readiness here so
     // Maya dirties and reevaluates the connected visibility output.
     static MObject aProxyReady;
@@ -120,6 +126,9 @@ public:
     /** Pull present DG alpha elements and apply only changed effective values. */
     void updateEvaluatedMaterialAlpha();
 
+    /** Pull present DG material-value records without rebuilding the queue. */
+    void updateEvaluatedMaterialValues();
+
     /** Swap two adjacent material indices without rebuilding geometry buffers. */
     bool reindexMaterialQueue(std::size_t firstIndex, std::size_t secondIndex);
 
@@ -182,6 +191,29 @@ public:
         bool shaderAssignmentSuccess = false;
         bool bindingSuccess = false;
         int sphereMode = 0;
+        std::array<float, 3> materialValuesDiffuseColor =
+            {1.0F, 1.0F, 1.0F};
+        std::array<float, 3> materialValuesSpecularColor =
+            {0.0F, 0.0F, 0.0F};
+        float materialValuesShininess = 0.0F;
+        std::array<float, 3> materialValuesAmbientColor =
+            {0.3F, 0.3F, 0.3F};
+        std::array<float, 3> materialValuesEdgeColorRGB =
+            {0.0F, 0.0F, 0.0F};
+        float materialValuesEdgeColorA = 1.0F;
+        float materialValuesEdgeSize = 0.0F;
+        std::array<float, 4> materialValuesMainTextureMultiply =
+            {1.0F, 1.0F, 1.0F, 1.0F};
+        std::array<float, 4> materialValuesMainTextureAdd =
+            {0.0F, 0.0F, 0.0F, 0.0F};
+        std::array<float, 4> materialValuesSphereTextureMultiply =
+            {1.0F, 1.0F, 1.0F, 1.0F};
+        std::array<float, 4> materialValuesSphereTextureAdd =
+            {0.0F, 0.0F, 0.0F, 0.0F};
+        std::array<float, 4> materialValuesToonTextureMultiply =
+            {1.0F, 1.0F, 1.0F, 1.0F};
+        std::array<float, 4> materialValuesToonTextureAdd =
+            {0.0F, 0.0F, 0.0F, 0.0F};
     };
 
     struct GeometryData {

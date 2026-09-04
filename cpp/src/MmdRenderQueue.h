@@ -41,6 +41,12 @@ struct MmdRenderQueueInput {
     std::array<float, 3> edgeColor = {0.0f, 0.0f, 0.0f};
     float edgeAlpha = 1.0f;
     float edgeSize = 0.0f;
+    std::array<float, 4> mainTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> mainTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> sphereTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> sphereTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 4> toonTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> toonTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
     bool edgeDrawing = false;
     int sphereMode = 0;
     int sharedToonIndex = -1;
