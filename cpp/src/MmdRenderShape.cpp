@@ -1229,7 +1229,13 @@ MSyntax MmdRenderWitnessCommand::newSyntax()
 
 MStatus MmdRenderWitnessCommand::doIt(const MArgList& args)
 {
-    MArgDatabase argData(newSyntax(), args);
+    MStatus parseStatus;
+    // Keep the syntax alive while the parser resolves flags after DAG lookup.
+    const MSyntax commandSyntax = newSyntax();
+    MArgDatabase argData(commandSyntax, args, &parseStatus);
+    if (!parseStatus) {
+        return parseStatus;
+    }
     if (!argData.isFlagSet("-node")) {
         MGlobal::displayError(
             "[mmdRenderWitness] Required flag missing: -node/-n <shape>");
