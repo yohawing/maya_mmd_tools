@@ -823,7 +823,7 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         """A rebuild at a non-zero weight must restore the immutable base alpha."""
         cmds = mock.Mock()
         cmds.objExists.return_value = True
-        cmds.attributeQuery.return_value = True
+        cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr != "materialValues"
         cmds.nodeType.side_effect = lambda node: (
             "mmdMaterialMorphEval" if node == "eval" else "standardSurface"
         )
@@ -870,6 +870,197 @@ class TestResolveShaderColorRoute(unittest.TestCase):
                     force=True,
                 ),
             ],
+        )
+
+    def test_native_material_values_route_and_restore_authored_base(self):
+        """All native value routes use evaluator leaves and reset from metadata."""
+        cmds = mock.Mock()
+        cmds.objExists.return_value = True
+        children = {}
+        for route in hardware_morph_routes("dx11Shader"):
+            for node, attr in (("nativeShape", route.uniform), ("eval", route.evaluator_output)):
+                if route.size > 1:
+                    axes = "XYZ" if node == "nativeShape" and route.size == 3 else "RGBA"
+                    children[(node, attr)] = [
+                        f"{attr}{axis}" for axis in axes[:route.size]
+                    ]
+            if route.evaluator_base and route.size > 1:
+                children[("eval", route.evaluator_base)] = [
+                    f"{route.evaluator_base}{axis}" for axis in "RGBA"[:route.size]
+                ]
+
+        def attribute_query(attr, node=None, **kwargs):
+            if kwargs.get("listChildren"):
+                return children.get((node, attr), [])
+            if kwargs.get("exists"):
+                return True
+            if kwargs.get("writable"):
+                return True
+            return False
+
+        authored = {
+            "shader.diffuse_color": [(0.2, 0.3, 0.4)],
+            "shader.specular_color": [(0.5, 0.6, 0.7)],
+            "shader.ambient_color": [(0.01, 0.02, 0.03)],
+            "shader.mmd_edge_color": [(0.4, 0.5, 0.6)],
+            "shader.mmd_diffuse_alpha": 0.25,
+            "shader.mmd_edge_alpha": 0.7,
+            "shader.shininess": 12.0,
+            "shader.mmd_edge_size": 1.8,
+        }
+
+        def get_attr(plug, **kwargs):
+            if kwargs.get("type"):
+                return "double3" if plug in {
+                    "shader.diffuse_color",
+                    "shader.specular_color",
+                    "shader.ambient_color",
+                    "shader.mmd_edge_color",
+                } else "double"
+            if kwargs.get("lock"):
+                return False
+            return authored.get(plug, 0.0)
+
+        cmds.attributeQuery.side_effect = attribute_query
+        cmds.nodeType.side_effect = lambda node: (
+            "mmdMaterialMorphEval" if node == "eval" else "standardSurface"
+        )
+        cmds.getAttr.side_effect = get_attr
+
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+            material_morph_runtime,
+            "_connect_if_needed",
+        ) as connect_mock:
+            bound = material_morph_runtime.bind_native_material_alpha(
+                "root",
+                "nativeShape",
+                shaders_by_index={1: "shader"},
+                evaluators_by_shader={"shader": "eval"},
+            )
+
+            connect_mock.reset_mock()
+            cmds.setAttr.reset_mock()
+            restored = material_morph_runtime.bind_native_material_alpha(
+                "root",
+                "nativeShape",
+                shaders_by_index={1: "shader"},
+                evaluators_by_shader={},
+            )
+
+        self.assertTrue(bound["success"])
+        self.assertTrue(restored["success"])
+        expected_uniforms = {
+            route.uniform
+            for route in hardware_morph_routes("dx11Shader")
+            if route.uniform != "DiffuseColorA"
+        }
+        self.assertEqual(set(bound["material_values"][0]["values"]), expected_uniforms)
+        self.assertEqual(bound["material_values"][0]["values"]["EdgeColorA"], (0.7,))
+        self.assertEqual(bound["material_values"][0]["values"]["EdgeSize"], (1.8,))
+        self.assertEqual(bound["material_values"][0]["values"]["MainTextureMultiply"], (1.0,) * 4)
+        self.assertEqual(bound["material_values"][0]["values"]["MainTextureAdd"], (0.0,) * 4)
+        self.assertEqual(
+            [call.args[1] for call in cmds.setAttr.call_args_list
+             if call.args and call.args[0] == "nativeShape.materialAlpha[1]"],
+            [0.25],
+        )
+        reset_values = {
+            call.args[0]: call.args[1]
+            for call in cmds.setAttr.call_args_list
+            if call.args and ".materialValues[1]." in call.args[0]
+        }
+        self.assertEqual(reset_values["nativeShape.materialValues[1].DiffuseColorRGBX"], 0.2)
+        self.assertEqual(reset_values["nativeShape.materialValues[1].EdgeColorA"], 0.7)
+        self.assertEqual(reset_values["nativeShape.materialValues[1].MainTextureMultiplyR"], 1.0)
+        self.assertEqual(reset_values["nativeShape.materialValues[1].MainTextureAddR"], 0.0)
+        self.assertEqual(len(reset_values), 39)
+
+    def test_native_material_values_skip_when_authored_metadata_is_missing(self):
+        """Missing legacy metadata must preserve native values and alpha routing."""
+        cmds = mock.Mock()
+        cmds.objExists.return_value = True
+        evaluator_attrs = set(material_morph_runtime._REQUIRED_EVAL_ATTRS)
+
+        def attribute_query(attr, node=None, **kwargs):
+            if kwargs.get("listChildren"):
+                return []
+            if kwargs.get("exists"):
+                return (
+                    node == "nativeShape"
+                    and attr in {"materialAlpha", "materialValues"}
+                ) or (
+                    node == "shader" and attr == "mmd_diffuse_alpha"
+                ) or (node == "eval" and attr in evaluator_attrs)
+            if kwargs.get("writable"):
+                return True
+            return False
+
+        def get_attr(plug, **kwargs):
+            if kwargs.get("type"):
+                return "float"
+            if kwargs.get("lock"):
+                return False
+            if plug == "shader.mmd_diffuse_alpha":
+                return 0.25
+            return 0.0
+
+        cmds.attributeQuery.side_effect = attribute_query
+        cmds.nodeType.side_effect = lambda node: (
+            "mmdMaterialMorphEval" if node == "eval" else "standardSurface"
+        )
+        cmds.getAttr.side_effect = get_attr
+
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+            material_morph_runtime,
+            "_connect_if_needed",
+        ) as connect_mock:
+            bound = material_morph_runtime.bind_native_material_alpha(
+                "root",
+                "nativeShape",
+                shaders_by_index={1: "shader"},
+                evaluators_by_shader={"shader": "eval"},
+            )
+            bound_set_attrs = list(cmds.setAttr.call_args_list)
+            bound_connections = list(connect_mock.call_args_list)
+            connect_mock.reset_mock()
+            cmds.setAttr.reset_mock()
+            restored = material_morph_runtime.bind_native_material_alpha(
+                "root",
+                "nativeShape",
+                shaders_by_index={1: "shader"},
+                evaluators_by_shader={},
+            )
+
+        self.assertTrue(bound["success"])
+        self.assertTrue(restored["success"])
+        self.assertEqual(bound["material_values"], [])
+        self.assertEqual(restored["material_values"], [])
+        reason = "material_values_skipped:authored_metadata_unavailable:1:shader"
+        self.assertEqual(bound["skipped"], [reason])
+        self.assertEqual(restored["skipped"], [reason])
+        self.assertEqual(
+            [call.args[0] for call in bound_set_attrs], ["eval.baseDiffuseA"]
+        )
+        self.assertEqual(
+            bound_connections,
+            [
+                mock.call(
+                    "eval.outputDiffuseAlpha",
+                    "nativeShape.materialAlpha[1]",
+                    force=True,
+                )
+            ],
+        )
+        connect_mock.assert_not_called()
+        self.assertEqual(
+            [call.args[0] for call in cmds.setAttr.call_args_list],
+            ["nativeShape.materialAlpha[1]"],
+        )
+        self.assertFalse(
+            any(
+                call.args and ".materialValues[1]." in call.args[0]
+                for call in bound_set_attrs + cmds.setAttr.call_args_list
+            )
         )
 
     def test_build_graph_keeps_evaluator_map_when_another_shader_creation_fails(self):
@@ -935,7 +1126,7 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         """After network deletion, the graph rebuild restores each native alpha base."""
         cmds = mock.Mock()
         cmds.objExists.return_value = True
-        cmds.attributeQuery.return_value = True
+        cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr != "materialValues"
         cmds.getAttr.side_effect = lambda plug, **kwargs: (
             1.0 if plug.endswith(".mmd_diffuse_alpha") else "double"
             if kwargs.get("type")

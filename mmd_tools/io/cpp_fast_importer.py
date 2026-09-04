@@ -33,8 +33,14 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_COLOR,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_PMX_SOFT_BODY_COUNT,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_SPECULAR_COLOR,
     GEOMETRY_GROUP,
     SCENE_ROOT_SUFFIX,
     SKELETON_GROUP,
@@ -43,12 +49,16 @@ from mmd_tools.core import cpp_plugin_locator, maya_mesh_utils, maya_name_utils
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
-from mmd_tools.converters.material_shader_parameters import ATTR_MMD_DIFFUSE_ALPHA
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_DIFFUSE_ALPHA,
+    ATTR_MMD_EDGE_ALPHA,
+)
 
 logger = get_logger(__name__)
 
 # Kept as a module attribute so tests can patch it without importing native code.
 MmdParsedModel = None
+_FAST_NATIVE_PMX_UNSET = object()
 
 
 class _FastSkinData:
@@ -196,7 +206,8 @@ def fast_import(
     include_morphs:
         If True, asks the C++ command to create PMX vertex morph
         blendShape targets. With VP2 ownership, the Python bridge also creates
-        material morph authoring nodes and native alpha bindings.
+        material morph authoring nodes and binds native material values and
+        alpha through the existing evaluator.
     vp2_ownership:
         If True, asks the C++ command to create the opt-in ``mmdRenderShape``
         alongside an ordinary source mesh and let the VP2 geometry override
@@ -326,11 +337,32 @@ def fast_import(
     transform_node = str(result[0])
     mesh_node = str(result[1]) if len(result) >= 2 else None
 
-    metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
-    transform_node, mesh_node = _organize_fast_dag(
-        transform_node, mesh_node, metadata, base_name, cmds, filepath=filepath
+    shared_native_kwargs = {}
+    if vp2_ownership and include_morphs:
+        try:
+            shared_native_pmx = parse_pmx_native(filepath)
+        except Exception as exc:
+            logger.debug("Fast shared native PMX parse unavailable: %s", exc)
+            shared_native_pmx = None
+        shared_native_kwargs = {"native_pmx": shared_native_pmx}
+
+    metadata = (
+        _apply_basic_materials(filepath, mesh_node, cmds, **shared_native_kwargs)
+        if mesh_node
+        else None
     )
-    _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
+    transform_node, mesh_node = _organize_fast_dag(
+        transform_node,
+        mesh_node,
+        metadata,
+        base_name,
+        cmds,
+        filepath=filepath,
+        **shared_native_kwargs,
+    )
+    _apply_fast_root_metadata(
+        filepath, transform_node, metadata, cmds, **shared_native_kwargs
+    )
     model_registry = None
     try:
         from mmd_tools.core.model_registry import ensure_model_registry
@@ -342,13 +374,19 @@ def fast_import(
         logger.warning("Fast import ownership registry unavailable for %s: %s", transform_node, exc)
     blend_shape_nodes = []
     if include_morphs and mesh_node:
-        blend_shape_nodes = _apply_fast_morph_metadata(filepath, mesh_node, cmds) or []
+        blend_shape_nodes = (
+            _apply_fast_morph_metadata(
+                filepath, mesh_node, cmds, **shared_native_kwargs
+            )
+            or []
+        )
     if vp2_ownership and include_morphs and mesh_node:
         runtime_result = _apply_fast_material_morph_runtime(
             filepath,
             transform_node,
             model_registry=model_registry,
             blend_shape_nodes=blend_shape_nodes,
+            **shared_native_kwargs,
         )
         if not isinstance(runtime_result, dict) or not runtime_result.get("success", False):
             _cleanup_fast_vp2_runtime(transform_node, runtime_result, model_registry, cmds)
@@ -377,6 +415,7 @@ def _organize_fast_dag(
     cmds_module,
     *,
     filepath: Optional[str] = None,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
 ) -> tuple[str, Optional[str]]:
     """Place a FastLoad mesh below the ordinary model/Geometry boundary.
 
@@ -396,7 +435,9 @@ def _organize_fast_dag(
     if not source_paths or not isinstance(source_paths[0], str):
         return source_transform, source_mesh
 
-    model_name = _fast_model_scene_name(metadata, base_name, filepath=filepath)
+    model_name = _fast_model_scene_name(
+        metadata, base_name, filepath=filepath, native_pmx=native_pmx
+    )
     root_group = cmds_module.group(
         empty=True,
         name=f"{model_name}{SCENE_ROOT_SUFFIX}",
@@ -469,7 +510,11 @@ def _cleanup_fast_vp2_runtime(
 
 
 def _fast_model_scene_name(
-    metadata: Optional[dict], fallback: str, *, filepath: Optional[str] = None
+    metadata: Optional[dict],
+    fallback: str,
+    *,
+    filepath: Optional[str] = None,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
 ) -> str:
     """Return the same safe PMX header name used by the Python root builder."""
     header = metadata.get("metadata") if isinstance(metadata, dict) else None
@@ -479,7 +524,11 @@ def _fast_model_scene_name(
             return maya_name_utils.sanitize_text(raw_name)
     if filepath:
         try:
-            pmx = parse_pmx_native(filepath)
+            pmx = (
+                parse_pmx_native(filepath)
+                if native_pmx is _FAST_NATIVE_PMX_UNSET
+                else native_pmx
+            )
             header = getattr(pmx, "header", None)
             raw_name = (
                 getattr(header, "model_name_english", "")
@@ -492,7 +541,13 @@ def _fast_model_scene_name(
     return maya_name_utils.sanitize_text(fallback)
 
 
-def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Optional[dict]:
+def _apply_basic_materials(
+    filepath: str,
+    mesh_node: str,
+    cmds_module,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> Optional[dict]:
     """Assign materials and return the parsed metadata for root attributes."""
     metadata = None
     material_groups = None
@@ -514,7 +569,9 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Option
         logger.debug("Parsed-model material metadata unavailable: %s", exc)
 
     if not metadata or not material_groups:
-        native_material_data = _load_native_fast_material_data(filepath)
+        native_material_data = _load_native_fast_material_data(
+            filepath, native_pmx=native_pmx
+        )
         if native_material_data is not None:
             metadata, material_groups = native_material_data
 
@@ -546,10 +603,18 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Option
         return None
 
 
-def _load_native_fast_material_data(filepath: str):
+def _load_native_fast_material_data(
+    filepath: str,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+):
     """Build fast material metadata from the current native PMX parser ABI."""
     try:
-        pmx = parse_pmx_native(filepath)
+        pmx = (
+            parse_pmx_native(filepath)
+            if native_pmx is _FAST_NATIVE_PMX_UNSET
+            else native_pmx
+        )
         if pmx is None:
             return None
         header = getattr(pmx, "header", None)
@@ -569,6 +634,18 @@ def _load_native_fast_material_data(filepath: str):
                     "englishName": str(getattr(native_material, "name_english", "") or ""),
                     "diffuse": list(diffuse[:4]),
                     "specular": list(specular[:3]),
+                    "ambient": list(
+                        tuple(getattr(native_material, "ambient", (0.0, 0.0, 0.0)))[:3]
+                    ),
+                    "specularPower": float(
+                        getattr(native_material, "specular_coefficient", 0.0) or 0.0
+                    ),
+                    "edgeColor": list(
+                        tuple(getattr(native_material, "edge_color", (0.0, 0.0, 0.0, 1.0)))[:4]
+                    ),
+                    "edgeSize": float(
+                        getattr(native_material, "edge_size", 0.0) or 0.0
+                    ),
                 }
             )
             face_count = max(0, int(getattr(native_material, "face_count", 0) or 0))
@@ -606,7 +683,13 @@ def _find_fast_blend_shapes(mesh_node: str, cmds_module) -> list[str]:
     return blend_shapes
 
 
-def _apply_fast_morph_metadata(filepath: str, mesh_node: str, cmds_module) -> list[str]:
+def _apply_fast_morph_metadata(
+    filepath: str,
+    mesh_node: str,
+    cmds_module,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> list[str]:
     """Replace C++ vertex-morph aliases and persist their raw PMX mapping.
 
     ``mmdFastLoad`` intentionally only has the C++ byte-level sanitizer.  The
@@ -619,7 +702,7 @@ def _apply_fast_morph_metadata(filepath: str, mesh_node: str, cmds_module) -> li
     """
     blend_shapes = _find_fast_blend_shapes(mesh_node, cmds_module)
     try:
-        source = _load_fast_morph_source(filepath)
+        source = _load_fast_morph_source(filepath, native_pmx=native_pmx)
         if source is None:
             return blend_shapes
 
@@ -690,8 +773,9 @@ def _apply_fast_material_morph_runtime(
     *,
     model_registry: Optional[str] = None,
     blend_shape_nodes=None,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
 ) -> dict:
-    """Build material morph metadata/controller and bind native alpha only."""
+    """Build material morph metadata/controller and bind native values."""
     result = {
         "success": True,
         "material_morph_nodes": [],
@@ -702,7 +786,11 @@ def _apply_fast_material_morph_runtime(
     }
 
     try:
-        pmx = parse_pmx_native(filepath)
+        pmx = (
+            parse_pmx_native(filepath)
+            if native_pmx is _FAST_NATIVE_PMX_UNSET
+            else native_pmx
+        )
         if pmx is None:
             result["success"] = False
             result["skipped"].append("native_pmx_unavailable")
@@ -801,7 +889,11 @@ def _apply_fast_material_morph_runtime(
         return result
 
 
-def _load_fast_morph_source(filepath: str) -> Optional[dict]:
+def _load_fast_morph_source(
+    filepath: str,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> Optional[dict]:
     """Read parsed morph metadata and optional runtime vertex-morph spans."""
     parsed = None
     try:
@@ -836,13 +928,21 @@ def _load_fast_morph_source(filepath: str) -> Optional[dict]:
         else:
             logger.debug("Parsed-model morph metadata unavailable; trying native PMX fallback")
 
-    return _load_fast_morph_source_native(filepath)
+    return _load_fast_morph_source_native(filepath, native_pmx=native_pmx)
 
 
-def _load_fast_morph_source_native(filepath: str) -> Optional[dict]:
+def _load_fast_morph_source_native(
+    filepath: str,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> Optional[dict]:
     """Convert the native PMX object into the fast morph source schema."""
     try:
-        pmx = parse_pmx_native(filepath)
+        pmx = (
+            parse_pmx_native(filepath)
+            if native_pmx is _FAST_NATIVE_PMX_UNSET
+            else native_pmx
+        )
         if pmx is None:
             return None
         vertices = getattr(pmx, "vertices", None)
@@ -1016,13 +1116,19 @@ def _apply_fast_root_metadata(
     root_node: str,
     metadata: Optional[dict],
     cmds_module,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
 ) -> None:
     """Preserve PMX metadata on fast-import roots."""
     header = metadata.get("metadata") if isinstance(metadata, dict) else None
     soft_body_count = _fast_soft_body_count(metadata)
     if not isinstance(header, dict):
         try:
-            pmx = parse_pmx_native(filepath)
+            pmx = (
+                parse_pmx_native(filepath)
+                if native_pmx is _FAST_NATIVE_PMX_UNSET
+                else native_pmx
+            )
             header = getattr(pmx, "header", None)
             if soft_body_count is None and pmx is not None:
                 soft_body_count = len(getattr(pmx, "soft_bodies", []) or [])
@@ -1102,11 +1208,31 @@ def _create_standard_material(
         if len(specular) >= 3:
             cmds_module.setAttr(f"{shader}.specularColor", float(specular[0]), float(specular[1]), float(specular[2]), type="double3")
 
+        ambient = material.get("ambient") or [0.0, 0.0, 0.0]
+        shininess = material.get(
+            "specularPower",
+            material.get("specular_coefficient", material.get("shininess", 0.0)),
+        )
+        edge_color = material.get("edgeColor", material.get("edge_color")) or [
+            0.0, 0.0, 0.0, 1.0
+        ]
+        edge_alpha = float(edge_color[3]) if len(edge_color) > 3 else float(
+            material.get("edgeAlpha", material.get("edge_alpha", 1.0))
+        )
+        edge_size = material.get("edgeSize", material.get("edge_size", 0.0))
+
         _set_fast_string_attr(cmds_module, shader, ATTR_MMD_MATERIAL_NAME, material.get("name") or "")
         _set_fast_string_attr(cmds_module, shader, ATTR_MMD_MATERIAL_NAME_EN, material.get("englishName") or "")
         _set_fast_long_attr(cmds_module, shader, ATTR_MMD_MATERIAL, 1)
         _set_fast_long_attr(cmds_module, shader, ATTR_MMD_MATERIAL_INDEX, material_index)
         _set_fast_double_attr(cmds_module, shader, ATTR_MMD_DIFFUSE_ALPHA, alpha)
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_DIFFUSE_COLOR, diffuse[:3])
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_SPECULAR_COLOR, specular[:3])
+        _set_fast_double_attr(cmds_module, shader, ATTR_MMD_SHININESS, shininess)
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_AMBIENT_COLOR, ambient[:3])
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_EDGE_COLOR, edge_color[:3])
+        _set_fast_double_attr(cmds_module, shader, ATTR_MMD_EDGE_ALPHA, edge_alpha)
+        _set_fast_double_attr(cmds_module, shader, ATTR_MMD_EDGE_SIZE, edge_size)
 
         return str(shader)
     except Exception as exc:
@@ -1622,3 +1748,22 @@ def _set_fast_double_attr(cmds_module, node: str, attr: str, value: float) -> No
         cmds_module.setAttr(f"{node}.{attr}", float(value))
     except Exception as exc:
         logger.debug("Failed to preserve fast-path floating metadata %s.%s: %s", node, attr, exc)
+
+
+def _set_fast_double3_attr(cmds_module, node: str, attr: str, value) -> None:
+    """Best-effort RGB metadata write for fast-import material authorship."""
+    try:
+        if not cmds_module.attributeQuery(attr, node=node, exists=True):
+            cmds_module.addAttr(node, longName=attr, attributeType="double3")
+            for axis in "XYZ":
+                cmds_module.addAttr(
+                    node,
+                    longName=f"{attr}{axis}",
+                    attributeType="double",
+                    parent=attr,
+                )
+        components = tuple(float(component) for component in value[:3])
+        if len(components) == 3:
+            cmds_module.setAttr(f"{node}.{attr}", *components, type="double3")
+    except Exception as exc:
+        logger.debug("Failed to preserve fast-path RGB metadata %s.%s: %s", node, attr, exc)

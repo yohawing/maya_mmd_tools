@@ -18,7 +18,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from tests.common.maya_stub import install_maya_stub
 
@@ -41,6 +41,7 @@ from mmd_tools.io.cpp_fast_importer import (
     _fast_model_scene_name,
     _organize_fast_dag,
     _sanitize_node_name,
+    _set_fast_double3_attr,
     fast_import,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
@@ -924,6 +925,10 @@ class TestFastSkeletonSkin(unittest.TestCase):
                 name_english="Mat",
                 diffuse=(0.2, 0.3, 0.4, 0.35),
                 specular=(0.1, 0.2, 0.3),
+                ambient=(0.01, 0.02, 0.03),
+                specular_coefficient=12.0,
+                edge_color=(0.4, 0.5, 0.6, 0.7),
+                edge_size=1.8,
                 face_count=3,
             )],
             soft_bodies=[object(), object()],
@@ -937,6 +942,10 @@ class TestFastSkeletonSkin(unittest.TestCase):
         self.assertEqual(metadata["metadata"]["englishName"], "Model EN")
         self.assertEqual(metadata["metadata"]["counts"]["softBodies"], 2)
         self.assertEqual(metadata["materials"][0]["diffuse"][3], 0.35)
+        self.assertEqual(metadata["materials"][0]["ambient"], [0.01, 0.02, 0.03])
+        self.assertEqual(metadata["materials"][0]["specularPower"], 12.0)
+        self.assertEqual(metadata["materials"][0]["edgeColor"], [0.4, 0.5, 0.6, 0.7])
+        self.assertEqual(metadata["materials"][0]["edgeSize"], 1.8)
         cmds.shadingNode.assert_called_once_with(
             "standardSurface",
             asShader=True,
@@ -1248,7 +1257,16 @@ class TestFastMaterialMorphRuntime(unittest.TestCase):
         cmds.shadingNode.return_value = "material_fast"
 
         _create_standard_material(
-            {"name": "mat", "englishName": "mat", "diffuse": [0.2, 0.3, 0.4, 0.35]},
+            {
+                "name": "mat",
+                "englishName": "mat",
+                "diffuse": [0.2, 0.3, 0.4, 0.35],
+                "specular": [0.5, 0.6, 0.7],
+                "specularPower": 12.0,
+                "ambient": [0.01, 0.02, 0.03],
+                "edgeColor": [0.4, 0.5, 0.6, 0.7],
+                "edgeSize": 1.8,
+            },
             7,
             cmds,
             set(),
@@ -1262,6 +1280,45 @@ class TestFastMaterialMorphRuntime(unittest.TestCase):
         self.assertEqual(writes["material_fast.mmd_material"], 1)
         self.assertEqual(writes["material_fast.mmd_material_index"], 7)
         self.assertEqual(writes["material_fast.mmd_diffuse_alpha"], 0.35)
+        self.assertEqual(writes["material_fast.shininess"], 12.0)
+        self.assertEqual(writes["material_fast.mmd_edge_alpha"], 0.7)
+        self.assertEqual(writes["material_fast.mmd_edge_size"], 1.8)
+
+    def test_fast_double3_metadata_creates_numeric_children(self):
+        """RGB authored metadata is a valid Maya double3 compound."""
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+
+        _set_fast_double3_attr(cmds, "material_fast", "diffuse_color", (0.95, 0.82, 0.28))
+
+        cmds.addAttr.assert_has_calls([
+            call("material_fast", longName="diffuse_color", attributeType="double3"),
+            call(
+                "material_fast",
+                longName="diffuse_colorX",
+                attributeType="double",
+                parent="diffuse_color",
+            ),
+            call(
+                "material_fast",
+                longName="diffuse_colorY",
+                attributeType="double",
+                parent="diffuse_color",
+            ),
+            call(
+                "material_fast",
+                longName="diffuse_colorZ",
+                attributeType="double",
+                parent="diffuse_color",
+            ),
+        ])
+        cmds.setAttr.assert_called_once_with(
+            "material_fast.diffuse_color",
+            0.95,
+            0.82,
+            0.28,
+            type="double3",
+        )
 
 
 class TestFastMorphMetadata(unittest.TestCase):
@@ -1741,6 +1798,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         material_runtime.return_value = {"success": True}
         cmds_mod = sys.modules["maya.cmds"]
         cmds_mod.nodeType = MagicMock(return_value="mmdRenderShape")
+        shared_pmx = SimpleNamespace()
         with patch.object(Path, "exists", return_value=True), patch.object(
             cmds_mod, "loadPlugin", create=True
         ), patch.object(
@@ -1748,7 +1806,9 @@ class TestFastMorphMetadata(unittest.TestCase):
             "mmdFastLoad",
             create=True,
             return_value=["root", "sourceMesh", "renderShape"],
-        ):
+        ), patch.object(
+            cpp_fast_importer, "parse_pmx_native", return_value=shared_pmx
+        ) as parse_native:
             result = fast_import(
                 "model.pmx",
                 base_name="demo",
@@ -1758,15 +1818,19 @@ class TestFastMorphMetadata(unittest.TestCase):
             )
 
         self.assertEqual(result, "root")
-        basic_materials.assert_called_once_with("model.pmx", "sourceMesh", cmds_mod)
+        basic_materials.assert_called_once()
+        self.assertIs(basic_materials.call_args.kwargs["native_pmx"], shared_pmx)
         root_metadata.assert_called_once()
-        morph_metadata.assert_called_once_with("model.pmx", "sourceMesh", cmds_mod)
+        morph_metadata.assert_called_once()
+        self.assertIs(morph_metadata.call_args.kwargs["native_pmx"], shared_pmx)
         material_runtime.assert_called_once()
         self.assertEqual(material_runtime.call_args.args[:2], ("model.pmx", "root"))
+        self.assertIs(material_runtime.call_args.kwargs["native_pmx"], shared_pmx)
         self.assertEqual(
             material_runtime.call_args.kwargs["blend_shape_nodes"],
             ["sourceBlendShape"],
         )
+        self.assertEqual(parse_native.call_count, 1)
         skeleton_skin.assert_called_once_with(
             "model.pmx",
             "sourceMesh",
