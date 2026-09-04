@@ -263,6 +263,7 @@ public:
     {
         drawCount_ = 0U;
         pmxOrder_.clear();
+        outlineOrder_.clear();
         lastError_.clear();
     }
 
@@ -270,6 +271,7 @@ public:
     {
         drawCount_ = 0U;
         pmxOrder_.clear();
+        outlineOrder_.clear();
         lastError_.clear();
 
 #ifndef _WIN32
@@ -290,7 +292,7 @@ public:
         }
 
         for (const DrawPlan& plan : plans) {
-            MShaderInstance* shader = shaderFor(plan.material);
+            MShaderInstance* shader = shaderFor(plan.material, plan.outline);
             if (!shader || shader->bind(drawContext) != MStatus::kSuccess) {
                 return fail("ordered shader bind failed");
             }
@@ -314,6 +316,7 @@ public:
                                   0);
             ++drawCount_;
             pmxOrder_.push_back(plan.order);
+            outlineOrder_.push_back(plan.outline);
             resetInputAssembler();
             if (shader->unbind(drawContext) != MStatus::kSuccess) {
                 return fail("ordered shader unbind failed");
@@ -343,7 +346,9 @@ public:
                    << ",\"submeshIndex\":"
                    << pmxOrder_[index].submeshIndex
                    << ",\"pass\":\""
-                   << mmd::mmdDrawPassName(pmxOrder_[index].pass) << "\"}";
+                   << mmd::mmdDrawPassName(pmxOrder_[index].pass)
+                   << "\",\"outline\":"
+                   << (outlineOrder_[index] ? "true" : "false") << "}";
         }
         result << "]}";
         return result.str();
@@ -353,6 +358,7 @@ private:
     struct DrawPlan {
         mmd::MmdRenderQueueInput material;
         mmd::MmdRenderQueueEntry order;
+        bool outline = false;
         MMatrix world = MMatrix::identity;
         unsigned int firstIndex = 0U;
         unsigned int indexCount = 0U;
@@ -411,8 +417,13 @@ private:
         }
     };
 
-    const char* techniqueFor(const mmd::MmdRenderQueueInput& material) const
+    const char* techniqueFor(const mmd::MmdRenderQueueInput& material,
+                             bool outline) const
     {
+        if (outline) {
+            return material.doubleSided ? "MMDNativeOutlineTranslucentDoubleSided"
+                                        : "MMDNativeOutlineTranslucent";
+        }
         return material.doubleSided ? "MMDNativeTranslucentDoubleSided"
                                     : "MMDNativeTranslucent";
     }
@@ -543,6 +554,13 @@ private:
                     indices.push_back(vertexBase +
                                      static_cast<unsigned int>(sourceIndex));
                 }
+                const bool outline = queueGeometry.material.edgeDrawing &&
+                                     queueGeometry.material.edgeSize > 0.0F &&
+                                     queueGeometry.material.edgeAlpha > 0.0F;
+                if (outline) {
+                    plans.push_back(plan);
+                    plan.outline = true;
+                }
                 plans.push_back(std::move(plan));
             }
         }
@@ -663,10 +681,10 @@ private:
         return true;
     }
 
-    MShaderInstance* shaderFor(
-        const mmd::MmdRenderQueueInput& material)
+    MShaderInstance* shaderFor(const mmd::MmdRenderQueueInput& material,
+                               bool outline)
     {
-        const char* technique = techniqueFor(material);
+        const char* technique = techniqueFor(material, outline);
         const std::string key(technique);
         const auto found = shaders_.find(key);
         if (found != shaders_.end()) {
@@ -802,7 +820,7 @@ private:
                    const MHWRender::MDrawContext& drawContext)
     {
         for (const DrawPlan& plan : plans) {
-            MShaderInstance* shader = shaderFor(plan.material);
+            MShaderInstance* shader = shaderFor(plan.material, plan.outline);
             if (!shader) {
                 if (lastError_.empty()) {
                     fail("ordered preflight shader is unavailable");
@@ -917,6 +935,7 @@ private:
     unsigned int drawCount_ = 0U;
     std::string lastError_;
     std::vector<mmd::MmdRenderQueueEntry> pmxOrder_;
+    std::vector<bool> outlineOrder_;
 };
 
 MmdOrderedRenderOverride::MmdOrderedRenderOverride()

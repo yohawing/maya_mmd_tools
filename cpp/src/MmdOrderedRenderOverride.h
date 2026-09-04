@@ -47,4 +47,3 @@ public:
     MStatus doIt(const MArgList& args) override;
     bool isUndoable() const override;
 };
-
