@@ -25,6 +25,7 @@ def _fake_vmd_data(**overrides):
         "morph_frames": [],
         "camera_frames": [],
         "light_frames": [],
+        "shadow_frames": [],
     }
     defaults.update(overrides)
     return type("FakeVmdData", (), defaults)()
@@ -135,6 +136,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
             morph_frames=[frame],
             camera_frames=[frame],
             light_frames=[frame],
+            shadow_frames=[frame],
         )
 
         with ExitStack() as stack:
@@ -147,6 +149,9 @@ class TestVmdConvertDispatch(unittest.TestCase):
                 patch.object(self.converter, "_convert_camera_animation", return_value=True)
             )
             convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
+            convert_shadow = stack.enter_context(
+                patch.object(self.converter, "_convert_self_shadow_animation", return_value=True)
+            )
             result = self.converter.convert(
                 vmd_data, vmd_bytes=b"vmd", pmx_bytes=b"pmx", target_model="model_root"
             )
@@ -157,6 +162,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
         convert_morph.assert_not_called()
         convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=None)
         convert_light.assert_called_once_with(vmd_data.light_frames, vmd_bytes=None)
+        convert_shadow.assert_called_once_with(vmd_data.shadow_frames)
 
     def test_runtime_bake_failure_records_profile_warning_before_legacy_fallback(self):
         """Runtime bake failure is visible to the action boundary via profile warnings."""
@@ -308,7 +314,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
     def test_convert_clears_camera_and_light_before_scene_motion_conversion(self):
         """Camera/light keys are cleared immediately before each channel conversion."""
         frame = type("FrameStub", (), {"frame_number": 1})()
-        vmd_data = _fake_vmd_data(camera_frames=[frame], light_frames=[frame])
+        vmd_data = _fake_vmd_data(camera_frames=[frame], light_frames=[frame], shadow_frames=[frame])
         order = []
 
         with ExitStack() as stack:
@@ -333,10 +339,69 @@ class TestVmdConvertDispatch(unittest.TestCase):
                     side_effect=lambda *_args, **_kwargs: order.append("convert_light") or True,
                 )
             )
+            stack.enter_context(
+                patch.object(
+                    self.converter,
+                    "_convert_self_shadow_animation",
+                    side_effect=lambda *_args, **_kwargs: order.append("convert_shadow") or True,
+                )
+            )
             result = self.converter.convert(vmd_data, scene_animation_only=True)
 
         self.assertTrue(result)
-        self.assertEqual(order, ["clear_camera", "convert_camera", "clear_light", "convert_light"])
+        self.assertEqual(order, ["clear_camera", "convert_camera", "clear_light", "convert_light", "convert_shadow"])
+
+    def test_scene_only_shadow_motion_clears_only_shadow_state(self):
+        """Shadow-only scene import preserves the light conversion path."""
+        vmd_data = _fake_vmd_data(shadow_frames=[object()])
+
+        with ExitStack() as stack:
+            clear_light = stack.enter_context(patch.object(self.converter, "_clear_existing_light_motion"))
+            convert_light = stack.enter_context(
+                patch.object(self.converter, "_convert_light_animation", return_value=True)
+            )
+            clear_shadow = stack.enter_context(patch.object(self.converter, "_clear_existing_shadow_motion"))
+            convert_shadow = stack.enter_context(
+                patch.object(self.converter, "_convert_self_shadow_animation", return_value=True)
+            )
+            result = self.converter.convert(vmd_data, scene_animation_only=True)
+
+        self.assertTrue(result)
+        clear_light.assert_not_called()
+        convert_light.assert_not_called()
+        clear_shadow.assert_called_once()
+        convert_shadow.assert_called_once_with(vmd_data.shadow_frames)
+
+    def test_shadow_conversion_failure_fails_scene_import(self):
+        """A self-shadow keying failure is not reported as a successful import."""
+        vmd_data = _fake_vmd_data(shadow_frames=[object()])
+
+        with patch.object(self.converter, "_convert_self_shadow_animation", return_value=False) as convert_shadow:
+            result = self.converter.convert(vmd_data, scene_animation_only=True)
+
+        self.assertFalse(result)
+        convert_shadow.assert_called_once_with(vmd_data.shadow_frames)
+
+    def test_shadow_conversion_failure_fails_normal_import(self):
+        """Normal model import also propagates a self-shadow keying failure."""
+        frame = type("FrameStub", (), {"frame_number": 1})()
+        vmd_data = _fake_vmd_data(shadow_frames=[frame])
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=True))
+            stack.enter_context(patch.object(self.converter, "_convert_using_mmd_runtime", return_value=True))
+            convert_shadow = stack.enter_context(
+                patch.object(self.converter, "_convert_self_shadow_animation", return_value=False)
+            )
+            result = self.converter.convert(
+                vmd_data,
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                target_model="model_root",
+            )
+
+        self.assertFalse(result)
+        convert_shadow.assert_called_once_with(vmd_data.shadow_frames)
 
     def test_convert_clear_existing_motion_does_not_clear_model_keys_for_camera_only_vmd(self):
         """Camera-only VMD does not run model motion clearing."""
@@ -421,7 +486,11 @@ class TestVmdConvertDispatch(unittest.TestCase):
 
     def test_camera_and_light_import_flags_skip_channels(self):
         """Camera/light import flags prevent channel clear and conversion."""
-        vmd_data = _fake_vmd_data(camera_frames=[object()], light_frames=[object()])
+        vmd_data = _fake_vmd_data(
+            camera_frames=[object()],
+            light_frames=[object()],
+            shadow_frames=[object()],
+        )
         self.converter.import_camera_animation = False
         self.converter.import_light_animation = False
 
@@ -432,6 +501,10 @@ class TestVmdConvertDispatch(unittest.TestCase):
             )
             clear_light = stack.enter_context(patch.object(self.converter, "_clear_existing_light_motion"))
             convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
+            clear_shadow = stack.enter_context(patch.object(self.converter, "_clear_existing_shadow_motion"))
+            convert_shadow = stack.enter_context(
+                patch.object(self.converter, "_convert_self_shadow_animation", return_value=True)
+            )
             result = self.converter.convert(vmd_data, scene_animation_only=True)
 
         self.assertTrue(result)
@@ -439,6 +512,8 @@ class TestVmdConvertDispatch(unittest.TestCase):
         convert_camera.assert_not_called()
         clear_light.assert_not_called()
         convert_light.assert_not_called()
+        clear_shadow.assert_not_called()
+        convert_shadow.assert_not_called()
 
     def test_internal_routing_details_are_debug_not_info(self):
         """Detected-kind and legacy morph route stay DEBUG; outer start/completion stay INFO."""

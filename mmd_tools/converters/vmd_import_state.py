@@ -21,6 +21,10 @@ from ..core.mmd_control_rig_motion import (
     control_rig_edit_ik_enabled_plugs_for_model,
     control_rig_edit_routes_for_joints,
 )
+from .light_converter import (
+    MMD_SELF_SHADOW_DISTANCE_ATTR,
+    MMD_SELF_SHADOW_MODE_ATTR,
+)
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
 _CLEARABLE_PHYSICAL_ROUTE_TYPES = frozenset(
@@ -711,6 +715,7 @@ _CAMERA_SHAPE_ATTRS = ("focalLength", "orthographicWidth", "orthographic")
 _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("colorR", "colorG", "colorB")
 _LIGHT_MMD_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
+_LIGHT_SELF_SHADOW_ATTRS = (MMD_SELF_SHADOW_MODE_ATTR, MMD_SELF_SHADOW_DISTANCE_ATTR)
 
 
 def clear_existing_camera_motion(logger: Any = None) -> int:
@@ -773,6 +778,7 @@ def clear_existing_light_motion(logger: Any = None) -> int:
     cleared = 0
     for light_transform in lights:
         cleared += cut_keyable_attrs(light_transform, _LIGHT_ROTATE_ATTRS)
+        cleared += cut_keyable_attrs(light_transform, _LIGHT_SELF_SHADOW_ATTRS)
 
         if cmds.attributeQuery("mmd_light_color", node=light_transform, exists=True):
             cleared += cut_keyable_attrs(light_transform, _LIGHT_MMD_COLOR_ATTRS)
@@ -782,4 +788,25 @@ def clear_existing_light_motion(logger: Any = None) -> int:
 
     if logger:
         logger.info("Cleared existing light motion: %d attribute channels from %d light(s)", cleared, len(lights))
+    return cleared
+
+
+def clear_existing_shadow_motion(logger: Any = None) -> int:
+    """Clear only VMD self-shadow keys, preserving light direction and color."""
+    lights = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True) or []
+    if not lights:
+        if logger:
+            logger.debug("No MMD light found; nothing to clear")
+        return 0
+
+    cleared = sum(
+        cut_keyable_attrs(light_transform, _LIGHT_SELF_SHADOW_ATTRS)
+        for light_transform in lights
+    )
+    if logger:
+        logger.info(
+            "Cleared self-shadow motion: %d attribute channels from %d light(s)",
+            cleared,
+            len(lights),
+        )
     return cleared

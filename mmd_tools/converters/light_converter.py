@@ -41,6 +41,12 @@ _MMD_DEFAULT_DIRECTION = (0.5, -1.0, 1.0)
 # authored or animated color on an existing controller.
 _MMD_DEFAULT_LIGHT_COLOR = 154.0 / 255.0
 
+# VMD self-shadow state is scene-wide in MMD, so keep it on the existing
+# tagged light controller rather than creating another settings node.
+MMD_SELF_SHADOW_MODE_ATTR = "mmd_self_shadow_mode"
+MMD_SELF_SHADOW_DISTANCE_ATTR = "mmd_self_shadow_distance"
+_MMD_SELF_SHADOW_MODE_ENUM = "OFF:MODE1:MODE2"
+
 
 def _direction_to_euler(dx: float, dy: float, dz: float):
     """Maya ライトのローカル -Z を (dx,dy,dz) へ向ける (rx, ry, 0) を degrees で返す。
@@ -70,6 +76,35 @@ def find_mmd_light():
     return existing[0] if existing else None
 
 
+def ensure_mmd_light_shadow_attrs(light_transform: str) -> str:
+    """Ensure the existing tagged light exposes VMD self-shadow channels."""
+    if not light_transform or not cmds.objExists(light_transform):
+        return light_transform
+
+    mode_plug = f"{light_transform}.{MMD_SELF_SHADOW_MODE_ATTR}"
+    if not cmds.attributeQuery(MMD_SELF_SHADOW_MODE_ATTR, node=light_transform, exists=True):
+        cmds.addAttr(
+            light_transform,
+            longName=MMD_SELF_SHADOW_MODE_ATTR,
+            attributeType="enum",
+            enumName=_MMD_SELF_SHADOW_MODE_ENUM,
+            keyable=True,
+        )
+        cmds.setAttr(mode_plug, 0)
+
+    distance_plug = f"{light_transform}.{MMD_SELF_SHADOW_DISTANCE_ATTR}"
+    if not cmds.attributeQuery(MMD_SELF_SHADOW_DISTANCE_ATTR, node=light_transform, exists=True):
+        cmds.addAttr(
+            light_transform,
+            longName=MMD_SELF_SHADOW_DISTANCE_ATTR,
+            attributeType="double",
+            keyable=True,
+        )
+        cmds.setAttr(distance_plug, 0.0)
+
+    return light_transform
+
+
 def _add_arrow_shape(parent: str, length: float = 8.0) -> None:
     """-Z を指す矢印カーブを作り、シェイプを *parent* 配下へ移す。"""
     h = length
@@ -89,6 +124,7 @@ def create_mmd_light_controller() -> str:
     """MMD ライトコントローラを get-or-create し、transform 名を返す。"""
     existing = find_mmd_light()
     if existing:
+        ensure_mmd_light_shadow_attrs(existing)
         logger.debug("Reusing existing MMD light controller: %s", existing)
         return existing
 
@@ -119,6 +155,7 @@ def create_mmd_light_controller() -> str:
             _MMD_DEFAULT_LIGHT_COLOR,
             type="float3",
         )
+        ensure_mmd_light_shadow_attrs(ctrl)
         try:
             cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{light_shape}.color", force=True)
         except Exception:

@@ -29,6 +29,7 @@ def get_animation_frame_range(vmd_data: Any) -> tuple:
         getattr(vmd_data, "morph_frames", []),
         getattr(vmd_data, "camera_frames", []),
         getattr(vmd_data, "light_frames", []),
+        getattr(vmd_data, "shadow_frames", []),
     ]:
         for frame_data in frame_list:
             if hasattr(frame_data, "frame_number"):
