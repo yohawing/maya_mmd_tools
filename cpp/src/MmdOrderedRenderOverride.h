@@ -30,6 +30,7 @@ public:
 
 private:
     class OrderedRenderOperation;
+    class OpaqueRenderOperation;
 
     void requestFallback(const std::string& reason);
     void clearFallback();

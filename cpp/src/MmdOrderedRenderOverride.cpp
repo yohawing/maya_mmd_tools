@@ -51,7 +51,9 @@ namespace {
 
 constexpr const char* kOverrideName = "mmdOrdered";
 constexpr const char* kOperationName = "mmdOrderedOperation";
+constexpr const char* kOpaqueOperationName = "mmdOrderedOpaqueOperation";
 constexpr const char* kOpaqueSceneName = "mmdOrderedOpaqueScene";
+constexpr const char* kPreSceneUIName = "mmdOrderedPreSceneUI";
 constexpr const char* kNonMmdTransparentSceneName =
     "mmdOrderedNonMmdTransparentScene";
 constexpr const char* kPostSceneUIName = "mmdOrderedPostSceneUI";
@@ -251,6 +253,7 @@ public:
         , records_(std::move(records))
         , shaderPath_(shaderPath)
     {
+        resetFrame();
     }
 
     ~OrderedRenderOperation() override { releaseResources(); }
@@ -258,6 +261,7 @@ public:
     void setRecords(std::vector<ShapeRecord> records)
     {
         records_ = std::move(records);
+        resetFrame();
     }
 
     void resetWitness()
@@ -268,32 +272,37 @@ public:
         lastError_.clear();
     }
 
+    void resetFrame()
+    {
+        framePlans_.clear();
+        framePrepared_ = false;
+        framePreparationFailed_ = false;
+        resetWitness();
+    }
+
     MStatus execute(const MHWRender::MDrawContext& drawContext) override
     {
-        drawCount_ = 0U;
-        pmxOrder_.clear();
-        outlineOrder_.clear();
-        lastError_.clear();
+        return executePass(drawContext, false);
+    }
 
+    MStatus executePass(const MHWRender::MDrawContext& drawContext,
+                        bool opaquePhase)
+    {
 #ifndef _WIN32
         return fail("MMD ordered render requires DirectX 11");
 #else
-        std::vector<DrawPlan> plans;
-        std::vector<NativeVertex> vertices;
-        std::vector<unsigned int> indices;
-        if (!collectFrame(plans, vertices, indices)) {
-            return MStatus::kFailure;
-        }
-        if (plans.empty()) {
-            return MStatus::kSuccess;
-        }
-        if (!ensureResources(drawContext) ||
-            !uploadFrame(vertices, indices) || !preflight(plans, drawContext)) {
+        if (!prepareFrame(drawContext)) {
             return MStatus::kFailure;
         }
 
-        for (const DrawPlan& plan : plans) {
-            MShaderInstance* shader = shaderFor(plan.material, plan.outline);
+        for (const DrawPlan& plan : framePlans_) {
+            const bool planOpaque =
+                plan.order.pass != mmd::MmdDrawPass::Transparent;
+            if (planOpaque != opaquePhase) {
+                continue;
+            }
+            MShaderInstance* shader =
+                shaderFor(plan.material, plan.order.pass, plan.outline);
             if (!shader || shader->bind(drawContext) != MStatus::kSuccess) {
                 return fail("ordered shader bind failed");
             }
@@ -419,14 +428,24 @@ private:
     };
 
     const char* techniqueFor(const mmd::MmdRenderQueueInput& material,
+                             mmd::MmdDrawPass pass,
                              bool outline) const
     {
         if (outline) {
-            return material.doubleSided ? "MMDNativeOutlineTranslucentDoubleSided"
-                                        : "MMDNativeOutlineTranslucent";
+            if (pass == mmd::MmdDrawPass::Transparent) {
+                return material.doubleSided
+                           ? "MMDNativeOutlineTranslucentDoubleSided"
+                           : "MMDNativeOutlineTranslucent";
+            }
+            return material.doubleSided ? "MMDNativeOutlineDoubleSided"
+                                        : "MMDNativeOutline";
         }
-        return material.doubleSided ? "MMDNativeTranslucentDoubleSided"
-                                    : "MMDNativeTranslucent";
+        if (pass == mmd::MmdDrawPass::Transparent) {
+            return material.doubleSided ? "MMDNativeTranslucentDoubleSided"
+                                        : "MMDNativeTranslucent";
+        }
+        return material.doubleSided ? "MMDNativeOpaqueDoubleSided"
+                                    : "MMDNativeOpaque";
     }
 
     MStatus fail(const std::string& message)
@@ -484,15 +503,7 @@ private:
                 fail("ordered shape geometry streams are incomplete");
                 return false;
             }
-            bool hasTransparentQueue = false;
-            for (const MmdRenderShape::QueueGeometry& queueGeometry :
-                 geometry.queueGeometry) {
-                if (queueGeometry.entry.pass == mmd::MmdDrawPass::Transparent) {
-                    hasTransparentQueue = true;
-                    break;
-                }
-            }
-            if (!hasTransparentQueue) {
+            if (geometry.queueGeometry.empty()) {
                 continue;
             }
             const unsigned int vertexBase =
@@ -518,9 +529,6 @@ private:
 
             for (const MmdRenderShape::QueueGeometry& queueGeometry :
                  geometry.queueGeometry) {
-                if (queueGeometry.entry.pass != mmd::MmdDrawPass::Transparent) {
-                    continue;
-                }
                 if (queueGeometry.indices.empty() ||
                     queueGeometry.indices.size() >
                         std::numeric_limits<UINT>::max()) {
@@ -558,13 +566,52 @@ private:
                 const bool outline = queueGeometry.material.edgeDrawing &&
                                      queueGeometry.material.edgeSize > 0.0F &&
                                      queueGeometry.material.edgeAlpha > 0.0F;
-                if (outline) {
-                    plans.push_back(plan);
-                    plan.outline = true;
+                const bool transparent =
+                    queueGeometry.entry.pass == mmd::MmdDrawPass::Transparent;
+                if (outline && !transparent) {
+                    DrawPlan outlinePlan = plan;
+                    outlinePlan.outline = true;
+                    plans.push_back(std::move(outlinePlan));
                 }
                 plans.push_back(std::move(plan));
+                if (outline && transparent) {
+                    DrawPlan outlinePlan = plans.back();
+                    outlinePlan.outline = true;
+                    plans.push_back(std::move(outlinePlan));
+                }
             }
         }
+        return true;
+    }
+
+    bool prepareFrame(const MHWRender::MDrawContext& drawContext)
+    {
+        if (framePrepared_) {
+            return true;
+        }
+        if (framePreparationFailed_) {
+            return false;
+        }
+
+        std::vector<DrawPlan> plans;
+        std::vector<NativeVertex> vertices;
+        std::vector<unsigned int> indices;
+        if (!collectFrame(plans, vertices, indices)) {
+            framePreparationFailed_ = true;
+            return false;
+        }
+        if (plans.empty()) {
+            framePlans_ = std::move(plans);
+            framePrepared_ = true;
+            return true;
+        }
+        if (!ensureResources(drawContext) ||
+            !uploadFrame(vertices, indices) || !preflight(plans, drawContext)) {
+            framePreparationFailed_ = true;
+            return false;
+        }
+        framePlans_ = std::move(plans);
+        framePrepared_ = true;
         return true;
     }
 
@@ -683,9 +730,10 @@ private:
     }
 
     MShaderInstance* shaderFor(const mmd::MmdRenderQueueInput& material,
+                               mmd::MmdDrawPass pass,
                                bool outline)
     {
-        const char* technique = techniqueFor(material, outline);
+        const char* technique = techniqueFor(material, pass, outline);
         const std::string key(technique);
         const auto found = shaders_.find(key);
         if (found != shaders_.end()) {
@@ -821,7 +869,8 @@ private:
                    const MHWRender::MDrawContext& drawContext)
     {
         for (const DrawPlan& plan : plans) {
-            MShaderInstance* shader = shaderFor(plan.material, plan.outline);
+            MShaderInstance* shader =
+                shaderFor(plan.material, plan.order.pass, plan.outline);
             if (!shader) {
                 if (lastError_.empty()) {
                     fail("ordered preflight shader is unavailable");
@@ -935,8 +984,32 @@ private:
     std::string shaderPath_;
     unsigned int drawCount_ = 0U;
     std::string lastError_;
+    std::vector<DrawPlan> framePlans_;
+    bool framePrepared_ = false;
+    bool framePreparationFailed_ = false;
     std::vector<mmd::MmdRenderQueueEntry> pmxOrder_;
     std::vector<bool> outlineOrder_;
+};
+
+class MmdOrderedRenderOverride::OpaqueRenderOperation
+    : public MHWRender::MUserRenderOperation {
+public:
+    explicit OpaqueRenderOperation(OrderedRenderOperation* owner)
+        : MUserRenderOperation(MString(kOpaqueOperationName))
+        , owner_(owner)
+    {
+    }
+
+    MStatus execute(const MHWRender::MDrawContext& drawContext) override
+    {
+        return owner_ ? owner_->executePass(drawContext, true)
+                      : MStatus::kFailure;
+    }
+
+    bool requiresResetDeviceStates() const override { return true; }
+
+private:
+    OrderedRenderOperation* owner_ = nullptr;
 };
 
 MmdOrderedRenderOverride::MmdOrderedRenderOverride()
@@ -976,6 +1049,9 @@ MString MmdOrderedRenderOverride::uiName() const
 MStatus MmdOrderedRenderOverride::setup(const MString& destination)
 {
     if (operationsInstalled_ && !fallbackRequested_) {
+        if (operation_) {
+            operation_->resetFrame();
+        }
         return MRenderOverride::setup(destination);
     }
 
@@ -1017,7 +1093,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     }
     if (shapePaths.empty()) {
         if (operation_) {
-            operation_->resetWitness();
+            operation_->resetFrame();
         }
         clearFallback();
         return MRenderOverride::setup(destination);
@@ -1040,6 +1116,8 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         operation_->setRecords(std::move(records));
     }
     OrderedRenderOperation* orderedOperation = operation_;
+    std::unique_ptr<OpaqueRenderOperation> opaqueOperation(
+        new OpaqueRenderOperation(orderedOperation));
     std::unique_ptr<OrderedSceneRender> transparent(new OrderedSceneRender(
         kNonMmdTransparentSceneName,
         MHWRender::MSceneRender::kRenderTransparentShadedItems,
@@ -1047,11 +1125,9 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         &nonMmdSelection));
     std::unique_ptr<OrderedSceneRender> opaque(new OrderedSceneRender(
         kOpaqueSceneName,
-        static_cast<MHWRender::MSceneRender::MSceneFilterOption>(
-            MHWRender::MSceneRender::kRenderOpaqueShadedItems |
-            MHWRender::MSceneRender::kRenderPreSceneUIItems),
-        MHWRender::MClearOperation::kClearDepth |
-            MHWRender::MClearOperation::kClearStencil));
+        MHWRender::MSceneRender::kRenderOpaqueShadedItems,
+        MHWRender::MClearOperation::kClearNone,
+        &nonMmdSelection));
     std::unique_ptr<OrderedSceneRender> postSceneUI(new OrderedSceneRender(
         kPostSceneUIName,
         MHWRender::MSceneRender::kRenderPostSceneUIItems,
@@ -1082,6 +1158,31 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         return MRenderOverride::setup(destination);
     }
     opaque.release();
+    if (!mOperations.insertAfter(kOpaqueSceneName, opaqueOperation.get())) {
+        mOperations.clear();
+        renderer->getStandardViewportOperations(mOperations);
+        requestFallback("could not insert MMD ordered opaque operation");
+        if (newOperation) {
+            operation_ = nullptr;
+        }
+        return MRenderOverride::setup(destination);
+    }
+    opaqueOperation.release();
+    std::unique_ptr<OrderedSceneRender> preSceneUI(new OrderedSceneRender(
+        kPreSceneUIName,
+        MHWRender::MSceneRender::kRenderPreSceneUIItems,
+        MHWRender::MClearOperation::kClearDepth |
+            MHWRender::MClearOperation::kClearStencil));
+    if (!mOperations.insertBefore(kOpaqueSceneName, preSceneUI.get())) {
+        mOperations.clear();
+        renderer->getStandardViewportOperations(mOperations);
+        requestFallback("could not insert pre-scene UI operation");
+        if (newOperation) {
+            operation_ = nullptr;
+        }
+        return MRenderOverride::setup(destination);
+    }
+    preSceneUI.release();
     if (!mOperations.insertAfter(kNonMmdTransparentSceneName,
                                  postSceneUI.get())) {
         mOperations.clear();
