@@ -66,6 +66,7 @@ set(SOURCES
     mmdRuntimeNode.cpp
     mmdFastLoad.cpp
     MmdRenderQueue.cpp
+    MmdNativeMaterial.cpp
     MmdTextureAlphaClassifier.cpp
     MmdRenderShape.cpp
     MmdRenderGeometryOverride.cpp
@@ -88,6 +89,7 @@ set(HEADERS
     mmdRuntimeNode.h
     mmdFastLoad.h
     MmdRenderQueue.h
+    MmdNativeMaterial.h
     MmdTextureAlphaClassifier.h
     MmdRenderShape.h
     MmdRenderGeometryOverride.h
