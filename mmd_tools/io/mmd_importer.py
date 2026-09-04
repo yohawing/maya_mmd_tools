@@ -362,6 +362,7 @@ def import_mmd_file(
                 cmds.select(fast_root, replace=True)
             _emit_progress(90)
             if vp2_ownership_requested:
+                maya_viewport_utils.setup_mmd_ordered_viewport()
                 diagnostics = _native_route_profile(options)
                 diagnostics.update(
                     {

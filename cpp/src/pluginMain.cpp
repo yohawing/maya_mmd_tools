@@ -314,13 +314,13 @@ MStatus initializePlugin(MObject obj)
             "MHWRender::MRenderer unavailable; native caster override skipped.");
     }
 
-    // The ordered pass is an independent opt-in override.  It borrows the
+    // The ordered pass is available by default.  It borrows the
     // registered native caster owner when available; otherwise it creates a
     // private resource provider so only one native caster target owner exists.
     const char* enableOrderedRender =
         std::getenv("MMD_TOOLS_CPP_ENABLE_ORDERED_RENDER");
-    if (!enableOrderedRender || std::string(enableOrderedRender) != "1") {
-        MGlobal::displayInfo("mmdOrdered override disabled by default.");
+    if (enableOrderedRender && std::string(enableOrderedRender) == "0") {
+        MGlobal::displayInfo("mmdOrdered override disabled by explicit opt-out.");
     } else if (renderer) {
         status = plugin.registerCommand(
             "mmdOrderedRenderWitness",

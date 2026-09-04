@@ -436,6 +436,51 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
         self.assertEqual(result, "model_root")
 
 
+class TestOrderedViewportAfterImport(unittest.TestCase):
+    def test_only_successful_vp2_import_selects_ordered(self):
+        for vp2 in (False, True):
+            with self.subTest(vp2=vp2), patch(
+                "mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root"
+            ) as fast, patch(
+                "mmd_tools.io.mmd_importer.ModelImportPipeline.create_light_controller", return_value=None
+            ), patch(
+                "mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_ordered_viewport"
+            ) as setup, patch(
+                "mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management"
+            ):
+                result = import_mmd_file("model.pmx", options={
+                    "use_cpp_fast_load": True, "use_cpp_vp2_ownership": vp2,
+                })
+                self.assertEqual(result, "cpp_root")
+                if vp2:
+                    setup.assert_called_once_with()
+                    self.assertTrue(fast.call_args.kwargs["vp2_ownership"])
+                else:
+                    setup.assert_not_called()
+                    self.assertNotIn("vp2_ownership", fast.call_args.kwargs)
+
+    def test_failed_vp2_import_does_not_select_ordered_or_fallback(self):
+        for error in (None, RuntimeError("native failure")):
+            with self.subTest(error=error), patch(
+                "mmd_tools.io.mmd_importer.fast_import", return_value=None, side_effect=error
+            ), patch(
+                "mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_ordered_viewport"
+            ) as setup, patch("mmd_tools.io.mmd_importer.parse_mmd_file") as parse:
+                with self.assertRaises(MMDImportException):
+                    import_mmd_file("model.pmx", options={
+                        "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
+                    })
+                setup.assert_not_called()
+                parse.assert_not_called()
+
+    def test_python_mesh_import_does_not_select_ordered(self):
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=object()), patch(
+            "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="mesh_root"
+        ), patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_ordered_viewport") as setup:
+            self.assertEqual(import_mmd_file("model.pmx", options={"use_cpp_fast_load": False}), "mesh_root")
+        setup.assert_not_called()
+
+
 class TestModelImportControlRig(unittest.TestCase):
     """Opt-in Control Rig creation is shared by every model import route."""
 
@@ -477,7 +522,9 @@ class TestModelImportControlRig(unittest.TestCase):
         self.assertEqual(profile["mmd_control_rig"]["control_count"], 1)
 
     def test_cpp_model_import_uses_the_same_post_import_builder(self):
-        with patch("mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root") as fast:
+        with patch("mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root") as fast, patch(
+            "mmd_tools.io.mmd_importer.ModelImportPipeline.create_light_controller", return_value=None
+        ):
             with patch("mmd_tools.io.mmd_importer.parse_mmd_file") as parse_file:
                 with patch("mmd_tools.io.mmd_importer.build_mmd_control_rig") as build, patch(
                     "mmd_tools.io.mmd_importer.enter_mmd_control_rig_edit",

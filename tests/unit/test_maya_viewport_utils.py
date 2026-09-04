@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests.common.maya_stub import install_maya_stub
 
@@ -350,6 +350,84 @@ class TestMayaViewportUtils(unittest.TestCase):
 
         self.assertEqual(changed, 0)
         self.assertEqual(fake_cmds.model_editor_calls, [])
+
+
+class TestMmdOrderedViewport(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(maya_viewport_utils.os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        maya_viewport_utils.os.environ.pop("MMD_TOOLS_CPP_ENABLE_ORDERED_RENDER", None)
+        renderer_patch = patch("maya.api.OpenMayaRender.MRenderer")
+        self.renderer = renderer_patch.start()
+        self.addCleanup(renderer_patch.stop)
+        self.renderer.kDirectX11 = 2
+        self.renderer.drawAPI.return_value = 2
+        self.cmds = Mock()
+        self.cmds.getPanel.return_value = ["panelA", "panelB"]
+        self.states = {"panelA": "", "panelB": ""}
+        self.available = ["mmdOrdered"]
+        self.renderer_name = "vp2Renderer"
+        self.cmds.modelEditor.side_effect = self.model_editor
+        cmds_patch = patch.object(maya_viewport_utils, "cmds", self.cmds)
+        cmds_patch.start()
+        self.addCleanup(cmds_patch.stop)
+
+    def model_editor(self, panel, **kwargs):
+        if kwargs.get("edit"):
+            self.states[panel] = kwargs["rendererOverrideName"]
+        elif kwargs.get("rendererName"):
+            return self.renderer_name
+        elif kwargs.get("rendererOverrideList"):
+            return self.available
+        elif kwargs.get("rendererOverrideName"):
+            return self.states[panel]
+
+    def test_default_selects_all_panels_and_repeated_setup_is_noop(self):
+        self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 2)
+        self.assertEqual(self.states, {"panelA": "mmdOrdered", "panelB": "mmdOrdered"})
+        self.cmds.modelEditor.reset_mock()
+        self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 0)
+        self.assertFalse(any(call.kwargs.get("edit") for call in self.cmds.modelEditor.call_args_list))
+
+    def test_explicit_optout_does_not_query_or_change_viewports(self):
+        maya_viewport_utils.os.environ["MMD_TOOLS_CPP_ENABLE_ORDERED_RENDER"] = "0"
+        self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 0)
+        self.renderer.drawAPI.assert_not_called()
+        self.cmds.getPanel.assert_not_called()
+
+    def test_opengl_does_not_change_viewports(self):
+        self.renderer.drawAPI.return_value = 4
+        self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 0)
+        self.cmds.modelEditor.assert_not_called()
+
+    def test_unavailable_override_and_non_vp2_panel_are_preserved(self):
+        for renderer, available in (("vp2Renderer", []), ("base_OpenGL_Renderer", ["mmdOrdered"])):
+            with self.subTest(renderer=renderer):
+                self.renderer_name = renderer
+                self.available = available
+                self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 0)
+                self.assertEqual(self.states, {"panelA": "", "panelB": ""})
+
+    def test_device_query_failure_skips_setup(self):
+        self.renderer.drawAPI.side_effect = RuntimeError("device unavailable")
+        self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 0)
+        self.cmds.modelEditor.assert_not_called()
+
+    def test_one_panel_failure_does_not_block_other_panels(self):
+        def fail_first_panel(panel, **kwargs):
+            if panel == "panelA":
+                raise RuntimeError("panel unavailable")
+            return self.model_editor(panel, **kwargs)
+
+        self.cmds.modelEditor.side_effect = fail_first_panel
+        self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 1)
+        self.assertEqual(self.states, {"panelA": "", "panelB": "mmdOrdered"})
+
+    def test_no_panels_returns_zero(self):
+        self.cmds.getPanel.return_value = []
+        self.assertEqual(maya_viewport_utils.setup_mmd_ordered_viewport(), 0)
+        self.cmds.modelEditor.assert_not_called()
 
 
 if __name__ == "__main__":

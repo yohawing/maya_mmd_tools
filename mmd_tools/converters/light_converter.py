@@ -81,16 +81,15 @@ def ensure_mmd_light_shadow_attrs(light_transform: str) -> str:
     if not light_transform or not cmds.objExists(light_transform):
         return light_transform
 
-    mode_plug = f"{light_transform}.{MMD_SELF_SHADOW_MODE_ATTR}"
     if not cmds.attributeQuery(MMD_SELF_SHADOW_MODE_ATTR, node=light_transform, exists=True):
         cmds.addAttr(
             light_transform,
             longName=MMD_SELF_SHADOW_MODE_ATTR,
             attributeType="enum",
             enumName=_MMD_SELF_SHADOW_MODE_ENUM,
+            defaultValue=1,
             keyable=True,
         )
-        cmds.setAttr(mode_plug, 0)
 
     distance_plug = f"{light_transform}.{MMD_SELF_SHADOW_DISTANCE_ATTR}"
     if not cmds.attributeQuery(MMD_SELF_SHADOW_DISTANCE_ATTR, node=light_transform, exists=True):

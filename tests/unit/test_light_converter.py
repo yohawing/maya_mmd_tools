@@ -11,6 +11,37 @@ from mmd_tools.converters import light_converter  # noqa: E402
 
 
 class TestMmdLightShaderWiring(unittest.TestCase):
+    def test_new_self_shadow_mode_defaults_to_mode1(self):
+        cmds = mock.Mock()
+        cmds.objExists.return_value = True
+        cmds.attributeQuery.return_value = False
+
+        with mock.patch.object(light_converter, "cmds", cmds):
+            light_converter.ensure_mmd_light_shadow_attrs("mmd_light")
+
+        cmds.addAttr.assert_any_call(
+            "mmd_light",
+            longName="mmd_self_shadow_mode",
+            attributeType="enum",
+            enumName="OFF:MODE1:MODE2",
+            defaultValue=1,
+            keyable=True,
+        )
+
+    def test_reused_light_preserves_existing_off_and_mode2(self):
+        for mode in (0, 2):
+            with self.subTest(mode=mode):
+                cmds = mock.Mock()
+                cmds.objExists.return_value = True
+                cmds.attributeQuery.return_value = True
+                cmds.getAttr.return_value = mode
+                with mock.patch.object(light_converter, "cmds", cmds), mock.patch.object(
+                    light_converter, "find_mmd_light", return_value="mmd_light"
+                ):
+                    self.assertEqual(light_converter.create_mmd_light_controller(), "mmd_light")
+                cmds.addAttr.assert_not_called()
+                cmds.setAttr.assert_not_called()
+
     def test_wires_dx11_and_glsl_uniforms(self):
         cmds = mock.Mock()
         cmds.objExists.return_value = True

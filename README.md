@@ -21,7 +21,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 |---|---|---|
 | Mesh | ℹ️ | SDEF/QDEF import is not supported; they are imported as BDEF4-equivalent weights. Additional UVs are retained as metadata. |
 | Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. The standard viewport path does not support outlines, edge flags, transparency, or self-shadow. |
-| MMD Ordered (RenderOverride) | 🧪 | Opt-in DX11 path. Alpha, outline, material morphs, and self-shadow modes/flags are functionally verified on Maya 2024 and 2026. Self-shadow distance has no effect yet, and MMD image parity remains unverified. Reopening a scene uses the standard meshes. |
+| MMD Ordered (RenderOverride) | 🧪 | DX11 native VP2 imports automatically select Ordered and initialize new lights with self-shadow MODE1; existing light settings are preserved. Alpha, outline, material morphs, and self-shadow modes/flags are functionally verified on Maya 2024 and 2026. Self-shadow distance has no effect yet, and MMD image parity remains unverified. Reopening a scene uses the standard meshes. |
 | Maya name resolution | ✅ | Names are converted to safe English or hashed names. Non-English image paths are also resolved automatically to safe paths. |
 | Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Basic PMX 2.0 IK, append, axis, and after-physics deformation are supported. Complex rigs have known issues. |
 | Display frames (表示枠) | ✅ | Display-frame names, special-frame flags, and ordered bone/morph items can be edited. |
