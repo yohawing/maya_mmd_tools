@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,247 @@ def test_publish_case_retains_oracle_native_flip_error_map(tmp_path, monkeypatch
     )
     document = (tmp_path / "gallery" / "index.html").read_text(encoding="utf-8")
     assert document.count("flip-error-native.png") == 2
+
+
+def _native_case_fixture(tmp_path, roi=None):
+    manifest = tmp_path / "manifest.json"
+    model = tmp_path / "model.pmx"
+    oracle = tmp_path / "oracle.png"
+    manifest.write_text("{}", encoding="utf-8")
+    model.write_bytes(b"fixture")
+    gate.write_png_rgb(oracle, 4, 2, [(16, 16, 16)] * 8)
+    case = {
+        "name": "transparency-roi",
+        "feature": "transparency",
+        "frame": 0,
+        "camera": {},
+        "raw": {"assets": {"model": "model.pmx"}},
+        "oracle_png": str(oracle),
+    }
+    if roi is not None:
+        case["roi"] = roi
+    return manifest, model, case
+
+
+def _run_fake_native_case(
+    monkeypatch, tmp_path, case, flip_runner, enforce_flip_thresholds=False
+):
+    plugin = tmp_path / "mmd_tools_cpp.mll"
+    plugin.write_bytes(b"plugin")
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_subprocess_run(command, **_kwargs):
+        output_dir = Path(command[command.index("--out-dir") + 1])
+        native = output_dir / "native-capture.png"
+        gate.write_png_rgb(native, 4, 2, [(16, 16, 16)] * 8)
+        report = {
+            "status": "pass",
+            "parityMode": True,
+            "captureOnly": True,
+            "captures": {"ownership": str(native)},
+        }
+        (output_dir / "render_override_vp2_maya2024.json").write_text(
+            json.dumps(report), encoding="utf-8"
+        )
+        return Completed()
+
+    monkeypatch.setattr(gallery, "_resolve_mayapy", lambda _maya: Path("mayapy"))
+    monkeypatch.setattr(gallery.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(gallery, "_default_flip_runner", flip_runner)
+    return gallery._run_native_case(
+        manifest_path=tmp_path / "manifest.json",
+        case=case,
+        maya="2024",
+        plugin=plugin,
+        output_root=tmp_path / "capture",
+        gallery_output=tmp_path / "gallery",
+        port=7800,
+        timeout=1,
+        flip_executable="flip.exe",
+        enforce_flip_thresholds=enforce_flip_thresholds,
+    )
+
+
+def test_native_case_records_full_and_roi_flip_contract(tmp_path, monkeypatch):
+    _manifest, _model, case = _native_case_fixture(
+        tmp_path, roi={"x": 2, "y": 0, "width": 2, "height": 2}
+    )
+    calls = []
+    low_metrics = {"mean": 0.01, "weighted_median": 0.005, "q3": 0.02, "max": 0.1}
+    high_metrics = {"mean": 0.5, "weighted_median": 0.5, "q3": 0.5, "max": 1.0}
+
+    def fake_flip_runner(**kwargs):
+        calls.append(kwargs)
+        basename = kwargs["basename"]
+        work_dir = Path(kwargs["work_dir"])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        error_map = work_dir / (basename + ".png")
+        gate.write_png_rgb(error_map, 2 if basename == "roi" else 4, 2, [(0, 0, 0)] * (4 if basename == "roi" else 8))
+        metrics = high_metrics if basename == "roi" else low_metrics
+        return {
+            "status": "pass",
+            "returncode": 0,
+            "metrics": metrics,
+            "error_map_path": str(error_map),
+            "text": "",
+        }
+
+    result = _run_fake_native_case(
+        monkeypatch,
+        tmp_path,
+        case,
+        fake_flip_runner,
+        enforce_flip_thresholds=True,
+    )
+
+    assert result["status"] == "fail"
+    assert result["parity"]["status"] == "fail"
+    assert "FLIP ROI threshold exceeded" in result["reason"]
+    assert result["full"]["metrics"] == low_metrics
+    assert result["full"]["thresholdEvaluation"]["status"] == "pass"
+    assert result["full"]["errorMap"].endswith("flip-error-native.png")
+    assert result["roiComparison"]["bounds"] == {
+        "x": 2,
+        "y": 0,
+        "width": 2,
+        "height": 2,
+    }
+    assert result["roiComparison"]["metrics"] == high_metrics
+    assert result["roiComparison"]["thresholdEvaluation"]["status"] == "fail"
+    assert result["roiComparison"]["errorMap"].endswith("flip-error-roi-native.png")
+    assert [call["basename"] for call in calls] == ["native", "roi"]
+    assert gate.read_png_rgb(calls[0]["reference"])[:2] == (4, 2)
+    assert gate.read_png_rgb(calls[1]["reference"])[:2] == (2, 2)
+
+
+def test_native_case_keeps_report_only_thresholds_and_marks_missing_roi(tmp_path, monkeypatch):
+    manifest, _model, case = _native_case_fixture(tmp_path)
+    calls = []
+
+    def high_flip_runner(**kwargs):
+        calls.append(kwargs)
+        work_dir = Path(kwargs["work_dir"])
+        work_dir.mkdir(parents=True, exist_ok=True)
+        error_map = work_dir / "native.png"
+        gate.write_png_rgb(error_map, 4, 2, [(0, 0, 0)] * 8)
+        return {
+            "status": "pass",
+            "returncode": 0,
+            "metrics": {"mean": 0.5, "weighted_median": 0.5, "q3": 0.5, "max": 1.0},
+            "error_map_path": str(error_map),
+        }
+
+    result = _run_fake_native_case(monkeypatch, tmp_path, case, high_flip_runner)
+
+    assert result["status"] == "pass"
+    assert result["parity"]["status"] == "unreviewed"
+    assert result["full"]["thresholdEvaluation"]["status"] == "fail"
+    assert result["roiComparison"] == {
+        "status": "unavailable",
+        "reason": "manifest case has no ROI contract",
+        "metrics": gate.parse_flip_metrics(""),
+        "threshold": gallery.FLIP_THRESHOLDS["transparency"]["roi"],
+        "thresholdEvaluation": None,
+        "errorMap": None,
+    }
+    assert len(calls) == 1
+
+
+def test_native_case_fails_report_only_when_flip_comparison_fails(tmp_path, monkeypatch):
+    _manifest, _model, case = _native_case_fixture(tmp_path)
+
+    def failed_flip_runner(**_kwargs):
+        return {"status": "fail", "reason": "FLIP unavailable", "metrics": {}}
+
+    result = _run_fake_native_case(monkeypatch, tmp_path, case, failed_flip_runner)
+
+    assert result["status"] == "fail"
+    assert result["parity"]["status"] == "fail"
+    assert result["reason"] == "FLIP unavailable"
+
+
+def test_native_gallery_cli_passes_visual_gate_roi_overrides(monkeypatch):
+    captured = {}
+
+    def fake_run_gallery(**kwargs):
+        captured.update(kwargs)
+        return {"exitCode": 0}
+
+    monkeypatch.setattr(gallery, "run_gallery", fake_run_gallery)
+
+    assert gallery.main(
+        ["--manifest", "manifest.json", "--roi-case", "fixture=1,2,3,4"]
+    ) == 0
+    assert captured["roi_overrides"] == {
+        "fixture": {"x": 1, "y": 2, "width": 3, "height": 4}
+    }
+
+    with pytest.raises(SystemExit):
+        gallery.main(["--manifest", "manifest.json", "--roi-case", "fixture=1,2"])
+
+
+def test_native_gallery_rejects_unknown_roi_override_before_clearing(tmp_path, monkeypatch):
+    plugin = tmp_path / "mmd_tools_cpp.mll"
+    plugin.write_bytes(b"plugin")
+    monkeypatch.setattr(
+        gallery,
+        "load_manifest_cases",
+        lambda _manifest: ({}, [{"name": "known"}]),
+    )
+    monkeypatch.setattr(
+        gallery,
+        "_clear_native_gallery",
+        lambda _gallery: pytest.fail("stale gallery was cleared"),
+    )
+
+    with pytest.raises(ValueError, match="unknown ROI override case.*typo"):
+        gallery.run_gallery(
+            manifest_path=tmp_path / "manifest.json",
+            maya="2024",
+            output_root=tmp_path / "capture",
+            gallery_output=tmp_path / "gallery",
+            plugin_path=plugin,
+            roi_overrides={"typo": {"x": 0, "y": 0, "width": 1, "height": 1}},
+        )
+
+
+@pytest.mark.parametrize(
+    "roi",
+    [
+        {"x": None, "y": 0, "width": 1, "height": 1},
+        {"x": 3, "y": 0, "width": 2, "height": 1},
+    ],
+)
+def test_native_case_reports_invalid_roi_without_subprocess(tmp_path, monkeypatch, roi):
+    _manifest, _model, case = _native_case_fixture(tmp_path, roi=roi)
+    plugin = tmp_path / "mmd_tools_cpp.mll"
+    plugin.write_bytes(b"plugin")
+    calls = []
+
+    def fail_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("invalid ROI launched native capture")
+
+    monkeypatch.setattr(gallery.subprocess, "run", fail_subprocess)
+
+    result = gallery._run_native_case(
+        manifest_path=tmp_path / "manifest.json",
+        case=case,
+        maya="2024",
+        plugin=plugin,
+        output_root=tmp_path / "capture",
+        gallery_output=tmp_path / "gallery",
+        port=7800,
+        timeout=1,
+    )
+
+    assert result["status"] == "fail"
+    assert "invalid ROI" in result["reason"]
+    assert calls == []
 
 
 def test_material_binding_diagnostics_parse_valid_json_and_preserve_fields():
