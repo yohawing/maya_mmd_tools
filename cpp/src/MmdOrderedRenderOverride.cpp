@@ -54,6 +54,7 @@ constexpr const char* kOperationName = "mmdOrderedOperation";
 constexpr const char* kOpaqueSceneName = "mmdOrderedOpaqueScene";
 constexpr const char* kNonMmdTransparentSceneName =
     "mmdOrderedNonMmdTransparentScene";
+constexpr const char* kPostSceneUIName = "mmdOrderedPostSceneUI";
 
 MmdOrderedRenderOverride* gOrderedOverride = nullptr;
 bool gRegistered = false;
@@ -1048,9 +1049,13 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         kOpaqueSceneName,
         static_cast<MHWRender::MSceneRender::MSceneFilterOption>(
             MHWRender::MSceneRender::kRenderOpaqueShadedItems |
-            MHWRender::MSceneRender::kRenderUIItems),
+            MHWRender::MSceneRender::kRenderPreSceneUIItems),
         MHWRender::MClearOperation::kClearDepth |
             MHWRender::MClearOperation::kClearStencil));
+    std::unique_ptr<OrderedSceneRender> postSceneUI(new OrderedSceneRender(
+        kPostSceneUIName,
+        MHWRender::MSceneRender::kRenderPostSceneUIItems,
+        MHWRender::MClearOperation::kClearNone));
 
     if (mOperations.indexOf(MHWRender::MRenderOperation::kStandardSceneName) <
             0 ||
@@ -1078,7 +1083,17 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     }
     opaque.release();
     if (!mOperations.insertAfter(kNonMmdTransparentSceneName,
-                                 orderedOperation)) {
+                                 postSceneUI.get())) {
+        mOperations.clear();
+        renderer->getStandardViewportOperations(mOperations);
+        requestFallback("could not insert post-scene UI operation");
+        if (newOperation) {
+            operation_ = nullptr;
+        }
+        return MRenderOverride::setup(destination);
+    }
+    postSceneUI.release();
+    if (!mOperations.insertAfter(kNonMmdTransparentSceneName, orderedOperation)) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
         requestFallback("could not insert MMD ordered operation");

@@ -6,6 +6,7 @@
 #include "MmdRenderGeometryOverride.h"
 
 #include "MmdNativeMaterial.h"
+#include "MmdOrderedRenderOverride.h"
 #include "MmdRenderShape.h"
 #include "MmdRenderOverride.h"
 
@@ -373,6 +374,9 @@ void MmdRenderGeometryOverride::updateRenderItems(
     }
 
     MRenderer* renderer = MRenderer::theRenderer();
+    const bool orderedActive =
+        renderer &&
+        renderer->activeRenderOverride() == MmdOrderedRenderOverride::overrideName();
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     MTextureManager* textureManager =
@@ -518,7 +522,7 @@ void MmdRenderGeometryOverride::updateRenderItems(
                                     queueGeometry.material.selfShadowMap &&
                                     !effectiveTransparent;
         const MRenderItem::RenderItemType itemType =
-            (casterEligible || effectiveTransparent)
+            (orderedActive || casterEligible || effectiveTransparent)
                 ? MRenderItem::MaterialSceneItem
                 : MRenderItem::NonMaterialSceneItem;
         diagnostic.casterEligible = casterEligible;
