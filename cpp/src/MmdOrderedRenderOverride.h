@@ -11,11 +11,15 @@
 #include <maya/MString.h>
 #include <maya/MViewport2Renderer.h>
 
+#include <memory>
 #include <string>
+
+class MmdNativeCasterRenderOverride;
 
 class MmdOrderedRenderOverride : public MHWRender::MRenderOverride {
 public:
-    MmdOrderedRenderOverride();
+    explicit MmdOrderedRenderOverride(
+        MmdNativeCasterRenderOverride* nativeCasterOwner = nullptr);
     ~MmdOrderedRenderOverride() override;
 
     MHWRender::DrawAPI supportedDrawAPIs() const override;
@@ -26,7 +30,8 @@ public:
     static const MString& overrideName();
     static void setPluginLoadPath(const MString& loadPath);
     static void markRegistered(bool registered);
-    static std::string diagnosticsJson();
+    bool prepareForPluginUnload();
+    static std::string diagnosticsJson(bool captureShadowDepth = false);
 
 private:
     class OrderedRenderOperation;
@@ -35,6 +40,9 @@ private:
     void requestFallback(const std::string& reason);
     void clearFallback();
 
+    MmdNativeCasterRenderOverride* nativeCasterOwner_ = nullptr;
+    std::unique_ptr<MmdNativeCasterRenderOverride>
+        privateNativeCasterOwner_;
     OrderedRenderOperation* operation_ = nullptr;
     bool operationsInstalled_ = false;
     bool fallbackRequested_ = false;

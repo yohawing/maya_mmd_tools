@@ -314,9 +314,9 @@ MStatus initializePlugin(MObject obj)
             "MHWRender::MRenderer unavailable; native caster override skipped.");
     }
 
-    // The ordered pass is an independent opt-in override.  It intentionally
-    // shares no renderer selection with the native caster; a later pass will
-    // combine their operations when the scene split contract is complete.
+    // The ordered pass is an independent opt-in override.  It borrows the
+    // registered native caster owner when available; otherwise it creates a
+    // private resource provider so only one native caster target owner exists.
     const char* enableOrderedRender =
         std::getenv("MMD_TOOLS_CPP_ENABLE_ORDERED_RENDER");
     if (!enableOrderedRender || std::string(enableOrderedRender) != "1") {
@@ -331,7 +331,8 @@ MStatus initializePlugin(MObject obj)
                 "mmdOrderedRenderWitness registration failed; capability skipped.");
         } else {
             sCppRegisteredMmdOrderedWitnessCommand = true;
-            sMmdOrderedOverride = new MmdOrderedRenderOverride();
+            sMmdOrderedOverride =
+                new MmdOrderedRenderOverride(sMmdNativeCasterOverride);
             status = renderer->registerOverride(sMmdOrderedOverride);
             if (!status) {
                 MGlobal::displayWarning(
@@ -540,6 +541,17 @@ MStatus uninitializePlugin(MObject obj)
         return MS::kFailure;
     }
 
+    // Retire raw ordered body/caster shader caches before checking the shared
+    // receiver registry.  The ordered override may own an unregistered native
+    // caster resource provider, so this step must cover both owner modes.
+    if (sCppRegisteredMmdOrderedOverride && sMmdOrderedOverride &&
+        !sMmdOrderedOverride->prepareForPluginUnload()) {
+        MGlobal::displayError(
+            "Cannot unload mmd_tools_cpp while ordered raw shaders are active; "
+            "their resource ownership could not be retired.");
+        return MS::kFailure;
+    }
+
     if (sCppRegisteredMmdVmdBatchSamplerCommand) {
         status = plugin.deregisterCommand("mmdVmdBatchSample");
         if (!status) {
@@ -552,7 +564,7 @@ MStatus uninitializePlugin(MObject obj)
     // caster target for their whole lifetime.  Refuse a partial plug-in
     // teardown until every geometry override has released those shaders;
     // deleting the native override first would invalidate a live assignment.
-    if (sCppRegisteredMmdNativeCasterOverride &&
+    if ((sCppRegisteredMmdNativeCasterOverride || sMmdOrderedOverride) &&
         !MmdNativeCasterRenderOverride::shutdownReady()) {
         MGlobal::displayError(
             "Cannot unload mmd_tools_cpp while native receiver shaders are active; "

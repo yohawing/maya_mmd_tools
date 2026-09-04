@@ -410,7 +410,9 @@ void resetCasterMatrixDiagnostics()
     gDiagnostics.cornersInClip = false;
 }
 
-bool buildCasterLightMatrix(const MSelectionList& selection)
+bool buildCasterLightMatrix(
+    const MSelectionList& selection,
+    MmdNativeCasterRenderOverride::FrameResources& resources)
 {
     MDagPath lightPath;
     unsigned int lightCount = 0U;
@@ -446,6 +448,28 @@ bool buildCasterLightMatrix(const MSelectionList& selection)
     }
     gDiagnostics.matrixSource = "tagged_mmd_light_minus_z";
     gDiagnostics.lightPath = lightPath.fullPathName().asUTF8();
+
+    MFnDependencyNode lightNode(lightPath.node());
+    MStatus attributeStatus;
+    const MPlug mode = lightNode.findPlug("mmd_self_shadow_mode", true,
+                                          &attributeStatus);
+    if (attributeStatus) {
+        resources.selfShadowMode = mode.asInt(&attributeStatus);
+        if (!attributeStatus || resources.selfShadowMode < 0 ||
+            resources.selfShadowMode > 2) {
+            gDiagnostics.error = "mmd_light self-shadow mode is invalid";
+            return false;
+        }
+    }
+    const MPlug distance = lightNode.findPlug("mmd_self_shadow_distance", true,
+                                              &attributeStatus);
+    if (attributeStatus) {
+        resources.selfShadowDistance = distance.asDouble(&attributeStatus);
+        if (!attributeStatus || !std::isfinite(resources.selfShadowDistance)) {
+            gDiagnostics.error = "mmd_light self-shadow distance is invalid";
+            return false;
+        }
+    }
 
     const MMatrix lightWorld = lightPath.inclusiveMatrix();
     const MPoint lightOrigin = MPoint(0.0, 0.0, 0.0, 1.0) * lightWorld;
@@ -1246,13 +1270,17 @@ void MmdNativeCasterRenderOverride::releaseShader()
 
 MStatus MmdNativeCasterRenderOverride::prepareFrameResources(
     const MSelectionList& selection,
-    FrameResources& resources)
+    FrameResources& resources,
+    bool requireEnabledSelfShadow)
 {
     resources = FrameResources();
     resetCasterMatrixDiagnostics();
-    if (!buildCasterLightMatrix(selection)) {
+    if (!buildCasterLightMatrix(selection, resources)) {
         // A missing, ambiguous, or invalid light/selection is a soft
         // unavailable state.  The native setup keeps Maya's standard scene.
+        return MS::kSuccess;
+    }
+    if (requireEnabledSelfShadow && resources.selfShadowMode == 0) {
         return MS::kSuccess;
     }
 

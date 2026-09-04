@@ -384,7 +384,10 @@ VS_OUTPUT MainVS(VS_INPUT input)
 //--------------------------------------------------------------------------------------
 // Main Pass Pixel Shader
 //--------------------------------------------------------------------------------------
-float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
+float3 ComputeMmdLitColorWithSelfShadow(VS_OUTPUT input, out float opacity,
+                                      bool selfShadowEnabled,
+                                      float selfShadowVisibility,
+                                      bool insideSelfShadow)
 {
     // Normalize inputs
     float3 normal = normalize(input.worldNormal);
@@ -419,8 +422,8 @@ float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
     // interpolation that the reference MMD shader uses; the normalized
     // `normal` above remains the specular/lighting normal.
     float NdotL = dot(input.worldNormal, lightDir);
-    float toonV = saturate(ToonCoordinateOffset - NdotL * 0.5);
-    float3 toonColor = float3(1.0, 1.0, 1.0);
+    float toonV = selfShadowEnabled ? 1.0 : saturate(ToonCoordinateOffset - NdotL * 0.5);
+    float3 toonColor = selfShadowEnabled ? float3(0.0, 0.0, 0.0) : float3(1.0, 1.0, 1.0);
     if (HasToonTexture != 0)
     {
         // The MMD contract samples the first column of the vertical ramp.
@@ -457,7 +460,22 @@ float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
         surfaceColor *= sphereColor;
     else if (SphereMode == 2 && HasSphereTexture != 0) // Add
         surfaceColor += sphereColor;
-    if (HasToonTexture != 0)
+    float combinedVisibility = 1.0;
+    if (selfShadowEnabled)
+    {
+        // Self shadow switches the material's tone curve as a whole. The lit
+        // branch has no ordinary toon-ramp multiplier; outside the shadow
+        // projection it remains fully lit, including specular.
+        if (insideSelfShadow)
+        {
+            combinedVisibility = HasToonTexture != 0
+                ? min(saturate(dot(normal, lightDir) * 3.0), selfShadowVisibility)
+                : selfShadowVisibility;
+            surfaceColor = lerp(surfaceColor * toonColor, surfaceColor,
+                                combinedVisibility);
+        }
+    }
+    else if (HasToonTexture != 0)
         surfaceColor *= toonColor;
 
     // Projected shadows remain a separate Maya viewport factor.
@@ -474,7 +492,7 @@ float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
         specular = SpecularColor * specFactor * lightColor * shadow;
     }
 
-    float3 litColor = diffuse + specular;
+    float3 litColor = diffuse + specular * combinedVisibility;
 
     // Apply opacity
     opacity = texColor.a * DiffuseColorA * Opacity;
@@ -486,6 +504,11 @@ float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
     clip(opacity - 0.003);
 
     return litColor;
+}
+
+float3 ComputeMmdLitColor(VS_OUTPUT input, out float opacity)
+{
+    return ComputeMmdLitColorWithSelfShadow(input, opacity, false, 1.0, true);
 }
 
 float4 MainPS(VS_OUTPUT input) : SV_TARGET

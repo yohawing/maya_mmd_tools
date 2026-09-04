@@ -10,9 +10,11 @@
 #include "MmdOrderedRenderOverride.h"
 
 #include "MmdNativeMaterial.h"
+#include "MmdRenderOverride.h"
 #include "MmdRenderShape.h"
 
 #include <maya/MDagPath.h>
+#include <maya/MArgDatabase.h>
 #include <maya/MDoubleArray.h>
 #include <maya/MDrawContext.h>
 #include <maya/MFn.h>
@@ -36,6 +38,8 @@
 #endif
 
 #include <cstddef>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -44,6 +48,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -57,6 +62,7 @@ constexpr const char* kPreSceneUIName = "mmdOrderedPreSceneUI";
 constexpr const char* kNonMmdTransparentSceneName =
     "mmdOrderedNonMmdTransparentScene";
 constexpr const char* kPostSceneUIName = "mmdOrderedPostSceneUI";
+constexpr unsigned int kOrderedTargetSize = 2048U;
 
 MmdOrderedRenderOverride* gOrderedOverride = nullptr;
 bool gRegistered = false;
@@ -267,9 +273,18 @@ public:
     void resetWitness()
     {
         drawCount_ = 0U;
+        casterDrawCount_ = 0U;
+        receiverDrawCount_ = 0U;
+        casterMaterialIndices_.clear();
         pmxOrder_.clear();
         outlineOrder_.clear();
         lastError_.clear();
+        frameResources_ = MmdNativeCasterRenderOverride::FrameResources();
+        frameResourcesReady_ = false;
+        shadowReady_ = false;
+        targetWidth_ = 0U;
+        targetHeight_ = 0U;
+        targetHandleReady_ = false;
     }
 
     void resetFrame()
@@ -295,6 +310,13 @@ public:
             return MStatus::kFailure;
         }
 
+        if (opaquePhase && frameResourcesReady_ &&
+            frameResources_.selfShadowMode > 0) {
+            if (!renderCasters(drawContext)) {
+                return MStatus::kFailure;
+            }
+        }
+
         for (const DrawPlan& plan : framePlans_) {
             const bool planOpaque =
                 plan.order.pass != mmd::MmdDrawPass::Transparent;
@@ -306,7 +328,9 @@ public:
             if (!shader || shader->bind(drawContext) != MStatus::kSuccess) {
                 return fail("ordered shader bind failed");
             }
+            int selfShadowMode = 0;
             if (!bindMaterial(shader, plan.material) ||
+                !setBodyShadowParameters(shader, plan, selfShadowMode) ||
                 !setFrameParameters(shader, drawContext, plan.world) ||
                 shader->updateParameters(drawContext) != MStatus::kSuccess ||
                 shader->activatePass(drawContext, 0U) != MStatus::kSuccess) {
@@ -325,6 +349,9 @@ public:
                                   plan.firstIndex,
                                   0);
             ++drawCount_;
+            if (selfShadowMode > 0) {
+                ++receiverDrawCount_;
+            }
             pmxOrder_.push_back(plan.order);
             outlineOrder_.push_back(plan.outline);
             resetInputAssembler();
@@ -338,13 +365,33 @@ public:
 
     bool requiresResetDeviceStates() const override { return true; }
 
-    std::string diagnosticsJson() const
+    std::string diagnosticsJson(bool captureShadowDepth) const
     {
         std::ostringstream result;
         result << "{\"override\":\"" << kOverrideName
                << "\",\"registered\":true,\"state\":\""
                << (lastError_.empty() ? "active" : "error")
                << "\",\"enabled\":true,\"drawCount\":" << drawCount_
+               << ",\"casterDrawCount\":" << casterDrawCount_
+               << ",\"casterMaterialIndices\":[";
+        for (std::size_t index = 0U; index < casterMaterialIndices_.size();
+             ++index) {
+            if (index != 0U) {
+                result << ',';
+            }
+            result << casterMaterialIndices_[index];
+        }
+        result << "],\"receiverDrawCount\":" << receiverDrawCount_
+               << ",\"frameResourcesReady\":"
+               << (frameResourcesReady_ ? "true" : "false")
+               << ",\"sameFrameShadowReady\":"
+               << (shadowReady_ ? "true" : "false")
+               << ",\"selfShadowMode\":"
+               << frameResources_.selfShadowMode
+               << ",\"targetSize\":{\"width\":" << targetWidth_
+               << ",\"height\":" << targetHeight_
+               << "},\"targetHandleReady\":"
+               << (targetHandleReady_ ? "true" : "false")
                << ",\"error\":\"" << jsonEscape(lastError_)
                << "\",\"pmxOrder\":[";
         for (std::size_t index = 0U; index < pmxOrder_.size(); ++index) {
@@ -360,11 +407,75 @@ public:
                    << "\",\"outline\":"
                    << (outlineOrder_[index] ? "true" : "false") << "}";
         }
-        result << "]}";
+        result << "]";
+        if (captureShadowDepth) {
+            result << ",\"shadowDepth\":" << shadowDepthJson();
+        }
+        result << "}";
         return result.str();
     }
 
+    bool prepareForPluginUnload()
+    {
+#ifdef _WIN32
+        return releaseResourcesForUnload();
+#else
+        return true;
+#endif
+    }
+
 private:
+    // Explicit witness readback only. Normal frame rendering never maps the
+    // 2048-square GPU target to the CPU.
+    std::string shadowDepthJson() const
+    {
+        if (!shadowReady_ || !frameResources_.colorTarget) {
+            return "{\"available\":false}";
+        }
+        int rowPitch = 0;
+        std::size_t slicePitch = 0U;
+        void* raw = frameResources_.colorTarget->rawData(rowPitch, slicePitch);
+        const unsigned int size = MmdNativeCasterRenderOverride::kTargetSize;
+        if (!raw || rowPitch < static_cast<int>(size * sizeof(float)) ||
+            slicePitch < static_cast<std::size_t>(rowPitch) * size) {
+            if (raw) {
+                MHWRender::MRenderTarget::freeRawData(raw);
+            }
+            return "{\"available\":false}";
+        }
+        std::size_t written = 0U;
+        std::size_t invalid = 0U;
+        float minimum = 1.0F;
+        float maximum = 0.0F;
+        std::uint64_t hash = 1469598103934665603ULL;
+        const auto* bytes = static_cast<const unsigned char*>(raw);
+        for (unsigned int y = 0U; y < size; ++y) {
+            for (unsigned int x = 0U; x < size; ++x) {
+                float value;
+                const auto* pixel = bytes + static_cast<std::size_t>(y) * rowPitch +
+                                    static_cast<std::size_t>(x) * sizeof(float);
+                std::memcpy(&value, pixel, sizeof(value));
+                for (std::size_t index = 0U; index < sizeof(value); ++index) {
+                    hash = (hash ^ pixel[index]) * 1099511628211ULL;
+                }
+                if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
+                    ++invalid;
+                } else if (value < 1.0F) {
+                    ++written;
+                    minimum = std::min(minimum, value);
+                    maximum = std::max(maximum, value);
+                }
+            }
+        }
+        MHWRender::MRenderTarget::freeRawData(raw);
+        std::ostringstream result;
+        result << "{\"available\":true,\"writtenSamples\":" << written
+               << ",\"invalidSamples\":" << invalid
+               << ",\"minimum\":" << minimum << ",\"maximum\":" << maximum
+               << ",\"hash\":\"" << std::hex << hash << "\"}";
+        return result.str();
+    }
+
     struct DrawPlan {
         mmd::MmdRenderQueueInput material;
         mmd::MmdRenderQueueEntry order;
@@ -427,6 +538,85 @@ private:
         }
     };
 
+    class RawTargetScope {
+    public:
+        explicit RawTargetScope(ID3D11DeviceContext* context)
+            : context_(context)
+        {
+            if (!context_) {
+                return;
+            }
+            context_->OMGetRenderTargets(
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,
+                renderTargets_, &depthStencilView_);
+            viewportCount_ = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+            context_->RSGetViewports(&viewportCount_, viewports_);
+            captured_ = true;
+        }
+
+        ~RawTargetScope()
+        {
+            if (!captured_) {
+                return;
+            }
+            context_->OMSetRenderTargets(
+                D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, renderTargets_,
+                depthStencilView_);
+            context_->RSSetViewports(viewportCount_, viewports_);
+            for (ID3D11RenderTargetView*& renderTarget : renderTargets_) {
+                D3DRelease::release(renderTarget);
+            }
+            D3DRelease::release(depthStencilView_);
+        }
+
+        bool bind(MHWRender::MRenderTarget* colorTarget,
+                  MHWRender::MRenderTarget* depthTarget)
+        {
+            if (!captured_ || !colorTarget || !depthTarget) {
+                return false;
+            }
+            ID3D11RenderTargetView* colorView =
+                static_cast<ID3D11RenderTargetView*>(
+                    colorTarget->resourceHandle());
+            ID3D11DepthStencilView* depthView =
+                static_cast<ID3D11DepthStencilView*>(
+                    depthTarget->resourceHandle());
+            if (!colorView || !depthView) {
+                return false;
+            }
+
+            context_->OMSetRenderTargets(1U, &colorView, depthView);
+            const D3D11_VIEWPORT viewport = {
+                0.0F,
+                0.0F,
+                static_cast<float>(kOrderedTargetSize),
+                static_cast<float>(kOrderedTargetSize),
+                0.0F,
+                1.0F};
+            context_->RSSetViewports(1U, &viewport);
+            const float clearColor[4] = {1.0F, 1.0F, 1.0F, 1.0F};
+            context_->ClearRenderTargetView(colorView, clearColor);
+            context_->ClearDepthStencilView(depthView, D3D11_CLEAR_DEPTH,
+                                             1.0F, 0U);
+            return true;
+        }
+
+        bool captured() const { return captured_; }
+
+    private:
+        static constexpr UINT kMaxRenderTargets =
+            D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT;
+        static constexpr UINT kMaxViewports =
+            D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+
+        ID3D11DeviceContext* context_ = nullptr;
+        ID3D11RenderTargetView* renderTargets_[kMaxRenderTargets] = {};
+        ID3D11DepthStencilView* depthStencilView_ = nullptr;
+        D3D11_VIEWPORT viewports_[kMaxViewports] = {};
+        UINT viewportCount_ = 0U;
+        bool captured_ = false;
+    };
+
     const char* techniqueFor(const mmd::MmdRenderQueueInput& material,
                              mmd::MmdDrawPass pass,
                              bool outline) const
@@ -448,6 +638,19 @@ private:
                                     : "MMDNativeOpaque";
     }
 
+    const char* casterTechniqueFor(const DrawPlan& plan) const
+    {
+        return plan.order.pass == mmd::MmdDrawPass::Cutout
+                   ? "MMDNativeCasterCutout"
+                   : "MMDNativeCaster";
+    }
+
+    bool isCasterPlan(const DrawPlan& plan) const
+    {
+        return !plan.outline && plan.material.selfShadowMap &&
+               plan.order.pass != mmd::MmdDrawPass::Transparent;
+    }
+
     MStatus fail(const std::string& message)
     {
         lastError_ = message;
@@ -459,7 +662,8 @@ private:
 
     bool collectFrame(std::vector<DrawPlan>& plans,
                       std::vector<NativeVertex>& vertices,
-                      std::vector<unsigned int>& indices)
+                      std::vector<unsigned int>& indices,
+                      MSelectionList& visibleSelection)
     {
         for (std::size_t shapeIndex = 0U; shapeIndex < records_.size();
              ++shapeIndex) {
@@ -492,6 +696,11 @@ private:
                 MmdRenderShape::fromMObject(record.handle.object(), &status);
             if (!shape || !status || !shape->hasValidGeometry()) {
                 fail("ordered shape geometry is unavailable");
+                return false;
+            }
+
+            if (!visibleSelection.add(record.path)) {
+                fail("ordered caster selection could not be built");
                 return false;
             }
 
@@ -584,6 +793,158 @@ private:
         return true;
     }
 
+    void updateTargetDiagnostics()
+    {
+        if (!frameResources_.colorTarget || !frameResources_.depthTarget) {
+            return;
+        }
+        MHWRender::MRenderTargetDescription description;
+        frameResources_.colorTarget->targetDescription(description);
+        targetWidth_ = description.width();
+        targetHeight_ = description.height();
+        targetHandleReady_ =
+            frameResources_.colorTarget->resourceHandle() != nullptr &&
+            frameResources_.depthTarget->resourceHandle() != nullptr;
+    }
+
+    bool setCasterParameters(MShaderInstance* shader, const DrawPlan& plan)
+    {
+        return shader->setParameter("World", plan.world) &&
+               shader->setParameter("CasterLightViewProjection",
+                                    frameResources_.lightViewProjection) &&
+               shader->setParameter("CasterDepthBias",
+                                    frameResources_.depthBias);
+    }
+
+    bool setBodyShadowParameters(MShaderInstance* shader,
+                                 const DrawPlan& plan,
+                                 int& selfShadowMode)
+    {
+        const bool receiverEligible =
+            !plan.outline && plan.material.selfShadow && frameResourcesReady_ &&
+            shadowReady_ && frameResources_.selfShadowMode > 0 &&
+            frameResources_.colorTarget != nullptr;
+        selfShadowMode = receiverEligible ? frameResources_.selfShadowMode : 0;
+
+        if (selfShadowMode > 0) {
+            MHWRender::MRenderTargetAssignment assignment{
+                frameResources_.colorTarget};
+            if (shader->setParameter("NativeCasterDepthTexture", assignment) !=
+                MStatus::kSuccess) {
+                return false;
+            }
+            MmdNativeCasterRenderOverride::registerReceiverShader(shader);
+            receiverShaders_.insert(shader);
+        }
+        if (frameResourcesReady_ &&
+            (shader->setParameter("CasterLightViewProjection",
+                                  frameResources_.lightViewProjection) !=
+                 MStatus::kSuccess ||
+             shader->setParameter("CasterDepthBias", frameResources_.depthBias) !=
+                 MStatus::kSuccess)) {
+            return false;
+        }
+        return shader->setParameter("NativeSelfShadowMode", selfShadowMode) ==
+               MStatus::kSuccess;
+    }
+
+    MShaderInstance* casterShaderFor(const DrawPlan& plan)
+    {
+        const char* technique = casterTechniqueFor(plan);
+        const std::string key = std::string("caster:") + technique;
+        return shaderForTechnique(key, technique, false, "caster");
+    }
+
+    bool preflightCasters(const std::vector<DrawPlan>& plans,
+                          const MHWRender::MDrawContext& drawContext)
+    {
+        for (const DrawPlan& plan : plans) {
+            if (!isCasterPlan(plan)) {
+                continue;
+            }
+            MShaderInstance* shader = casterShaderFor(plan);
+            if (!shader || shader->bind(drawContext) != MStatus::kSuccess) {
+                fail("ordered caster preflight shader bind failed");
+                return false;
+            }
+            const bool parametersReady =
+                bindMaterial(shader, plan.material) &&
+                setCasterParameters(shader, plan);
+            const bool parametersUpdated =
+                parametersReady &&
+                shader->updateParameters(drawContext) == MStatus::kSuccess;
+            const bool passActivated =
+                parametersUpdated &&
+                shader->activatePass(drawContext, 0U) == MStatus::kSuccess;
+            const MStatus unbindStatus = shader->unbind(drawContext);
+            if (!parametersReady || !parametersUpdated || !passActivated ||
+                unbindStatus != MStatus::kSuccess) {
+                fail("ordered caster preflight failed");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool renderCasters(const MHWRender::MDrawContext& drawContext)
+    {
+        RawTargetScope targetScope(context_);
+        if (!targetScope.captured() ||
+            !targetScope.bind(frameResources_.colorTarget,
+                              frameResources_.depthTarget)) {
+            shadowReady_ = false;
+            fail("ordered caster target binding failed");
+            return false;
+        }
+        targetHandleReady_ = true;
+        for (const DrawPlan& plan : framePlans_) {
+            if (!isCasterPlan(plan)) {
+                continue;
+            }
+            MShaderInstance* shader = casterShaderFor(plan);
+            if (!shader || shader->bind(drawContext) != MStatus::kSuccess) {
+                shadowReady_ = false;
+                fail("ordered caster shader bind failed");
+                return false;
+            }
+            const bool parametersReady =
+                bindMaterial(shader, plan.material) &&
+                setCasterParameters(shader, plan);
+            const bool parametersUpdated =
+                parametersReady &&
+                shader->updateParameters(drawContext) == MStatus::kSuccess;
+            const bool passActivated =
+                parametersUpdated &&
+                shader->activatePass(drawContext, 0U) == MStatus::kSuccess;
+            if (!parametersReady || !parametersUpdated || !passActivated) {
+                shader->unbind(drawContext);
+                resetInputAssembler();
+                shadowReady_ = false;
+                fail("ordered caster shader parameter update failed");
+                return false;
+            }
+
+            const UINT stride = sizeof(NativeVertex);
+            const UINT offset = 0U;
+            context_->IASetInputLayout(inputLayout_);
+            context_->IASetVertexBuffers(0U, 1U, &vertexBuffer_, &stride,
+                                         &offset);
+            context_->IASetIndexBuffer(indexBuffer_, DXGI_FORMAT_R32_UINT, 0U);
+            context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            context_->DrawIndexed(plan.indexCount, plan.firstIndex, 0);
+            ++casterDrawCount_;
+            casterMaterialIndices_.push_back(plan.order.materialIndex);
+            resetInputAssembler();
+            if (shader->unbind(drawContext) != MStatus::kSuccess) {
+                shadowReady_ = false;
+                fail("ordered caster shader unbind failed");
+                return false;
+            }
+        }
+        shadowReady_ = true;
+        return true;
+    }
+
     bool prepareFrame(const MHWRender::MDrawContext& drawContext)
     {
         if (framePrepared_) {
@@ -596,7 +957,8 @@ private:
         std::vector<DrawPlan> plans;
         std::vector<NativeVertex> vertices;
         std::vector<unsigned int> indices;
-        if (!collectFrame(plans, vertices, indices)) {
+        MSelectionList visibleSelection;
+        if (!collectFrame(plans, vertices, indices, visibleSelection)) {
             framePreparationFailed_ = true;
             return false;
         }
@@ -605,8 +967,29 @@ private:
             framePrepared_ = true;
             return true;
         }
-        if (!ensureResources(drawContext) ||
-            !uploadFrame(vertices, indices) || !preflight(plans, drawContext)) {
+        if (!ensureResources(drawContext) || !uploadFrame(vertices, indices)) {
+            framePreparationFailed_ = true;
+            return false;
+        }
+        MmdNativeCasterRenderOverride* nativeCasterOwner =
+            owner_ ? owner_->nativeCasterOwner_ : nullptr;
+        if (!nativeCasterOwner) {
+            fail("ordered native caster resource owner is unavailable");
+            framePreparationFailed_ = true;
+            return false;
+        }
+        const MStatus resourceStatus = nativeCasterOwner->prepareFrameResources(
+            visibleSelection, frameResources_, true);
+        if (resourceStatus != MStatus::kSuccess) {
+            fail("ordered native caster frame resource preparation failed");
+            framePreparationFailed_ = true;
+            return false;
+        }
+        frameResourcesReady_ = frameResources_.ready;
+        updateTargetDiagnostics();
+        if (!preflight(plans, drawContext) ||
+            (frameResourcesReady_ && frameResources_.selfShadowMode > 0 &&
+             !preflightCasters(plans, drawContext))) {
             framePreparationFailed_ = true;
             return false;
         }
@@ -629,7 +1012,10 @@ private:
             return false;
         }
         if (device_ != device) {
-            releaseResources();
+            if (!releaseResourcesForUnload()) {
+                fail("ordered resource retirement failed during device change");
+                return false;
+            }
             device_ = device;
             device_->GetImmediateContext(&context_);
             if (!context_) {
@@ -729,17 +1115,17 @@ private:
         return true;
     }
 
-    MShaderInstance* shaderFor(const mmd::MmdRenderQueueInput& material,
-                               mmd::MmdDrawPass pass,
-                               bool outline)
+    MShaderInstance* shaderForTechnique(const std::string& key,
+                                        const char* technique,
+                                        bool transparent,
+                                        const char* role)
     {
-        const char* technique = techniqueFor(material, pass, outline);
-        const std::string key(technique);
         const auto found = shaders_.find(key);
         if (found != shaders_.end()) {
             return found->second;
         }
-        MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer(false);
+        MHWRender::MRenderer* renderer =
+            MHWRender::MRenderer::theRenderer(false);
         const MHWRender::MShaderManager* manager =
             renderer ? renderer->getShaderManager() : nullptr;
         if (!manager) {
@@ -753,18 +1139,29 @@ private:
         MShaderInstance* shader = manager->getEffectsFileShader(
             effectPath, MString(technique), &macro, 1U);
         if (!shader) {
-            fail("getEffectsFileShader failed for ordered material");
+            fail(std::string("getEffectsFileShader failed for ordered ") +
+                 role);
             return nullptr;
         }
-        if (shader->setIsTransparent(
-                std::string(technique).find("Translucent") !=
-                std::string::npos) != MStatus::kSuccess) {
+        if (shader->setIsTransparent(transparent) != MStatus::kSuccess) {
             manager->releaseShader(shader);
-            fail("setIsTransparent failed for ordered material");
+            fail(std::string("setIsTransparent failed for ordered ") + role);
             return nullptr;
         }
         shaders_.emplace(key, shader);
         return shader;
+    }
+
+    MShaderInstance* shaderFor(const mmd::MmdRenderQueueInput& material,
+                               mmd::MmdDrawPass pass,
+                               bool outline)
+    {
+        const char* technique = techniqueFor(material, pass, outline);
+        const std::string key(technique);
+        return shaderForTechnique(
+            key, technique,
+            std::string(technique).find("Translucent") != std::string::npos,
+            "material");
     }
 
     MTexture* acquireTexture(const std::string& path)
@@ -887,8 +1284,12 @@ private:
                 fail("ordered preflight shader bind failed");
                 return false;
             }
+            const bool bodyModeReset =
+                shader->setParameter("NativeSelfShadowMode", 0) ==
+                MStatus::kSuccess;
             const bool frameParametersReady =
-                setFrameParameters(shader, drawContext, plan.world);
+                bodyModeReset && setFrameParameters(shader, drawContext,
+                                                    plan.world);
             const bool parametersUpdated =
                 frameParametersReady &&
                 shader->updateParameters(drawContext) == MStatus::kSuccess;
@@ -926,19 +1327,47 @@ private:
         context_->IASetIndexBuffer(nullptr, DXGI_FORMAT_R32_UINT, 0U);
     }
 
-    void releaseResources()
+    bool releaseShaderCache()
     {
-        MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer(false);
+        MHWRender::MRenderer* renderer =
+            MHWRender::MRenderer::theRenderer(false);
         const MHWRender::MShaderManager* shaderManager =
             renderer ? renderer->getShaderManager() : nullptr;
+        if (!shaderManager &&
+            (!shaders_.empty() || !receiverShaders_.empty())) {
+            lastError_ = "MShaderManager unavailable while retiring ordered shaders";
+            return false;
+        }
         if (shaderManager) {
             for (const auto& shader : shaders_) {
-                if (shader.second) {
-                    shaderManager->releaseShader(shader.second);
+                if (!shader.second) {
+                    continue;
+                }
+                const bool receiver =
+                    receiverShaders_.count(shader.second) != 0U;
+                if (receiver) {
+                    MmdNativeCasterRenderOverride::beginReceiverShaderRetire(
+                        shader.second);
+                }
+                shaderManager->releaseShader(shader.second);
+                if (receiver) {
+                    MmdNativeCasterRenderOverride::finishReceiverShaderRetire(
+                        shader.second);
                 }
             }
         }
+        receiverShaders_.clear();
         shaders_.clear();
+        return true;
+    }
+
+    bool releaseResourcesForUnload()
+    {
+        if (!releaseShaderCache()) {
+            return false;
+        }
+        MHWRender::MRenderer* renderer =
+            MHWRender::MRenderer::theRenderer(false);
         MTextureManager* textureManager =
             renderer ? renderer->getTextureManager() : nullptr;
         if (textureManager) {
@@ -956,6 +1385,12 @@ private:
         device_ = nullptr;
         bufferCapacity_[0] = 0U;
         bufferCapacity_[1] = 0U;
+        return true;
+    }
+
+    void releaseResources()
+    {
+        (void)releaseResourcesForUnload();
     }
 
     std::unordered_map<std::string, MShaderInstance*> shaders_;
@@ -983,10 +1418,20 @@ private:
     std::vector<ShapeRecord> records_;
     std::string shaderPath_;
     unsigned int drawCount_ = 0U;
+    unsigned int casterDrawCount_ = 0U;
+    unsigned int receiverDrawCount_ = 0U;
     std::string lastError_;
     std::vector<DrawPlan> framePlans_;
     bool framePrepared_ = false;
     bool framePreparationFailed_ = false;
+    MmdNativeCasterRenderOverride::FrameResources frameResources_;
+    bool frameResourcesReady_ = false;
+    bool shadowReady_ = false;
+    unsigned int targetWidth_ = 0U;
+    unsigned int targetHeight_ = 0U;
+    bool targetHandleReady_ = false;
+    std::unordered_set<MShaderInstance*> receiverShaders_;
+    std::vector<std::size_t> casterMaterialIndices_;
     std::vector<mmd::MmdRenderQueueEntry> pmxOrder_;
     std::vector<bool> outlineOrder_;
 };
@@ -1012,9 +1457,15 @@ private:
     OrderedRenderOperation* owner_ = nullptr;
 };
 
-MmdOrderedRenderOverride::MmdOrderedRenderOverride()
+MmdOrderedRenderOverride::MmdOrderedRenderOverride(
+    MmdNativeCasterRenderOverride* nativeCasterOwner)
     : MRenderOverride(overrideName())
+    , nativeCasterOwner_(nativeCasterOwner)
 {
+    if (!nativeCasterOwner_) {
+        privateNativeCasterOwner_.reset(new MmdNativeCasterRenderOverride());
+        nativeCasterOwner_ = privateNativeCasterOwner_.get();
+    }
     gOrderedOverride = this;
 }
 
@@ -1031,6 +1482,7 @@ MmdOrderedRenderOverride::~MmdOrderedRenderOverride()
         delete operation_;
     }
     operation_ = nullptr;
+    nativeCasterOwner_ = nullptr;
     if (gOrderedOverride == this) {
         gOrderedOverride = nullptr;
     }
@@ -1243,6 +1695,17 @@ void MmdOrderedRenderOverride::markRegistered(bool registered)
     gRegistered = registered;
 }
 
+bool MmdOrderedRenderOverride::prepareForPluginUnload()
+{
+    if (operation_ && !operation_->prepareForPluginUnload()) {
+        return false;
+    }
+    if (operation_) {
+        operation_->resetFrame();
+    }
+    return true;
+}
+
 void MmdOrderedRenderOverride::requestFallback(const std::string& reason)
 {
     fallbackRequested_ = true;
@@ -1255,7 +1718,7 @@ void MmdOrderedRenderOverride::clearFallback()
     fallbackReason_.clear();
 }
 
-std::string MmdOrderedRenderOverride::diagnosticsJson()
+std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
 {
     if (!gOrderedOverride) {
         return std::string("{\"override\":\"mmdOrdered\",\"registered\":") +
@@ -1264,7 +1727,7 @@ std::string MmdOrderedRenderOverride::diagnosticsJson()
     }
     if (gOrderedOverride->fallbackReason_.empty() &&
         gOrderedOverride->operation_) {
-        return gOrderedOverride->operation_->diagnosticsJson();
+        return gOrderedOverride->operation_->diagnosticsJson(captureShadowDepth);
     }
     std::ostringstream result;
     result << "{\"override\":\"mmdOrdered\",\"registered\":"
@@ -1283,12 +1746,21 @@ void* MmdOrderedRenderWitnessCommand::creator()
 
 MSyntax MmdOrderedRenderWitnessCommand::newSyntax()
 {
-    return MSyntax();
+    MSyntax syntax;
+    syntax.addFlag("-sd", "-shadowDepth");
+    return syntax;
 }
 
-MStatus MmdOrderedRenderWitnessCommand::doIt(const MArgList&)
+MStatus MmdOrderedRenderWitnessCommand::doIt(const MArgList& args)
 {
-    setResult(MString(MmdOrderedRenderOverride::diagnosticsJson().c_str()));
+    MStatus status;
+    const MSyntax commandSyntax = newSyntax();
+    MArgDatabase arguments(commandSyntax, args, &status);
+    if (!status) {
+        return status;
+    }
+    setResult(MString(MmdOrderedRenderOverride::diagnosticsJson(
+        arguments.isFlagSet("-sd")).c_str()));
     return MS::kSuccess;
 }
 

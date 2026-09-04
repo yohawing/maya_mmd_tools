@@ -54,11 +54,14 @@ public:
         MHWRender::MRenderTarget* depthTarget = nullptr;
         MMatrix lightViewProjection;
         float depthBias = 0.0F;
+        int selfShadowMode = 0;
+        double selfShadowDistance = 0.0;
         bool ready = false;
     };
 
     MStatus prepareFrameResources(const MSelectionList& selection,
-                                  FrameResources& resources);
+                                  FrameResources& resources,
+                                  bool requireEnabledSelfShadow = false);
 
     static void setPluginLoadPath(const MString& loadPath);
     static void markRegistered(bool registered);
