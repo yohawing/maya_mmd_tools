@@ -32,6 +32,7 @@ from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
+    _apply_fast_material_morph_runtime,
     _apply_fast_morph_metadata,
     _apply_fast_skeleton_skin,
     _apply_fast_root_metadata,
@@ -42,6 +43,7 @@ from mmd_tools.io.cpp_fast_importer import (
     _sanitize_node_name,
     fast_import,
 )
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 
 
 class TestCppFastImportRouting(unittest.TestCase):
@@ -907,6 +909,47 @@ class TestFastSkeletonSkin(unittest.TestCase):
         mock_parsed.free.assert_called_once_with()
 
     @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
+    def test_basic_materials_falls_back_to_current_native_parser(self, mock_parse_native):
+        """The current parser ABI supplies materials when parsed-model is unavailable."""
+        self.mock_parsed_cls.from_pmx_bytes.return_value = None
+        mock_parse_native.return_value = SimpleNamespace(
+            header=SimpleNamespace(
+                model_name="モデルJP",
+                model_name_english="Model EN",
+                comment="コメントJP",
+                comment_english="Comment EN",
+            ),
+            materials=[SimpleNamespace(
+                name="mat",
+                name_english="Mat",
+                diffuse=(0.2, 0.3, 0.4, 0.35),
+                specular=(0.1, 0.2, 0.3),
+                face_count=3,
+            )],
+            soft_bodies=[object(), object()],
+        )
+        cmds = MagicMock()
+        cmds.attributeQuery.return_value = False
+        cmds.shadingNode.return_value = "mat_fast"
+
+        metadata = _apply_basic_materials("model.pmx", "mesh1", cmds)
+
+        self.assertEqual(metadata["metadata"]["englishName"], "Model EN")
+        self.assertEqual(metadata["metadata"]["counts"]["softBodies"], 2)
+        self.assertEqual(metadata["materials"][0]["diffuse"][3], 0.35)
+        cmds.shadingNode.assert_called_once_with(
+            "standardSurface",
+            asShader=True,
+            name="Mat_fast",
+        )
+        cmds.sets.assert_any_call(
+            "mesh1.f[0:0]",
+            edit=True,
+            forceElement="mat_fastSG",
+        )
+        self.assertTrue(mock_parse_native.called)
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
     def test_skeleton_skin_falls_back_to_native_pmx_parser(self, mock_parse_native: MagicMock):
         """ParsedModel ABI がない環境では native PMX parser から skeleton/skin を作る。"""
         self.mock_parsed_cls.from_pmx_bytes.return_value = None
@@ -1082,6 +1125,143 @@ class TestSanitizeNodeName(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertTrue(all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in names))
         self.assertTrue(all(f"{name}SG" in used for name in names))
+
+
+class TestFastMaterialMorphRuntime(unittest.TestCase):
+    """Verify the fast path preserves the existing morph/controller topology."""
+
+    def test_runtime_passes_existing_blend_shapes_to_global_controller(self):
+        converter = MagicMock()
+        converter._convert_material_morph_pmx.return_value = {
+            "success": True,
+            "morph_node": "materialMorph0",
+        }
+        converter.build_morph_controller.return_value = "morphController"
+        pipeline = MagicMock()
+        pmx = SimpleNamespace(
+            morphs=[SimpleNamespace(morph_type=PmxMorphType.MaterialMorph)]
+        )
+        graph = {
+            "success": True,
+            "native_alpha": {"success": True, "skipped": []},
+            "skipped": [],
+        }
+
+        with patch.object(cpp_fast_importer, "parse_pmx_native", return_value=pmx), patch(
+            "mmd_tools.converters.MorphConverter", return_value=converter
+        ), patch(
+            "mmd_tools.io.model_import_pipeline.ModelImportPipeline",
+            return_value=pipeline,
+        ), patch(
+            "mmd_tools.converters.material_morph_runtime.build_material_morph_graph",
+            return_value=graph,
+        ):
+            result = _apply_fast_material_morph_runtime(
+                "model.pmx",
+                "root",
+                model_registry="registry",
+                blend_shape_nodes=["sourceBlendShape"],
+            )
+
+        self.assertTrue(result["success"])
+        converter.validate_runtime_requirements.assert_called_once_with(pmx)
+        morph_result = pipeline.connect_morph_nodes_to_root.call_args.args[1]
+        self.assertEqual(morph_result["blend_shape_nodes"], ["sourceBlendShape"])
+        self.assertEqual(morph_result["total_morphs"], 1)
+        self.assertEqual(morph_result["vertex_morph_nodes"], [])
+        pipeline.connect_morph_nodes_to_root.assert_called_once_with(
+            "root",
+            morph_result,
+            model_registry="registry",
+        )
+        converter.build_morph_controller.assert_called_once_with(
+            pmx,
+            "root",
+            morph_result,
+        )
+
+    def test_runtime_preflight_stops_scene_mutation_when_plugin_is_missing(self):
+        converter = MagicMock()
+        converter.validate_runtime_requirements.side_effect = RuntimeError(
+            "Load or reload the maya_mmd_tools plugin before importing a PMX with morphs."
+        )
+        pipeline = MagicMock()
+        pmx = SimpleNamespace(
+            morphs=[SimpleNamespace(morph_type=PmxMorphType.MaterialMorph)]
+        )
+
+        with patch.object(cpp_fast_importer, "parse_pmx_native", return_value=pmx), patch(
+            "mmd_tools.converters.MorphConverter", return_value=converter
+        ), patch(
+            "mmd_tools.io.model_import_pipeline.ModelImportPipeline",
+            return_value=pipeline,
+        ):
+            result = _apply_fast_material_morph_runtime("model.pmx", "root")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(
+            any(
+                item.startswith("material_morph_runtime_failed:Load or reload")
+                for item in result["skipped"]
+            )
+        )
+        converter.validate_runtime_requirements.assert_called_once_with(pmx)
+        converter._convert_material_morph_pmx.assert_not_called()
+        converter.build_morph_controller.assert_not_called()
+        pipeline.connect_morph_nodes_to_root.assert_not_called()
+
+    @patch.object(cpp_fast_importer, "parse_pmx_native", return_value=None)
+    def test_runtime_parser_unavailable_is_a_failure(self, _parse_native):
+        result = _apply_fast_material_morph_runtime("model.pmx", "root")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["skipped"], ["native_pmx_unavailable"])
+
+    def test_runtime_material_conversion_failure_is_not_no_material_morphs(self):
+        converter = MagicMock()
+        converter._convert_material_morph_pmx.side_effect = [
+            {"success": True, "morph_node": "materialMorph0"},
+            {"success": False},
+        ]
+        pmx = SimpleNamespace(
+            morphs=[
+                SimpleNamespace(morph_type=PmxMorphType.MaterialMorph),
+                SimpleNamespace(morph_type=PmxMorphType.MaterialMorph),
+            ]
+        )
+
+        with patch.object(cpp_fast_importer, "parse_pmx_native", return_value=pmx), patch(
+            "mmd_tools.converters.MorphConverter", return_value=converter
+        ):
+            result = _apply_fast_material_morph_runtime("model.pmx", "root")
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["material_morph_nodes"], ["materialMorph0"])
+        self.assertIn("material_morph_conversion_failed:1", result["skipped"])
+        self.assertNotIn("no_material_morphs", result["skipped"])
+        converter.build_morph_controller.assert_not_called()
+
+    def test_standard_material_stores_authored_alpha_and_original_index(self):
+        cmds = MagicMock()
+        cmds.ls.return_value = []
+        cmds.attributeQuery.return_value = False
+        cmds.shadingNode.return_value = "material_fast"
+
+        _create_standard_material(
+            {"name": "mat", "englishName": "mat", "diffuse": [0.2, 0.3, 0.4, 0.35]},
+            7,
+            cmds,
+            set(),
+        )
+
+        writes = {
+            call.args[0]: call.args[1]
+            for call in cmds.setAttr.call_args_list
+            if len(call.args) >= 2
+        }
+        self.assertEqual(writes["material_fast.mmd_material"], 1)
+        self.assertEqual(writes["material_fast.mmd_material_index"], 7)
+        self.assertEqual(writes["material_fast.mmd_diffuse_alpha"], 0.35)
 
 
 class TestFastMorphMetadata(unittest.TestCase):
@@ -1345,7 +1525,11 @@ class TestFastMorphMetadata(unittest.TestCase):
             "mmdFastLoad",
             create=True,
             return_value=["root", "sourceMesh", "renderShape"],
-        ) as fast_load:
+        ) as fast_load, patch.object(
+            cpp_fast_importer,
+            "_apply_fast_material_morph_runtime",
+            return_value={"success": True},
+        ):
             result = fast_import("model.pmx", vp2_ownership=True)
 
         self.assertEqual(result, "root")
@@ -1530,6 +1714,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         basic_materials.assert_not_called()
         root_metadata.assert_not_called()
 
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_material_morph_runtime")
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_skeleton_skin")
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_morph_metadata")
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
@@ -1544,6 +1729,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         root_metadata,
         morph_metadata,
         skeleton_skin,
+        material_runtime,
     ):
         """Materials, morph metadata, and skinning use the source mesh item."""
         import sys
@@ -1551,6 +1737,8 @@ class TestFastMorphMetadata(unittest.TestCase):
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
         candidates.return_value = [plugin_path]
         basic_materials.return_value = {"materials": []}
+        morph_metadata.return_value = ["sourceBlendShape"]
+        material_runtime.return_value = {"success": True}
         cmds_mod = sys.modules["maya.cmds"]
         cmds_mod.nodeType = MagicMock(return_value="mmdRenderShape")
         with patch.object(Path, "exists", return_value=True), patch.object(
@@ -1573,6 +1761,12 @@ class TestFastMorphMetadata(unittest.TestCase):
         basic_materials.assert_called_once_with("model.pmx", "sourceMesh", cmds_mod)
         root_metadata.assert_called_once()
         morph_metadata.assert_called_once_with("model.pmx", "sourceMesh", cmds_mod)
+        material_runtime.assert_called_once()
+        self.assertEqual(material_runtime.call_args.args[:2], ("model.pmx", "root"))
+        self.assertEqual(
+            material_runtime.call_args.kwargs["blend_shape_nodes"],
+            ["sourceBlendShape"],
+        )
         skeleton_skin.assert_called_once_with(
             "model.pmx",
             "sourceMesh",
@@ -1580,6 +1774,67 @@ class TestFastMorphMetadata(unittest.TestCase):
             "demo",
             cmds_mod,
             scale=1.0,
+        )
+
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_material_morph_runtime")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_morph_metadata", return_value=[])
+    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
+    @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials", return_value=None)
+    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
+    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
+    def test_vp2_material_runtime_failure_cleans_owned_nodes_and_raises(
+        self,
+        _setup,
+        candidates,
+        _basic_materials,
+        _root_metadata,
+        _morph_metadata,
+        material_runtime,
+    ):
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        candidates.return_value = [plugin_path]
+        material_runtime.return_value = {
+            "success": False,
+            "material_morph_nodes": ["materialMorph0"],
+            "material_morph_graph": {"evaluator_nodes": ["materialEval0"]},
+            "morph_controller": None,
+            "skipped": ["create_failed:shader"],
+        }
+        cmds_mod = sys.modules["maya.cmds"]
+
+        def node_type(node):
+            return "mmdMorphController" if node == "partialController" else "mmdRenderShape"
+
+        with patch.object(Path, "exists", return_value=True), patch.object(
+            cmds_mod, "loadPlugin", create=True
+        ), patch.object(
+            cmds_mod,
+            "mmdFastLoad",
+            create=True,
+            return_value=["root", "sourceMesh", "renderShape"],
+        ), patch.object(
+            cmds_mod, "nodeType", side_effect=node_type
+        ), patch.object(
+            cmds_mod, "listConnections", return_value=["partialController"]
+        ), patch.object(
+            cmds_mod, "objExists", return_value=True
+        ), patch.object(
+            cmds_mod, "delete"
+        ) as delete, patch(
+            "mmd_tools.core.model_registry.ensure_model_registry",
+            return_value="registry0",
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "Fast VP2 material morph runtime failed"
+            ):
+                fast_import("model.pmx", include_morphs=True, vp2_ownership=True)
+
+        deleted = [entry[0][0] for entry in delete.call_args_list]
+        self.assertEqual(
+            deleted,
+            ["materialMorph0", "materialEval0", "partialController", "registry0", "root"],
         )
 
     def test_standard_material_preserves_raw_names(self):
@@ -1847,7 +2102,7 @@ class TestCppFastImporterDebugLogging(unittest.TestCase):
         info_messages = self._message_templates(mock_logger.info)
         expected = (
             "Native parsed-model metadata unavailable; "
-            "skipping fast material assignment"
+            "trying current native PMX parser"
         )
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)

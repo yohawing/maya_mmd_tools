@@ -18,6 +18,7 @@
 #include <maya/MObjectHandle.h>
 #include <maya/MPxCommand.h>
 #include <maya/MPxSurfaceShape.h>
+#include <maya/MPlugArray.h>
 #include <maya/MSelectionMask.h>
 #include <maya/MString.h>
 #include <maya/MTypeId.h>
@@ -25,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MmdRenderQueue.h"
@@ -38,6 +40,10 @@ public:
     // unconnected while the static VP2 witness is used; a later authoring
     // path can connect a standard mesh without changing the render queue.
     static MObject aInputMesh;
+    // Optional authored/evaluated alpha values.  Array logical indices are
+    // PMX material indices; absent elements leave the queue's base alpha
+    // untouched.
+    static MObject aMaterialAlpha;
     // Internal, non-persistent DG input.  VP2 publishes readiness here so
     // Maya dirties and reevaluates the connected visibility output.
     static MObject aProxyReady;
@@ -55,6 +61,10 @@ public:
     static bool prepareForPluginUnload();
 
     void postConstructor() override;
+    MStatus preEvaluation(const MDGContext& context,
+                          const MEvaluationNode& evaluationNode) override;
+    MStatus setDependentsDirty(const MPlug& plug,
+                               MPlugArray& plugArray) override;
     MStatus compute(const MPlug& plug, MDataBlock& data) override;
     bool isBounded() const override;
     MBoundingBox boundingBox() const override;
@@ -106,6 +116,9 @@ public:
 
     /** Update one material's effective alpha and rebuild the ordered items. */
     bool updateMaterialAlpha(std::size_t materialIndex, float diffuseAlpha);
+
+    /** Pull present DG alpha elements and apply only changed effective values. */
+    void updateEvaluatedMaterialAlpha();
 
     /** Swap two adjacent material indices without rebuilding geometry buffers. */
     bool reindexMaterialQueue(std::size_t firstIndex, std::size_t secondIndex);
@@ -203,6 +216,9 @@ public:
     std::string materialBindingDiagnosticsJson() const;
 
 private:
+    bool applyMaterialAlphaUpdates(
+        const std::vector<std::pair<std::size_t, float>>& updates);
+
     GeometryData geometry_;
     // Immutable authored streams used when the optional input mesh is absent
     // again after an evaluated update.

@@ -17,6 +17,7 @@
 #include <maya/MPointArray.h>
 #include <maya/MPoint.h>
 #include <maya/MPlug.h>
+#include <maya/MEvaluationNode.h>
 #include <maya/MSelectionList.h>
 #include <maya/MSyntax.h>
 #include <maya/MViewport2Renderer.h>
@@ -185,6 +186,7 @@ const MString MmdRenderShape::drawDbClassification(
     kMmdRenderShapeClassification);
 const MString MmdRenderShape::drawRegistrantId(kMmdRenderShapeRegistrantId);
 MObject MmdRenderShape::aInputMesh;
+MObject MmdRenderShape::aMaterialAlpha;
 MObject MmdRenderShape::aProxyReady;
 MObject MmdRenderShape::aSourceVisibility;
 
@@ -214,6 +216,27 @@ MStatus MmdRenderShape::initialize()
     }
 
     MFnNumericAttribute numericAttribute;
+    aMaterialAlpha = numericAttribute.create(
+        "materialAlpha", "ma", MFnNumericData::kFloat, 1.0F, &status);
+    if (!status) {
+        return status;
+    }
+    numericAttribute.setArray(true);
+    numericAttribute.setIndexMatters(true);
+    numericAttribute.setUsesArrayDataBuilder(true);
+    numericAttribute.setWritable(true);
+    numericAttribute.setReadable(true);
+    numericAttribute.setStorable(true);
+    numericAttribute.setKeyable(false);
+    // Keep a source-disconnected element's authored value available.  If an
+    // element is absent, updateEvaluatedMaterialAlpha leaves the queue value
+    // unchanged rather than applying the attribute default to all materials.
+    numericAttribute.setDisconnectBehavior(MFnAttribute::kNothing);
+    status = addAttribute(aMaterialAlpha);
+    if (!status) {
+        return status;
+    }
+
     aProxyReady = numericAttribute.create(
         "proxyReady", "pr", MFnNumericData::kBoolean, false, &status);
     if (!status) {
@@ -260,6 +283,28 @@ void MmdRenderShape::postConstructor()
     // MPxSurfaceShape instances can receive shading assignments only after
     // Maya has created their internal DAG object.
     setRenderable(true);
+}
+
+MStatus MmdRenderShape::preEvaluation(
+    const MDGContext& context, const MEvaluationNode& evaluationNode)
+{
+    if (context.isNormal()) {
+        MStatus status;
+        if (evaluationNode.dirtyPlugExists(aMaterialAlpha, &status) &&
+            status) {
+            MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+        }
+    }
+    return MS::kSuccess;
+}
+
+MStatus MmdRenderShape::setDependentsDirty(const MPlug& plug,
+                                           MPlugArray& /*plugArray*/)
+{
+    if (!plug.isNull() && plug.attribute() == aMaterialAlpha) {
+        MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+    }
+    return MS::kSuccess;
 }
 
 MStatus MmdRenderShape::compute(const MPlug& plug, MDataBlock& data)
@@ -866,73 +911,129 @@ bool MmdRenderShape::hasValidGeometry() const
     return geometryValid_ && !geometry_.positions.empty();
 }
 
-bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
-                                         float diffuseAlpha)
+void MmdRenderShape::updateEvaluatedMaterialAlpha()
 {
-    if (!std::isfinite(diffuseAlpha)) {
-        MGlobal::displayError(
-            "[mmdRenderShape] Queue alpha update rejected: non-finite alpha.");
-        return false;
+    MPlug alphaPlug(thisMObject(), aMaterialAlpha);
+    if (alphaPlug.isNull()) {
+        return;
     }
 
-    const float clampedAlpha = std::max(0.0F, std::min(1.0F, diffuseAlpha));
-    std::vector<mmd::MmdRenderQueueInput> nextInputs = geometry_.queueInputs;
-    bool found = false;
-    for (mmd::MmdRenderQueueInput& input : nextInputs) {
-        if (input.materialIndex != materialIndex) {
+    MStatus alphaCountStatus;
+    const unsigned int alphaCount =
+        alphaPlug.evaluateNumElements(&alphaCountStatus);
+    if (!alphaCountStatus) {
+        return;
+    }
+    std::vector<std::pair<std::size_t, float>> updates;
+    updates.reserve(alphaCount);
+    for (unsigned int physicalIndex = 0U; physicalIndex < alphaCount;
+         ++physicalIndex) {
+        MStatus elementStatus;
+        MPlug alphaElement = alphaPlug.elementByPhysicalIndex(
+            physicalIndex, &elementStatus);
+        if (!elementStatus || alphaElement.isNull()) {
             continue;
         }
-        input.diffuseAlpha = clampedAlpha;
-        // Preserve blend/cutout selected by the material or texture alpha.
-        // Otherwise let the effective diffuse alpha classify the queue;
-        // writing "blend" here would make a temporary fade permanent.
-        if (mmd::classifyMmdDrawPass(input.transparencyMode, 1.0F) ==
-            mmd::MmdDrawPass::Opaque) {
-            input.transparencyMode.clear();
+        const unsigned int materialIndex =
+            alphaElement.logicalIndex(&elementStatus);
+        if (!elementStatus) {
+            continue;
         }
-        found = true;
+        const float diffuseAlpha = alphaElement.asFloat(&elementStatus);
+        if (!elementStatus || !std::isfinite(diffuseAlpha)) {
+            continue;
+        }
+        const float effectiveAlpha =
+            std::max(0.0F, std::min(1.0F, diffuseAlpha));
+
+        for (const mmd::MmdRenderQueueInput& input : geometry_.queueInputs) {
+            if (input.materialIndex == materialIndex &&
+                input.diffuseAlpha != effectiveAlpha) {
+                updates.emplace_back(materialIndex, effectiveAlpha);
+                break;
+            }
+        }
     }
-    if (!found) {
-        return false;
+    if (!updates.empty()) {
+        applyMaterialAlphaUpdates(updates);
+    }
+}
+
+bool MmdRenderShape::applyMaterialAlphaUpdates(
+    const std::vector<std::pair<std::size_t, float>>& updates)
+{
+    if (updates.empty()) {
+        return true;
+    }
+
+    for (const auto& update : updates) {
+        if (!std::isfinite(update.second)) {
+            MGlobal::displayError(
+                "[mmdRenderShape] Queue alpha update rejected: non-finite alpha.");
+            return false;
+        }
+    }
+
+    std::vector<mmd::MmdRenderQueueInput> nextInputs = geometry_.queueInputs;
+    for (const auto& update : updates) {
+        const std::size_t materialIndex = update.first;
+        const float clampedAlpha =
+            std::max(0.0F, std::min(1.0F, update.second));
+        bool updateFound = false;
+        for (mmd::MmdRenderQueueInput& input : nextInputs) {
+            if (input.materialIndex != materialIndex) {
+                continue;
+            }
+            input.diffuseAlpha = clampedAlpha;
+            // Preserve blend/cutout selected by the material or texture alpha.
+            // Otherwise let the effective diffuse alpha classify the queue;
+            // writing "blend" here would make a temporary fade permanent.
+            if (mmd::classifyMmdDrawPass(input.transparencyMode, 1.0F) ==
+                mmd::MmdDrawPass::Opaque) {
+                input.transparencyMode.clear();
+            }
+            updateFound = true;
+        }
+        if (!updateFound) {
+            return false;
+        }
     }
 
     const std::vector<mmd::MmdRenderQueueEntry> nextQueue =
         mmd::buildMmdRenderQueue(nextInputs);
+
+    const std::size_t queueSize = geometry_.queueGeometry.size();
+    if (queueSize != nextInputs.size()) {
+        MGlobal::displayError(
+            "[mmdRenderShape] Queue alpha update changed queue size.");
+        return false;
+    }
+    std::vector<std::size_t> sourceIndexByInput(
+        geometry_.queueInputs.size(), queueSize);
+    for (std::size_t candidateIndex = 0; candidateIndex < queueSize;
+         ++candidateIndex) {
+        const std::size_t inputIndex =
+            geometry_.queueGeometry[candidateIndex].entry.inputIndex;
+        if (inputIndex >= sourceIndexByInput.size() ||
+            sourceIndexByInput[inputIndex] != queueSize) {
+            MGlobal::displayError(
+                "[mmdRenderShape] Queue alpha update has duplicate or invalid input index.");
+            return false;
+        }
+        sourceIndexByInput[inputIndex] = candidateIndex;
+    }
+
     std::vector<QueueGeometry> reordered;
     reordered.reserve(nextQueue.size());
-    std::vector<bool> consumed(geometry_.queueGeometry.size(), false);
-    for (const mmd::MmdRenderQueueEntry& entry : nextQueue) {
-        std::size_t existingIndex = geometry_.queueGeometry.size();
-        for (std::size_t candidateIndex = 0;
-             candidateIndex < geometry_.queueGeometry.size(); ++candidateIndex) {
-            const QueueGeometry& candidate =
-                geometry_.queueGeometry[candidateIndex];
-            if (!consumed[candidateIndex] &&
-                candidate.entry.inputIndex == entry.inputIndex) {
-                existingIndex = candidateIndex;
-                break;
-            }
-        }
-        if (existingIndex == geometry_.queueGeometry.size()) {
-            MGlobal::displayError(
-                "[mmdRenderShape] Queue alpha update lost a submesh.");
-            return false;
-        }
-        consumed[existingIndex] = true;
-        QueueGeometry item = std::move(geometry_.queueGeometry[existingIndex]);
+    for (std::size_t queueIndex = 0; queueIndex < nextQueue.size();
+         ++queueIndex) {
+        const mmd::MmdRenderQueueEntry& entry = nextQueue[queueIndex];
+        QueueGeometry item =
+            std::move(geometry_.queueGeometry[
+                sourceIndexByInput[entry.inputIndex]]);
         item.entry = entry;
-        const mmd::MmdRenderQueueInput* material =
-            mmd::findMmdRenderQueueInput(nextInputs, entry);
-        if (!material) {
-            MGlobal::displayError(
-                "[mmdRenderShape] Queue alpha update lost material data.");
-            return false;
-        }
-        item.material = *material;
+        item.material = nextInputs[entry.inputIndex];
         reordered.push_back(std::move(item));
-    }
-    if (reordered.size() != geometry_.queueGeometry.size()) {
-        return false;
     }
 
     geometry_.queueInputs = std::move(nextInputs);
@@ -941,6 +1042,13 @@ bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
+}
+
+bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
+                                         float diffuseAlpha)
+{
+    return applyMaterialAlphaUpdates(
+        {{materialIndex, diffuseAlpha}});
 }
 
 bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,

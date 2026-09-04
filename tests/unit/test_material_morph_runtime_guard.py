@@ -819,6 +819,167 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         )
         reroute_mock.assert_not_called()
 
+    def test_native_alpha_rebuild_uses_authored_alpha_metadata(self):
+        """A rebuild at a non-zero weight must restore the immutable base alpha."""
+        cmds = mock.Mock()
+        cmds.objExists.return_value = True
+        cmds.attributeQuery.return_value = True
+        cmds.nodeType.side_effect = lambda node: (
+            "mmdMaterialMorphEval" if node == "eval" else "standardSurface"
+        )
+        cmds.getAttr.side_effect = lambda plug, **_kwargs: (
+            0.25 if plug == "shader.mmd_diffuse_alpha" else 0.0
+        )
+
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+            material_morph_runtime, "_connect_if_needed"
+        ) as connect_mock:
+            first = material_morph_runtime.bind_native_material_alpha(
+                "root",
+                "nativeShape",
+                shaders_by_index={1: "shader"},
+                evaluators_by_shader={"shader": "eval"},
+            )
+            second = material_morph_runtime.bind_native_material_alpha(
+                "root",
+                "nativeShape",
+                shaders_by_index={1: "shader"},
+                evaluators_by_shader={"shader": "eval"},
+            )
+
+        self.assertTrue(first["success"])
+        self.assertTrue(second["success"])
+        self.assertEqual(first["bindings"][0]["base_alpha"], 0.25)
+        self.assertEqual(second["bindings"][0]["base_alpha"], 0.25)
+        base_writes = [
+            call for call in cmds.setAttr.call_args_list
+            if call.args and call.args[0] == "eval.baseDiffuseA"
+        ]
+        self.assertEqual([call.args[1] for call in base_writes], [0.25, 0.25])
+        self.assertEqual(
+            connect_mock.call_args_list,
+            [
+                mock.call(
+                    "eval.outputDiffuseAlpha",
+                    "nativeShape.materialAlpha[1]",
+                    force=True,
+                ),
+                mock.call(
+                    "eval.outputDiffuseAlpha",
+                    "nativeShape.materialAlpha[1]",
+                    force=True,
+                ),
+            ],
+        )
+
+    def test_build_graph_keeps_evaluator_map_when_another_shader_creation_fails(self):
+        """Native binding must use the successful shader/node pair directly."""
+        cmds = mock.Mock()
+        cmds.objExists.return_value = True
+        contributions = {
+            "shader_a": [{"morph_node": "morph_a", "morph_order": 0}],
+            "shader_b": [{"morph_node": "morph_b", "morph_order": 1}],
+        }
+        route = material_morph_runtime.ShaderColorRoute(
+            backend=material_morph_runtime.BACKEND_DX11,
+            skip_reason="dx11_vp2_not_directx11",
+        )
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+            material_morph_runtime,
+            "_collect_shaders_by_material_index",
+            return_value={0: "shader_a", 1: "shader_b"},
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_collect_contributions_by_shader",
+            return_value=contributions,
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_collect_existing_evaluators",
+            return_value={},
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_create_evaluator",
+            side_effect=["eval_a", None],
+        ), mock.patch.object(
+            material_morph_runtime, "_mark_evaluator"
+        ), mock.patch.object(
+            material_morph_runtime, "_refresh_contributions"
+        ), mock.patch.object(
+            material_morph_runtime,
+            "resolve_shader_color_route",
+            return_value=route,
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_iter_material_morph_nodes",
+            return_value=["morph_a", "morph_b"],
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_collect_native_render_shapes",
+            return_value=["nativeShape"],
+        ), mock.patch.object(
+            material_morph_runtime,
+            "bind_native_material_alpha",
+            return_value={"success": True, "skipped": []},
+        ) as bind_mock:
+            result = material_morph_runtime.build_material_morph_graph("root")
+
+        self.assertFalse(result["success"])
+        bind_mock.assert_called_once_with(
+            "root",
+            "nativeShape",
+            shaders_by_index={0: "shader_a", 1: "shader_b"},
+            evaluators_by_shader={"shader_a": "eval_a"},
+        )
+
+    def test_empty_graph_restores_native_alpha_from_authored_shader(self):
+        """After network deletion, the graph rebuild restores each native alpha base."""
+        cmds = mock.Mock()
+        cmds.objExists.return_value = True
+        cmds.attributeQuery.return_value = True
+        cmds.getAttr.side_effect = lambda plug, **kwargs: (
+            1.0 if plug.endswith(".mmd_diffuse_alpha") else "double"
+            if kwargs.get("type")
+            else 0.0
+        )
+
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+            material_morph_runtime,
+            "_collect_shaders_by_material_index",
+            return_value={0: "shader0", 1: "shader1"},
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_collect_contributions_by_shader",
+            return_value={},
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_collect_existing_evaluators",
+            return_value={},
+        ) as existing_evaluators_mock, mock.patch.object(
+            material_morph_runtime,
+            "_iter_material_morph_nodes",
+            return_value=[],
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_collect_native_render_shapes",
+            return_value=["nativeShape"],
+        ):
+            result = material_morph_runtime.build_material_morph_graph("root")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["skipped"], ["no_material_morph_contributions"])
+        self.assertEqual(
+            [call.args[0] for call in cmds.setAttr.call_args_list],
+            ["nativeShape.materialAlpha[0]", "nativeShape.materialAlpha[1]"],
+        )
+        self.assertEqual(
+            [call.args[1] for call in cmds.setAttr.call_args_list],
+            [1.0, 1.0],
+        )
+        existing_evaluators_mock.assert_called_once_with()
+        cmds.disconnectAttr.assert_not_called()
+        self.assertNotIn("missing_evaluator:0:shader0", result["skipped"])
+        self.assertNotIn("missing_evaluator:1:shader1", result["skipped"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -465,6 +465,8 @@ void MmdRenderGeometryOverride::updateDG()
         return;
     }
 
+    shape_->updateEvaluatedMaterialAlpha();
+
     MPlug inputPlug(shape_->thisMObject(), MmdRenderShape::aInputMesh);
     if (inputPlug.isNull()) {
         // A shape created by an older scene/plugin version may not expose the
