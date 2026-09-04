@@ -51,6 +51,18 @@ class TestCppFastImportRouting(unittest.TestCase):
     """Routing scenarios for .pmx files with the C++ fast-import option."""
 
     def setUp(self):
+        light_patch = patch(
+            "mmd_tools.io.model_import_pipeline.create_mmd_light_controller",
+            return_value="|mmd_light",
+        )
+        self.mock_create_light = light_patch.start()
+        self.addCleanup(light_patch.stop)
+        select_patch = patch("maya.cmds.select")
+        self.mock_select = select_patch.start()
+        self.addCleanup(select_patch.stop)
+        old_light = settings.get("import.light.create_controller", True)
+        self.addCleanup(settings.set, "import.light.create_controller", old_light)
+        settings.set("import.light.create_controller", True)
         self._old_cpp = settings.get("import.native.use_cpp_fast_load", False)
         self._old_mesh_only = settings.get("import.native.cpp_fast_load_mesh_only", True)
         self._old_scale = settings.get("import.general.scale_factor", 1.0)
@@ -185,6 +197,8 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
         self.assertEqual(progress, [5, 10, 90])
+        self.mock_create_light.assert_called_once_with()
+        self.mock_select.assert_called_once_with("cpp_root", replace=True)
 
     @patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management")
     @patch("mmd_tools.io.mmd_importer.fast_import")
@@ -215,6 +229,18 @@ class TestCppFastImportRouting(unittest.TestCase):
         )
         mock_setup_color_management.assert_called_once_with()
         self.assertEqual(result, "cpp_root")
+        self.mock_create_light.assert_called_once_with()
+
+    @patch("mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root")
+    def test_fast_import_respects_light_controller_opt_out(self, mock_fast):
+        """Fast Load preserves the shared scene-light opt-out setting."""
+        settings.set("import.light.create_controller", False)
+        self.assertEqual(
+            import_mmd_file("model.pmx", options={"use_cpp_fast_load": True}),
+            "cpp_root",
+        )
+        mock_fast.assert_called_once()
+        self.mock_create_light.assert_not_called()
 
     @patch("mmd_tools.io.mmd_importer.fast_import", return_value=None)
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")

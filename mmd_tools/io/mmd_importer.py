@@ -19,6 +19,7 @@ from mmd_tools.converters import vmd_profile
 from mmd_tools.converters.vmd_motion_kind import detect_vmd_motion_kind
 from mmd_tools.io import pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
+from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 from mmd_tools.core.logger import get_logger
 
 logger = get_logger("mmd_tools.io.mmd_importer")
@@ -347,6 +348,18 @@ def import_mmd_file(
                 _raise_native_vp2_failure(options, f"fast importer error: {exc}", exc)
             raise
         if fast_root is not None:
+            # Fast Load returns before the Python importer's scene setup.
+            # Reuse its shared light policy, including get-or-create and opt-out.
+            light_controller = ModelImportPipeline(
+                logger=logger,
+                filepath=filepath,
+                scale=import_scale,
+                options=options,
+            ).create_light_controller()
+            if light_controller:
+                from maya import cmds
+
+                cmds.select(fast_root, replace=True)
             _emit_progress(90)
             if vp2_ownership_requested:
                 diagnostics = _native_route_profile(options)
