@@ -533,9 +533,10 @@ class BoneConverter:
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
         skin_cluster_create_start = time.perf_counter()
+        skin_geometry = maya_mesh_utils.resolve_mesh_shape(mesh_node)
         skin_cluster = cmds.skinCluster(
             maya_joints,
-            mesh_node,
+            skin_geometry,
             toSelectedBones=True,
             normalizeWeights=2,
             maximumInfluences=max_influence,  # PMXは最大4つのボーンに制限されているため
@@ -631,7 +632,7 @@ class BoneConverter:
             )
 
         mesh_selection_list = om.MSelectionList()
-        mesh_selection_list.add(mesh_node)
+        mesh_selection_list.add(maya_mesh_utils.resolve_mesh_shape(mesh_node))
         shape_dag_path = mesh_selection_list.getDagPath(0)
         mesh_fn = om.MFnMesh(shape_dag_path)
         vertex_count = mesh_fn.numVertices

@@ -209,6 +209,7 @@ def import_pmx_file(
             # メッシュを変換
             logger.debug("Converting mesh...")
             mesh_converter = MeshConverter(filepath, scale=scale)
+            mesh_converter.cpp_fast_load_geometry = options.get("_cpp_fast_load_geometry")
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group, is_pmd=is_pmd)
             pipeline.connect_shader_nodes_to_root(

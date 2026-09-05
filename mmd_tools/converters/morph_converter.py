@@ -1068,7 +1068,7 @@ class MorphConverter:
                 target_mesh = cmds.rename(target_mesh, template_name)
                 maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
                 sel = om.MSelectionList()
-                sel.add(target_mesh)
+                sel.add(maya_mesh_utils.resolve_mesh_shape(target_mesh))
                 dag = sel.getDagPath(0)
                 mesh_fn = om.MFnMesh(dag)
                 template_ctx["target_mesh"] = target_mesh
@@ -1253,7 +1253,7 @@ class MorphConverter:
         """PMXの頂点オフセットを適用"""
         # MSelectionListを使用してDAGパスを取得
         sel_list = om.MSelectionList()
-        sel_list.add(mesh_node)
+        sel_list.add(maya_mesh_utils.resolve_mesh_shape(mesh_node))
         dag_path = sel_list.getDagPath(0)
 
         # MFnMeshを取得

@@ -341,6 +341,10 @@ def import_mmd_file(
         # RenderOverride route without changing the direct API contract.
         if options.get("use_cpp_vp2_ownership", False):
             fast_kwargs["vp2_ownership"] = True
+        if not mesh_only:
+            fast_kwargs["options"] = options
+            if progress_callback is not None:
+                fast_kwargs["progress_callback"] = progress_callback
         try:
             fast_root = fast_import(filepath, **fast_kwargs)
         except Exception as exc:
