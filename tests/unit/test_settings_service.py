@@ -33,7 +33,7 @@ class _FakeSettingsStore:
                 "rig": {"add_semi_standard_bones": True, "bake_mode": False},
                 "native": {
                     "use_cpp_fast_load": True,
-                    "cpp_fast_load_mesh_only": False,
+                    "cpp_fast_load_mesh_only": True,
                     "use_cpp_vp2_ownership": True,
                     "use_cpp_rig_nodes": True,
                 },
@@ -259,7 +259,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
         self.assertFalse(options["use_cpp_fast_load"])
-        self.assertTrue(options["cpp_fast_load_mesh_only"])
+        self.assertFalse(options["cpp_fast_load_mesh_only"])
         self.assertFalse(options["use_cpp_vp2_ownership"])
         self.assertFalse(options["use_native_pmx_parse"])
         self.assertFalse(options["require_native_pmx_parse"])

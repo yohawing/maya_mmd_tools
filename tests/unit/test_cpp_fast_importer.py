@@ -189,8 +189,10 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True},
+            progress_callback=progress.append,
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -222,9 +224,12 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
             vp2_ownership=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
+                     "profile": {"native_import": {"requested": True, "route": "cpp_fast_load_vp2",
+                                                  "status": "succeeded", "fallback": "not_used"}}},
         )
         mock_setup_color_management.assert_called_once_with()
         self.assertEqual(result, "cpp_root")
@@ -359,20 +364,20 @@ class TestCppFastImportRouting(unittest.TestCase):
         self.assertEqual(progress, [5, 10, 12])
 
     # ------------------------------------------------------------------
-    # Scenario 4: mesh_only=False → fast import receives mesh_only=False
+    # Scenario 4: mesh_only=True → fast import receives mesh_only=True
     # ------------------------------------------------------------------
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
-    def test_fast_import_mesh_only_false_calls_with_param(
+    def test_fast_import_mesh_only_true_calls_with_param(
         self,
         mock_import_pmx: MagicMock,
         mock_parse: MagicMock,
         mock_fast: MagicMock,
     ):
-        """When cpp_fast_load_mesh_only is False, fast_import is called
-        with mesh_only=False to request skeleton+skin."""
+        """When cpp_fast_load_mesh_only is True, fast_import is called
+        with mesh_only=True to request the explicit geometry-only API."""
         mock_fast.return_value = "cpp_root"
 
         result = import_mmd_file(
@@ -380,7 +385,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             options={
                 "scale": 1.0,
                 "use_cpp_fast_load": True,
-                "cpp_fast_load_mesh_only": False,
+                "cpp_fast_load_mesh_only": True,
             },
         )
 
@@ -388,16 +393,15 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=False,
+            mesh_only=True,
             include_morphs=True,
-            options={"scale": 1.0, "use_cpp_fast_load": True, "cpp_fast_load_mesh_only": False},
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
 
     # ------------------------------------------------------------------
-    # Scenario 5: mesh_only=True (default) → fast import receives mesh_only=True
+    # Scenario 5: full authoring is the default
     # ------------------------------------------------------------------
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
@@ -410,7 +414,8 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_fast: MagicMock,
     ):
         """When cpp_fast_load_mesh_only is not specified, fast_import is
-        called with mesh_only=True (default)."""
+        called with mesh_only=False even with legacy saved settings."""
+        settings.set("import.native.cpp_fast_load_mesh_only", True)
         mock_fast.return_value = "cpp_root"
 
         result = import_mmd_file(
@@ -425,8 +430,9 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True},
         )
         self.assertEqual(result, "cpp_root")
 
@@ -455,8 +461,9 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=False,
+            options={"scale": 1.0, "use_cpp_fast_load": True, "import_morphs": False},
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -487,9 +494,12 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
             vp2_ownership=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
+                     "profile": {"native_import": {"requested": True, "route": "cpp_fast_load_vp2",
+                                                  "status": "succeeded", "fallback": "not_used"}}},
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -574,7 +584,8 @@ class TestFastImportMetadata(unittest.TestCase):
         """Native geometry retains ordinary physics, morph and scale options."""
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
         parsed = object()
-        options = {"import_physics": True, "setup_rig": False, "custom_namespace": "hero"}
+        options = {"import_physics": True, "setup_rig": False, "custom_namespace": "hero",
+                   "separate_meshes_by_material": False}
         progress = MagicMock()
         with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[plugin_path]), patch.object(
             Path, "exists", return_value=True

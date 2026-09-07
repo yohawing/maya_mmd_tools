@@ -31,19 +31,25 @@ def run_probe(config_path: str) -> None:
         cmds.loadPlugin(config["plugin"], quiet=True)
         for route in ("python", "cpp"):
             cmds.file(new=True, force=True)
-            profile = {}
-            options = {
-                "scale": config.get("scale", 1.0),
-                "use_cpp_fast_load": route == "cpp",
-                "cpp_fast_load_mesh_only": False,
-                "use_cpp_vp2_ownership": route == "cpp" and config.get("vp2", True),
-                "import_physics": config.get("physics", False),
-                "import_morphs": True,
-                "create_mmd_shaders": False,
-                "create_mmd_control_rig": False,
-                "separate_meshes_by_material": config.get("split", False),
-                "profile": profile,
-            }
+            from mmd_tools.actions.import_model_action import ImportModelAction, ImportModelRequest
+            from mmd_tools.services.settings_service import SettingsService
+
+            service = SettingsService()
+            for key, value in {
+                "ui.general.development_mode": True,
+                "import.general.scale_factor": config.get("scale", 1.0),
+                "import.native.use_cpp_fast_load": route == "cpp",
+                "import.native.cpp_fast_load_mesh_only": True,  # Legacy profile must still author a complete model.
+                "import.native.use_cpp_vp2_ownership": route == "cpp" and config.get("vp2", True),
+                "import.physics.import_physics": config.get("physics", False),
+                "import.morph.import_morphs": True,
+                "import.model.create_mmd_shaders": False,
+                "import.model.create_mmd_control_rig": False,
+                "import.model.separate_meshes_by_material": config.get("split", False),
+            }.items():
+                service.set(key, value)
+            options = service.build_pmx_import_options()
+            options["profile"] = {}
             native_calls = []
             original_fast_load = cmds.mmdFastLoad
 
@@ -52,7 +58,12 @@ def run_probe(config_path: str) -> None:
 
             cmds.mmdFastLoad = observe_fast_load
             try:
-                root = import_mmd_file(config["model"], options=options)
+                imported = ImportModelAction().execute(ImportModelRequest(config["model"], options))
+                if imported.error:
+                    raise imported.error
+                if imported.outcome != "success":
+                    raise RuntimeError(f"{route} UI import outcome: {imported.outcome}: {imported.warnings}")
+                root = imported.root_node
             finally:
                 cmds.mmdFastLoad = original_fast_load
             if not root:
@@ -60,6 +71,10 @@ def run_probe(config_path: str) -> None:
             _require_native_route(route, native_calls)
             result = {"import": _snapshot(cmds, om, root), "nativeCalls": native_calls}
             report["routes"][route] = result
+            result["options"] = options
+            result["outcome"] = imported.outcome
+            if route == "cpp" and config.get("vp2", True):
+                result["viewport"] = _viewport(cmds, root, out)
             import_mmd_file(config["motion"], options={"target_model": root})
             samples = {}
             for frame in (0, 1, 15, 30, 60):
@@ -75,6 +90,7 @@ def run_probe(config_path: str) -> None:
             cmds.file(str(path), open=True, force=True)
             result["reopen"] = _positions(cmds, om, root)
             result["reopenImport"] = _snapshot(cmds, om, root)
+            result["editUndoRedo"] = _edit_roundtrip(cmds, om, root)
         left, right = (report["routes"][name] for name in ("python", "cpp"))
         for phase in ("samples", "reopen"):
             error = _max_error(left[phase], right[phase])
@@ -88,6 +104,51 @@ def run_probe(config_path: str) -> None:
     finally:
         (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         (out / "probe.log").write_text("CPP_AUTHORING_COMPLETE\n", encoding="utf-8")
+
+
+def _edit_roundtrip(cmds, om, root):
+    """Exercise a component edit after reopen and verify Undo/Redo restores points."""
+    before = _positions(cmds, om, root)
+    mesh = next(iter(before))
+    cmds.move(0.25, 0, 0, mesh + ".vtx[0]", relative=True, objectSpace=True)
+    edited = _positions(cmds, om, root)
+    if _max_error(before, edited) <= 1e-5:
+        raise RuntimeError("Reopened mesh component edit did not change a vertex")
+    cmds.undo()
+    if _max_error(before, _positions(cmds, om, root)) > 1e-5:
+        raise RuntimeError("Component edit Undo did not restore mesh points")
+    cmds.redo()
+    if _max_error(edited, _positions(cmds, om, root)) > 1e-5:
+        raise RuntimeError("Component edit Redo did not restore mesh points")
+    cmds.undo()
+    return True
+
+
+def _viewport(cmds, root, out):
+    """Require every proxy to draw before accepting full-import VP2 ownership."""
+    from tools.smoke.maya_render_override_gui_smoke import _wait_ready
+    from tools.render_override.common import capture_view
+
+    shapes = cmds.listRelatives(root, allDescendents=True, type="mmdRenderShape", fullPath=True) or []
+    if not shapes:
+        raise RuntimeError("Full VP2 import has no render proxies")
+    panels = cmds.getPanel(type="modelPanel") or []
+    panel = "modelPanel4" if "modelPanel4" in panels else panels[0]
+    cmds.modelEditor(panel, edit=True, rendererName="vp2Renderer", displayAppearance="smoothShaded",
+                     displayTextures=True, wireframeOnShaded=False, grid=False)
+    cmds.lookThru(panel, "persp")
+    cmds.select(shapes, replace=True)
+    cmds.viewFit("persp", all=False, animate=False, fitFactor=0.8)
+    cmds.select(clear=True)
+    witnesses = {}
+    for shape in shapes:
+        witness = _wait_ready(cmds, shape, print)
+        sources = cmds.listConnections(shape + ".inputMesh", source=True, destination=False, shapes=True) or []
+        if not witness.startswith("ready") or len(sources) != 1 or cmds.getAttr(sources[0] + ".visibility"):
+            raise RuntimeError(f"VP2 ownership not ready: {shape}: {witness}, sources={sources}")
+        witnesses[shape] = witness
+    capture = capture_view(cmds, out / "cpp-viewport.png", panel, 800, 600)
+    return {"witnesses": witnesses, "capture": str(capture)}
 
 
 def _call_native(command, calls, *args, **kwargs):
