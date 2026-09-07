@@ -135,6 +135,8 @@ class TestImportRoutePhysics(MayaTestBase):
         return flat
 
     def _run_live_contract(self, route: ImportRoute):
+        from tools.smoke.maya_fast_import_authoring import _require_inactive_physics
+
         root = self._import(route, import_physics=True)
         solver = self._registry_solver(root)
         world = self._solver_world(solver)
@@ -146,10 +148,13 @@ class TestImportRoutePhysics(MayaTestBase):
         cmds.currentTime(0)
         self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
         self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "disabled")
+        self.assertEqual(_require_inactive_physics(cmds, root)["status"], "pass")
 
         # The production World control is the physics OFF switch.  Enabling it
         # through the existing solver helper also validates both connections.
         _connect_enabled_world(solver)
+        with self.assertRaisesRegex(RuntimeError, "requires inactive physics"):
+            _require_inactive_physics(cmds, root)
         gravity = _solver_world_gravity(solver)
         self.assertGreater(
             max(abs(float(value)) for value in gravity),

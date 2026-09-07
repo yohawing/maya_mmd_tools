@@ -97,6 +97,11 @@ def _install_import_observer(window, observations):
     action = getattr(window.import_export_presenter, "import_model_action", None)
     if not isinstance(action, ImportModelAction):
         raise RuntimeError("ImportExportPresenter is not using the production ImportModelAction")
+    return _observe_action(action, observations)
+
+
+def _observe_action(action, observations):
+    """Capture a production action's request/result while forwarding execution."""
     original_execute = action.execute
 
     def observe_execute(request):
@@ -129,29 +134,7 @@ def _install_vmd_observer(window, observations):
     action = getattr(window.import_export_presenter, "import_vmd_action", None)
     if not isinstance(action, ImportVmdAction):
         raise RuntimeError("ImportExportPresenter is not using the production ImportVmdAction")
-    original_execute = action.execute
-
-    def observe_execute(request):
-        entry = {
-            "request": {
-                "type": type(request).__name__,
-                "filePath": str(getattr(request, "file_path", "")),
-                "createNewScene": bool(getattr(request, "create_new_scene", False)),
-                "optionsBefore": _json_safe(getattr(request, "options", {})),
-            }
-        }
-        observations.append(entry)
-        result = original_execute(request)
-        entry["request"]["optionsAfter"] = _json_safe(getattr(request, "options", {}))
-        entry["result"] = _import_result_witness(result)
-        return result
-
-    action.execute = observe_execute
-
-    def restore():
-        action.execute = original_execute
-
-    return restore
+    return _observe_action(action, observations)
 
 
 def _require_import_success(observations, expected_path, expected_root=None):
@@ -320,6 +303,7 @@ def _validate_ui_import_options(window, route, config, options):
     expected = {
         "scale": float(view.scale_spin.value()),
         "create_mmd_shaders": bool(view.create_mmd_shaders_check.isChecked()),
+        "create_mmd_control_rig": bool(view.create_mmd_control_rig_check.isChecked()),
         "separate_meshes_by_material": bool(view.separate_meshes_check.isChecked()),
         "import_physics": bool(view.import_physics_check.isChecked()),
         "import_morphs": bool(view.import_morphs_check.isChecked()),
@@ -600,7 +584,9 @@ def _multi_import_contract(cmds, first_root, second_root):
             members = model_registry.list_model_registry_members(root, category) or []
             registry_members[root][category] = sorted(_canonical_node(cmds, member) for member in members)
             for member in members:
-                add_owned(root, member)
+                add_owned(root, member, strict=True, context=f"registry {category}")
+                canonical = _canonical_node(cmds, member)
+                critical_identity_owners.setdefault(canonical, set()).add(root)
         meshes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
         joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
         clusters = []
@@ -616,9 +602,11 @@ def _multi_import_contract(cmds, first_root, second_root):
             "skinCluster": sorted(clusters),
             "blendShape": sorted(blend_shapes),
             "mmdMorphController": sorted(
-                node for node in registry_members[root][model_registry.REGISTRY_CATEGORY_MORPH]
-                if cmds.nodeType(node) == "mmdMorphController"
-            ),
+                cmds.listConnections(
+                    f"{root}.mmd_morph_controller", source=True, destination=False,
+                    type="mmdMorphController",
+                ) or []
+            ) if cmds.attributeQuery("mmd_morph_controller", node=root, exists=True) else [],
         }
         for nodes in critical_nodes[root].values():
             for node in nodes:
@@ -626,7 +614,11 @@ def _multi_import_contract(cmds, first_root, second_root):
                 critical_identity_owners.setdefault(canonical, set()).add(root)
         critical_requirements[root] = {
             "skinCluster": bool(meshes and joints),
-            "blendShape": bool(blend_shapes or registry_members[root][model_registry.REGISTRY_CATEGORY_MORPH]),
+            "blendShape": any(
+                cmds.attributeQuery("mmd_morph_type", node=node, exists=True)
+                and cmds.getAttr(f"{node}.mmd_morph_type") == "vertex"
+                for node in registry_members[root][model_registry.REGISTRY_CATEGORY_MORPH]
+            ),
             "mmdMorphController": bool(registry_members[root][model_registry.REGISTRY_CATEGORY_MORPH]),
         }
         for node in critical_nodes[root]["skinCluster"]:
@@ -1056,8 +1048,10 @@ def run_probe(config_path: str) -> None:
             result["ui"]["postVmd"] = _capture_ui_snapshot(window, route, out, "post-vmd")
             _write_breadcrumb(out, started, "vmd-click-complete", route=route)
             samples = {}
+            physics_witness = _require_inactive_physics(cmds, root)
             for frame in (0, 1, 15, 30, 60):
                 cmds.currentTime(frame, update=True)
+                _require_inactive_physics(cmds, root)
                 samples[str(frame)] = _positions(cmds, om, root)
             result["samples"] = samples
             if _motion_delta(samples) <= 1e-5:
@@ -1067,7 +1061,8 @@ def run_probe(config_path: str) -> None:
                 report,
                 "vmd_playback",
                 route,
-                {"operations": vmd_actions, "motionDelta": _motion_delta(samples)},
+                {"operations": vmd_actions, "motionDelta": _motion_delta(samples),
+                 "physicsInactive": physics_witness},
             )
             path = out / f"{route}.ma"
             cmds.file(rename=str(path))
@@ -1181,6 +1176,28 @@ def _call_native(command, calls, *args, **kwargs):
 def _require_native_route(route, calls):
     if (route == "cpp") != bool(calls) or any(not call["success"] for call in calls):
         raise RuntimeError(f"{route} did not complete its requested geometry route")
+
+
+def _require_inactive_physics(cmds, root):
+    """Do not attribute live physics deformation to the imported VMD."""
+    from mmd_tools.core import model_registry
+
+    states = []
+    for node in model_registry.list_model_registry_members(root, model_registry.REGISTRY_CATEGORY_PHYSICS) or []:
+        if cmds.nodeType(node) != "mmdPhysicsSolver":
+            continue
+        solved = bool(cmds.getAttr(f"{node}.outSolved"))
+        worlds = cmds.listConnections(
+            f"{node}.inWorldSettings", source=True, destination=False,
+            type="mmdPhysicsWorldShape",
+        ) or []
+        active = bool(cmds.getAttr(f"{node}.enable")) and any(
+            cmds.getAttr(f"{world}.enable") for world in worlds
+        )
+        if solved or active:
+            raise RuntimeError(f"VMD-only sampling requires inactive physics: {node}")
+        states.append({"solver": node, "worlds": worlds, "solved": solved, "active": active})
+    return {"status": "pass", "solvers": states}
 
 
 def _motion_delta(samples):

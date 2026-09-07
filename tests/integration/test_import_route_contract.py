@@ -67,3 +67,38 @@ class TestImportRouteContract(MayaTestBase):
             expect_physics=True,
             options={"import_physics": True, "import_morphs": True},
         )
+
+    def test_multi_import_morph_ownership_and_shared_material_rejection(self):
+        """Exercise the GUI oracle with vertex and non-vertex-only morph models."""
+        from mmd_tools.core import model_registry
+        from mmd_tools.core.pmx_data.morph import PmxMorphType
+        from tools.smoke.maya_fast_import_authoring import _multi_import_contract
+
+        for vertex_morphs in (True, False):
+            fixture_path = self.get_temp_filename(f"multi_morph_{vertex_morphs}.pmx")
+            write_morph_contract_fixture(fixture_path)
+            if not vertex_morphs:
+                pmx = parse_pmx_file(fixture_path, use_native_pmx_parse=False)
+                pmx.morphs = [m for m in pmx.morphs if m.morph_type == PmxMorphType.BoneMorph]
+                pmx.display_frames = []
+                pmx.write_file(fixture_path)
+            for route in ImportRoute:
+                with self.subTest(route=route.value, vertex_morphs=vertex_morphs):
+                    cmds.file(new=True, force=True)
+                    options = {"import_physics": False, "import_morphs": True}
+                    first = import_pmx_via_route(self, fixture_path, route, options=options)
+                    second = import_pmx_via_route(self, fixture_path, route, options=options)
+                    witness = _multi_import_contract(cmds, first, second)
+                    for presence in witness["criticalPresence"].values():
+                        self.assertTrue(presence["mmdMorphController"])
+                        self.assertEqual(presence["blendShape"], vertex_morphs)
+                    materials = model_registry.list_model_registry_members(
+                        first, model_registry.REGISTRY_CATEGORY_MATERIAL,
+                    )
+                    self.assertTrue(materials)
+                    model_registry.register_model_members(
+                        model_registry.get_model_registry(second),
+                        model_registry.REGISTRY_CATEGORY_MATERIAL, [materials[0]],
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "shared across imported roots"):
+                        _multi_import_contract(cmds, first, second)
