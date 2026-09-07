@@ -146,8 +146,13 @@ class BoneConverter:
         # リグのセットアップはRigConverterに委譲。
         # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
         if setup_rig:
+            # _create_maya_joints() refreshes every path after reparenting and
+            # name collisions.  Native metadata must use those actual paths;
+            # the short planned names in bone_map can resolve to another
+            # model on repeated imports.
+            rig_bone_map = {index: maya_joints[index] for index in range(len(maya_joints))}
             rig_result = self.rig_converter.setup_pmx_rig(
-                pmx_data, maya_joints, bone_map, skeleton_group,
+                pmx_data, maya_joints, rig_bone_map, skeleton_group,
                 pmx_filepath=pmx_filepath,
             )
             self.profile["rig_converter"] = {
