@@ -219,6 +219,7 @@ public:
             selection_ = *selection;
         }
         clearOperation().setMask(clearMask);
+        clearOperation().setClearDepth(1.0F);
     }
 
     MHWRender::MSceneRender::MSceneFilterOption renderFilterOverride() override
@@ -469,6 +470,7 @@ private:
                 }
             }
         }
+
         MHWRender::MRenderTarget::freeRawData(raw);
         std::ostringstream result;
         result << "{\"available\":true,\"writtenSamples\":" << written
@@ -1612,7 +1614,11 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     std::unique_ptr<OrderedSceneRender> opaque(new OrderedSceneRender(
         kOpaqueSceneName,
         MHWRender::MSceneRender::kRenderOpaqueShadedItems,
-        MHWRender::MClearOperation::kClearNone,
+        // Pre-scene UI can populate depth even when no UI is visible (MSAA
+        // disabled). Start scene depth here, then retain ordinary-object
+        // occlusion for the ordered opaque and transparent operations.
+        MHWRender::MClearOperation::kClearDepth |
+            MHWRender::MClearOperation::kClearStencil,
         &nonMmdSelection));
     std::unique_ptr<OrderedSceneRender> postSceneUI(new OrderedSceneRender(
         kPostSceneUIName,

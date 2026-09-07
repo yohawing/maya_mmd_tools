@@ -451,6 +451,35 @@ def read_png_rgb(path: Path) -> Tuple[int, int, List[Tuple[int, int, int]]]:
     return int(width), int(height), pixels
 
 
+def compare_msaa_coverage(off_path: Path, on_path: Path) -> Dict[str, Any]:
+    """Detect missing surfaces in fixed-camera, flat-background GUI captures.
+
+    This is a silhouette gate, not a shading oracle. The capture harness hides
+    rig/UI geometry; a ten percent boundary allowance covers sampling changes.
+    Both empty images fail rather than accepting a matching blank viewport.
+    """
+    off_width, off_height, off = read_png_rgb(off_path)
+    on_width, on_height, on = read_png_rgb(on_path)
+    if (off_width, off_height) != (on_width, on_height):
+        return {"pass": False, "reason": "capture dimensions differ"}
+
+    def foreground(pixels):
+        background = pixels[0]
+        return {
+            i for i, pixel in enumerate(pixels)
+            if max(abs(a - b) for a, b in zip(pixel, background)) > 8
+        }
+
+    off_mask, on_mask = foreground(off), foreground(on)
+    union = off_mask | on_mask
+    overlap = len(off_mask & on_mask) / len(union) if union else 0.0
+    return {
+        "pass": bool(union) and overlap >= 0.9,
+        "offPixels": len(off_mask), "onPixels": len(on_mask),
+        "intersectionOverUnion": overlap,
+    }
+
+
 def write_png_rgb(path: Path, width: int, height: int, pixels: Sequence[Tuple[int, int, int]]) -> None:
     """Write a dependency-free 8-bit RGB PNG."""
 

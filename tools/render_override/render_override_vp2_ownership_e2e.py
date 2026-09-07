@@ -938,6 +938,36 @@ def run_probe(
         )
         report["captures"]["ownership"] = str(capture)
 
+        # Keep both sampling paths as evidence: a valid render-item witness
+        # alone cannot detect opaque surfaces disappearing with MSAA disabled.
+        original_msaa = cmds.getAttr("hardwareRenderingGlobals.multiSampleEnable")
+        original_override = cmds.modelEditor(panel, query=True, rendererOverrideName=True)
+        try:
+            for enabled in (False, True):
+                cmds.setAttr("hardwareRenderingGlobals.multiSampleEnable", enabled)
+                cmds.refresh(force=True)
+                aa_capture = _capture_view(
+                    cmds, output_dir / f"native_vp2_msaa_{int(enabled)}.png",
+                    panel, width, height, frame,
+                )
+                report["captures"][f"msaa{int(enabled)}"] = str(aa_capture)
+                cmds.modelEditor(panel, edit=True, rendererOverrideName="")
+                cmds.refresh(force=True)
+                plain_capture = _capture_view(
+                    cmds, output_dir / f"native_plain_msaa_{int(enabled)}.png",
+                    panel, width, height, frame,
+                )
+                report["captures"][f"plainMsaa{int(enabled)}"] = str(plain_capture)
+                cmds.modelEditor(panel, edit=True, rendererOverrideName=original_override)
+        finally:
+            cmds.setAttr("hardwareRenderingGlobals.multiSampleEnable", original_msaa)
+            cmds.modelEditor(panel, edit=True, rendererOverrideName=original_override)
+
+        from tools.render_override.render_override_visual_gate import compare_msaa_coverage
+        report["msaaCoverage"] = compare_msaa_coverage(
+            Path(report["captures"]["msaa0"]), Path(report["captures"]["msaa1"])
+        )
+
         if capture_only:
             reindex_checks: dict[str, bool] = {}
             if material_reindex:
@@ -987,6 +1017,7 @@ def run_probe(
                 "geometryBuffersPrepared": "geometry=vertices=" in witness
                 and ",indices=" in witness,
                 "captureCreated": capture.is_file() and capture.stat().st_size > 0,
+                "msaaCoverageStable": report["msaaCoverage"]["pass"],
                 "connectedSourceMeshPresent": bool(connected_source_meshes),
                 "connectedSourceMeshHidden": source_meshes_hidden,
                 "noCustomMfnMeshDuplicate": not unexpected_custom_meshes,
@@ -1001,6 +1032,7 @@ def run_probe(
                 "materialBindingDiagnosticsReady",
                 "geometryBuffersPrepared",
                 "captureCreated",
+                "msaaCoverageStable",
                 "connectedSourceMeshPresent",
                 "connectedSourceMeshHidden",
                 "noCustomMfnMeshDuplicate",
