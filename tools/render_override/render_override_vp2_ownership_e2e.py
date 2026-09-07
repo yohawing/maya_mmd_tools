@@ -500,6 +500,7 @@ def run_probe(
     authoring_checks: bool = False,
     performance_checks: bool = False,
     material_checks: bool = False,
+    shadow_checks: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -1073,6 +1074,10 @@ def run_probe(
                 from tools.render_override.performance_checks import check_camera_updates
 
                 report["performance"] = check_camera_updates(cmds, shape_name, panel)
+            if shadow_checks:
+                from tools.render_override.shadow_checks import check_self_shadow
+
+                report["selfShadow"] = check_self_shadow(cmds, root_name, shape_name, panel, output_dir)
             if authoring_checks:
                 from tools.render_override.authoring_checks import check_authoring
 
@@ -1319,6 +1324,7 @@ def main() -> int:
     )
     parser.add_argument("--performance-checks", action="store_true")
     parser.add_argument("--material-checks", action="store_true")
+    parser.add_argument("--shadow-checks", action="store_true")
     args = parser.parse_args()
 
     model_path = args.model
@@ -1346,6 +1352,8 @@ def main() -> int:
         parser.error("--performance-checks requires --capture-only and --ui-import")
     if args.material_checks and not (args.capture_only and args.ui_import):
         parser.error("--material-checks requires --capture-only and --ui-import")
+    if args.shadow_checks and not (args.capture_only and args.ui_import):
+        parser.error("--shadow-checks requires --capture-only and --ui-import")
     camera_config = None
     if args.camera_json is not None:
         try:
@@ -1375,7 +1383,8 @@ def main() -> int:
         f"material_reindex={bool(args.material_reindex)!r}, "
         f"authoring_checks={bool(args.authoring_checks)!r}, "
         f"performance_checks={bool(args.performance_checks)!r}, "
-        f"material_checks={bool(args.material_checks)!r})\n"
+        f"material_checks={bool(args.material_checks)!r}, "
+        f"shadow_checks={bool(args.shadow_checks)!r})\n"
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
