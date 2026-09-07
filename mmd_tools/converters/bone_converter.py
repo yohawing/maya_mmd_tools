@@ -146,8 +146,13 @@ class BoneConverter:
         # リグのセットアップはRigConverterに委譲。
         # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
         if setup_rig:
+            # _create_maya_joints() refreshes every path after reparenting and
+            # name collisions.  Native metadata must use those actual paths;
+            # the short planned names in bone_map can resolve to another
+            # model on repeated imports.
+            rig_bone_map = {index: maya_joints[index] for index in range(len(maya_joints))}
             rig_result = self.rig_converter.setup_pmx_rig(
-                pmx_data, maya_joints, bone_map, skeleton_group,
+                pmx_data, maya_joints, rig_bone_map, skeleton_group,
                 pmx_filepath=pmx_filepath,
             )
             self.profile["rig_converter"] = {
@@ -533,9 +538,10 @@ class BoneConverter:
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
         skin_cluster_create_start = time.perf_counter()
+        skin_geometry = maya_mesh_utils.resolve_mesh_shape(mesh_node)
         skin_cluster = cmds.skinCluster(
             maya_joints,
-            mesh_node,
+            skin_geometry,
             toSelectedBones=True,
             normalizeWeights=2,
             maximumInfluences=max_influence,  # PMXは最大4つのボーンに制限されているため
@@ -631,7 +637,7 @@ class BoneConverter:
             )
 
         mesh_selection_list = om.MSelectionList()
-        mesh_selection_list.add(mesh_node)
+        mesh_selection_list.add(maya_mesh_utils.resolve_mesh_shape(mesh_node))
         shape_dag_path = mesh_selection_list.getDagPath(0)
         mesh_fn = om.MFnMesh(shape_dag_path)
         vertex_count = mesh_fn.numVertices

@@ -3,7 +3,7 @@
 Verifies that ``import_mmd_file`` correctly routes through / around the
 ``fast_import`` path depending on the ``use_cpp_fast_load`` and
 ``cpp_fast_load_mesh_only`` options.  Also tests the skeleton/skin creation
-path inside ``_apply_fast_skeleton_skin``.
+shared PMX authoring pipeline.
 
 NOTE: Maya/PyMel is unavailable in CI, so the shared Maya stub is installed
 before importing the modules under test.
@@ -34,7 +34,6 @@ from mmd_tools.io.cpp_fast_importer import (
     _apply_basic_materials,
     _apply_fast_material_morph_runtime,
     _apply_fast_morph_metadata,
-    _apply_fast_skeleton_skin,
     _apply_fast_root_metadata,
     _allocate_fast_material_name,
     _create_standard_material,
@@ -190,8 +189,10 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True},
+            progress_callback=progress.append,
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -223,9 +224,12 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
             vp2_ownership=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
+                     "profile": {"native_import": {"requested": True, "route": "cpp_fast_load_vp2",
+                                                  "status": "succeeded", "fallback": "not_used"}}},
         )
         mock_setup_color_management.assert_called_once_with()
         self.assertEqual(result, "cpp_root")
@@ -360,20 +364,20 @@ class TestCppFastImportRouting(unittest.TestCase):
         self.assertEqual(progress, [5, 10, 12])
 
     # ------------------------------------------------------------------
-    # Scenario 4: mesh_only=False → fast import receives mesh_only=False
+    # Scenario 4: mesh_only=True → fast import receives mesh_only=True
     # ------------------------------------------------------------------
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
-    def test_fast_import_mesh_only_false_calls_with_param(
+    def test_fast_import_mesh_only_true_calls_with_param(
         self,
         mock_import_pmx: MagicMock,
         mock_parse: MagicMock,
         mock_fast: MagicMock,
     ):
-        """When cpp_fast_load_mesh_only is False, fast_import is called
-        with mesh_only=False to request skeleton+skin."""
+        """When cpp_fast_load_mesh_only is True, fast_import is called
+        with mesh_only=True to request the explicit geometry-only API."""
         mock_fast.return_value = "cpp_root"
 
         result = import_mmd_file(
@@ -381,7 +385,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             options={
                 "scale": 1.0,
                 "use_cpp_fast_load": True,
-                "cpp_fast_load_mesh_only": False,
+                "cpp_fast_load_mesh_only": True,
             },
         )
 
@@ -389,7 +393,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=False,
+            mesh_only=True,
             include_morphs=True,
         )
         mock_parse.assert_not_called()
@@ -397,7 +401,7 @@ class TestCppFastImportRouting(unittest.TestCase):
         self.assertEqual(result, "cpp_root")
 
     # ------------------------------------------------------------------
-    # Scenario 5: mesh_only=True (default) → fast import receives mesh_only=True
+    # Scenario 5: full authoring is the default
     # ------------------------------------------------------------------
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
@@ -410,7 +414,8 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_fast: MagicMock,
     ):
         """When cpp_fast_load_mesh_only is not specified, fast_import is
-        called with mesh_only=True (default)."""
+        called with mesh_only=False even with legacy saved settings."""
+        settings.set("import.native.cpp_fast_load_mesh_only", True)
         mock_fast.return_value = "cpp_root"
 
         result = import_mmd_file(
@@ -425,8 +430,9 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True},
         )
         self.assertEqual(result, "cpp_root")
 
@@ -455,8 +461,9 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=False,
+            options={"scale": 1.0, "use_cpp_fast_load": True, "import_morphs": False},
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -487,9 +494,12 @@ class TestCppFastImportRouting(unittest.TestCase):
             "model.pmx",
             base_name="model",
             scale=1.0,
-            mesh_only=True,
+            mesh_only=False,
             include_morphs=True,
             vp2_ownership=True,
+            options={"scale": 1.0, "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
+                     "profile": {"native_import": {"requested": True, "route": "cpp_fast_load_vp2",
+                                                  "status": "succeeded", "fallback": "not_used"}}},
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -523,8 +533,8 @@ class TestCppFastImportRouting(unittest.TestCase):
         self.assertEqual(result, "pmd_root")
 
 
-class TestFastSkeletonSkin(unittest.TestCase):
-    """Unit tests for _apply_fast_skeleton_skin with mocked Maya modules."""
+class TestFastImportMetadata(unittest.TestCase):
+    """Unit tests for native metadata and shared full import."""
 
     def setUp(self):
         # MmdParsedModel will be fully mocked for each test
@@ -538,15 +548,9 @@ class TestFastSkeletonSkin(unittest.TestCase):
         self.mock_read_bytes = self.mock_read_bytes_patcher.start()
         self.mock_read_bytes.return_value = b"fake pmx bytes"
 
-        self.mock_apply_weights_patcher = patch(
-            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.apply_vertex_weights"
-        )
-        self.mock_apply_weights = self.mock_apply_weights_patcher.start()
-
     def tearDown(self):
         self.mock_parsed_patcher.stop()
         self.mock_read_bytes_patcher.stop()
-        self.mock_apply_weights_patcher.stop()
 
     def _make_cmds_mock(self):
         """Build a MagicMock that behaves like a Maya cmds module."""
@@ -575,242 +579,47 @@ class TestFastSkeletonSkin(unittest.TestCase):
         cmds.attributeQuery.side_effect = _attribute_query
         return cmds
 
-    def test_skeleton_skin_happy_path(self):
-        """Verify joints, skeleton group, and skinCluster are created."""
-        metadata_json = json.dumps({
-            "bones": [
-                {
-                    "name": "\u30bb\u30f3\u30bf\u30fc",
-                    "englishName": "center",
-                    "parentIndex": -1,
-                    "position": [0.0, 10.0, 0.0],
-                },
-                {
-                    "name": "\u5de6\u8155",
-                    "englishName": "arm_L",
-                    "parentIndex": 0,
-                    "position": [2.0, 10.0, 0.0],
-                },
-                {
-                    "name": "IK target",
-                    "englishName": "ik_target",
-                    "parentIndex": 0,
-                    "position": [0.0, 0.0, 0.0],
-                },
-            ]
-        })
 
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = metadata_json
-        # Two vertices, each with 4 bone influences
-        mock_parsed.skin_indices = [
-            (0, 1, 0, 0),
-            (0, 0, 0, 0),
-        ]
-        mock_parsed.skin_weights = [
-            (0.8, 0.2, 0.0, 0.0),
-            (1.0, 0.0, 0.0, 0.0),
-        ]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = self._make_cmds_mock()
-        cmds.polyEvaluate.return_value = 2
-
-        with patch(
-            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.has_materially_different_authored_normals",
-            return_value=False,
-        ) as mock_normal_difference:
-            _apply_fast_skeleton_skin(
-                "model.pmx", "mesh1", "root1", "my_model", cmds
-            )
-
-        # ---- assertions ----
-        # Skeleton group created
-        cmds.group.assert_called_once_with(
-            empty=True,
-            name="Skeleton",
-            parent="root1",
-        )
-
-        # Skeleton keeps all joints, including the zero-weight IK target.
-        self.assertEqual(cmds.joint.call_count, 3)
-        call_names = [c[1]["name"] for c in cmds.joint.call_args_list]
-        self.assertIn("center", call_names)
-        self.assertIn("arm_L", call_names)
-
-        # Parent joint 1 under joint 0
-        parent_args = [c.args for c in cmds.parent.call_args_list]
-        self.assertTrue(
-            any("arm_L" in str(a) for a in parent_args)
-        )
-
-        # skinCluster contains only the two positive-weight joints.
-        skin_call = cmds.skinCluster.call_args
-        self.assertIsNotNone(skin_call)
-        joints_arg = skin_call[0][0]
-        self.assertEqual(len(joints_arg), 2)
-
-        mock_normal_difference.assert_called_once_with("mesh1")
-        cmds.setAttr.assert_any_call("skinCluster1.deformUserNormals", True)
-        self.assertFalse(
-            any(
-                call.args == ("skinCluster1.blockGPU", True)
-                for call in cmds.setAttr.call_args_list
-            )
-        )
-
-        # segmentScaleCompensate set to False on both
-        ssc_calls = [c for c in cmds.setAttr.call_args_list
-                     if "segmentScaleCompensate" in str(c)]
-        self.assertEqual(len(ssc_calls), 3)
-        bind_translate_calls = [
-            c for c in cmds.setAttr.call_args_list
-            if "mmd_vmd_bind_translate" in str(c)
-        ]
-        self.assertEqual(len(bind_translate_calls), 3)
-        self.mock_apply_weights.assert_called_once_with(
-            "skinCluster1",
-            "mesh1",
-            [
-                [0.8, 0.2],
-                [1.0, 0.0],
-            ],
-        )
-
-    def test_skeleton_skin_remaps_welded_vertices_to_source_rows(self):
-        """A welded FastLoad mesh uses its local-to-PMX provenance for skin rows."""
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = json.dumps({"bones": [{
-            "name": "center", "parentIndex": -1, "position": [0.0, 0.0, 0.0],
-        }]})
-        mock_parsed.skin_indices = [(0, 0, 0, 0)] * 3
-        mock_parsed.skin_weights = [
-            (0.1, 0.0, 0.0, 0.0),
-            (0.2, 0.0, 0.0, 0.0),
-            (0.7, 0.0, 0.0, 0.0),
-        ]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = self._make_cmds_mock()
-        cmds.polyEvaluate.return_value = 2
-        cmds.attributeQuery.side_effect = lambda attribute, node=None, **_kwargs: (
-            attribute == "mmd_source_vertex_indices" and node == "meshTransform1"
-        )
-        cmds.getAttr.side_effect = lambda attribute: (
-            [2, 0] if attribute == "meshTransform1.mmd_source_vertex_indices" else [(0, 0, 0)]
-        )
-
-        _apply_fast_skeleton_skin("model.pmx", "mesh1", "root1", "my_model", cmds)
-
-        self.mock_apply_weights.assert_called_once_with(
-            "skinCluster1", "mesh1", [[0.7], [0.1]]
-        )
-
-    def test_skeleton_skin_allows_identity_only_for_equal_count_legacy_mesh(self):
-        """Old un-welded plug-ins use identity rows when their count matches."""
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = json.dumps({"bones": [{
-            "name": "center", "parentIndex": -1, "position": [0.0, 0.0, 0.0],
-        }]})
-        mock_parsed.skin_indices = [(0, 0, 0, 0), (0, 0, 0, 0)]
-        mock_parsed.skin_weights = [(0.25, 0.0, 0.0, 0.0), (0.75, 0.0, 0.0, 0.0)]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = self._make_cmds_mock()
-        cmds.polyEvaluate.return_value = 2
-
-        _apply_fast_skeleton_skin("model.pmx", "mesh1", "root1", "my_model", cmds)
-
-        self.mock_apply_weights.assert_called_once_with(
-            "skinCluster1", "mesh1", [[0.25], [0.75]]
-        )
-
-    def test_skeleton_skin_rejects_bad_or_missing_provenance_before_joint_creation(self):
-        """A mismatched mesh cannot leave a partial FastLoad skeleton behind."""
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = json.dumps({"bones": [{
-            "name": "center", "parentIndex": -1, "position": [0.0, 0.0, 0.0],
-        }]})
-        mock_parsed.skin_indices = [(0, 0, 0, 0), (0, 0, 0, 0)]
-        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)] * 2
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cases = {
-            "missing": (3, False, None),
-            "incomplete": (2, True, [0]),
-            "out_of_range": (2, True, [0, 2]),
-        }
-        for name, (vertex_count, has_attr, source_rows) in cases.items():
-            with self.subTest(name=name):
-                cmds = self._make_cmds_mock()
-                cmds.polyEvaluate.return_value = vertex_count
-                cmds.attributeQuery.side_effect = lambda attribute, node=None, **_kwargs: (
-                    has_attr and attribute == "mmd_source_vertex_indices"
-                )
-                if source_rows is not None:
-                    cmds.getAttr.return_value = source_rows
-
-                _apply_fast_skeleton_skin("model.pmx", "mesh1", "root1", "my_model", cmds)
-
-                cmds.group.assert_not_called()
-                cmds.joint.assert_not_called()
-                cmds.skinCluster.assert_not_called()
-
-    def test_fast_import_scale_is_applied_to_basic_skeleton(self):
-        """Fast mesh and skeleton imports must share the requested scale."""
-        metadata_json = json.dumps({
-            "bones": [{
-                "name": "center",
-                "englishName": "center",
-                "parentIndex": -1,
-                "position": [2.0, 10.0, 3.0],
-            }]
-        })
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = metadata_json
-        mock_parsed.skin_indices = [(0, 0, 0, 0)]
-        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = self._make_cmds_mock()
-        cmds.mmdFastLoad.return_value = ["root1", "mesh1"]
+    def test_full_fast_import_shares_options_and_scale_with_pmx_pipeline(self):
+        """Native geometry retains ordinary physics, morph and scale options."""
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
-
-        maya_module = __import__("maya")
-        with patch.object(maya_module, "cmds", cmds), patch.dict(
-            "sys.modules", {"maya.cmds": cmds}
-        ), patch.object(
-            cpp_fast_importer, "_candidate_plugin_paths", return_value=[plugin_path]
-        ), patch.object(Path, "exists", return_value=True), patch.object(
-            cpp_fast_importer, "_setup_plugin_directory"
-        ), patch.object(
-            cpp_fast_importer, "_apply_basic_materials", return_value=None
-        ), patch.object(cpp_fast_importer, "_apply_fast_root_metadata"), patch.object(
-            cpp_fast_importer, "_apply_fast_morph_metadata"
-        ), patch(
-            "mmd_tools.core.model_registry.ensure_model_registry"
+        parsed = object()
+        options = {"import_physics": True, "setup_rig": False, "custom_namespace": "hero",
+                   "separate_meshes_by_material": False}
+        progress = MagicMock()
+        with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[plugin_path]), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=parsed), patch(
+            "mmd_tools.io.pmx_importer.import_pmx_file", return_value="root1"
+        ) as import_pmx, patch("maya.cmds.mmdFastLoad", create=True, return_value=["nativeRoot", "nativeMesh"]), patch.object(
+            cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
         ):
-            result = fast_import(
-                "model.pmx",
-                base_name="my_model",
-                scale=0.5,
-                mesh_only=False,
-            )
-
+            result = fast_import("model.pmx", scale=0.5, mesh_only=False, options=options, progress_callback=progress)
         self.assertEqual(result, "root1")
-        # The C++ mesh command already receives the requested import scale.
-        cmds.mmdFastLoad.assert_called_once_with(
-            f="model.pmx",
-            n="my_model",
-            s=0.5,
-            mo=True,
-        )
-        # The skeleton must occupy the same scaled space (and retain Maya's
-        # handedness conversion on Z) as the mesh produced above.
-        self.assertEqual(
-            cmds.joint.call_args[1]["position"],
-            (1.0, 5.0, -1.5),
-        )
+        args = import_pmx.call_args.args
+        self.assertEqual(args[:3], (parsed, "model.pmx", 0.5))
+        self.assertIs(import_pmx.call_args.kwargs["progress_callback"], progress)
+        self.assertTrue(args[3]["_cpp_fast_load_geometry"])
+        self.assertTrue(args[3]["import_physics"])
+        self.assertFalse(args[3]["setup_rig"])
+        self.assertEqual(args[3]["custom_namespace"], "hero")
+        self.assertNotIn("_cpp_fast_load_geometry", options)
+
+    def test_full_native_unavailability_returns_before_authoring(self):
+        """Optional native failures leave the ordinary parser fallback reachable."""
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        for failure in ("parse", "geometry"):
+            with self.subTest(failure=failure), patch.object(
+                cpp_fast_importer, "_candidate_plugin_paths", return_value=[plugin_path]
+            ), patch.object(Path, "exists", return_value=True), patch.object(
+                cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
+            ), patch.object(
+                cpp_fast_importer, "parse_pmx_native", return_value=None if failure == "parse" else object()
+            ), patch("maya.cmds.mmdFastLoad", create=True, side_effect=RuntimeError("unavailable")), patch(
+                "mmd_tools.io.pmx_importer.import_pmx_file"
+            ) as author:
+                self.assertIsNone(fast_import("model.pmx", mesh_only=False))
+                author.assert_not_called()
 
     def test_fast_import_keeps_root_identity_without_persisting_scale(self):
         """Fast import preserves PMX header metadata without root scale state."""
@@ -883,34 +692,6 @@ class TestFastSkeletonSkin(unittest.TestCase):
         self.assertEqual(raw_writes["root1.mmd_comment"], "Raw comment")
         self.assertEqual(raw_writes["root1.mmd_comment_en"], "Raw comment EN")
 
-    def test_skeleton_skin_blocks_gpu_for_authored_normal_difference(self):
-        """Only a materially different authored normal opts the deformer out of GPU."""
-        metadata_json = json.dumps({
-            "bones": [{
-                "name": "center",
-                "englishName": "center",
-                "parentIndex": -1,
-                "position": [0.0, 0.0, 0.0],
-            }]
-        })
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = metadata_json
-        mock_parsed.skin_indices = [(0, 0, 0, 0)]
-        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = self._make_cmds_mock()
-        with patch(
-            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.has_materially_different_authored_normals",
-            return_value=True,
-        ) as mock_normal_difference:
-            _apply_fast_skeleton_skin(
-                "model.pmx", "mesh1", "root1", "my_model", cmds
-            )
-
-        mock_normal_difference.assert_called_once_with("mesh1")
-        cmds.setAttr.assert_any_call("skinCluster1.deformUserNormals", True)
-        cmds.setAttr.assert_any_call("skinCluster1.blockGPU", True)
 
     def test_basic_materials_returns_header_metadata_from_single_parsed_model(self):
         """Root metadata reuses the parsed-model JSON instead of reparsing PMX."""
@@ -983,144 +764,6 @@ class TestFastSkeletonSkin(unittest.TestCase):
             forceElement="mat_fastSG",
         )
         self.assertTrue(mock_parse_native.called)
-
-    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
-    def test_skeleton_skin_falls_back_to_native_pmx_parser(self, mock_parse_native: MagicMock):
-        """ParsedModel ABI がない環境では native PMX parser から skeleton/skin を作る。"""
-        self.mock_parsed_cls.from_pmx_bytes.return_value = None
-
-        bone = types.SimpleNamespace(
-            name="センター",
-            name_english="center",
-            parent_bone_index=-1,
-            position=(0.0, 10.0, 0.0),
-        )
-        vertex = types.SimpleNamespace(
-            weight_transform_type=0,
-            bone_indices=[0],
-            bone_weights=[],
-        )
-        mock_parse_native.return_value = types.SimpleNamespace(
-            bones=[bone],
-            vertices=[vertex],
-        )
-
-        cmds = self._make_cmds_mock()
-
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
-
-        cmds.group.assert_called_once()
-        cmds.joint.assert_called_once()
-        cmds.skinCluster.assert_called_once()
-        self.mock_apply_weights.assert_called_once_with(
-            "skinCluster1",
-            "mesh1",
-            [[1.0]],
-        )
-
-    def test_skeleton_skin_no_bones(self):
-        """When bones list is empty, skip skeleton/skin creation."""
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = json.dumps({"bones": []})
-        mock_parsed.skin_indices = [(0, 0, 0, 0)]
-        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = MagicMock()
-
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
-
-        cmds.joint.assert_not_called()
-        cmds.group.assert_not_called()
-        cmds.skinCluster.assert_not_called()
-
-    def test_skeleton_skin_no_skin_data(self):
-        """When skin_indices is None, skip skeleton/skin creation."""
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = json.dumps({
-            "bones": [{
-                "name": "center",
-                "parentIndex": -1,
-                "position": [0.0, 0.0, 0.0],
-            }]
-        })
-        mock_parsed.skin_indices = None
-        mock_parsed.skin_weights = None
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = MagicMock()
-
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
-
-        cmds.joint.assert_not_called()
-        cmds.group.assert_not_called()
-        cmds.skinCluster.assert_not_called()
-
-    def test_skeleton_skin_parsed_model_none(self):
-        """When MmdParsedModel.from_pmx_bytes returns None, skip silently."""
-        self.mock_parsed_cls.from_pmx_bytes.return_value = None
-
-        cmds = MagicMock()
-
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
-
-        cmds.joint.assert_not_called()
-        cmds.group.assert_not_called()
-        cmds.skinCluster.assert_not_called()
-
-    def test_skeleton_skin_no_metadata_json(self):
-        """When metadata_json is None, skip skeleton/skin creation."""
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = None
-        mock_parsed.skin_indices = [(0, 0, 0, 0)]
-        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = MagicMock()
-
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
-
-        cmds.joint.assert_not_called()
-        cmds.group.assert_not_called()
-        cmds.skinCluster.assert_not_called()
-
-    def test_skeleton_skin_mesh_not_found(self):
-        """When mesh node doesn't exist, skip skinCluster."""
-        metadata_json = json.dumps({
-            "bones": [{
-                "name": "center",
-                "parentIndex": -1,
-                "position": [0.0, 0.0, 0.0],
-            }]
-        })
-
-        mock_parsed = MagicMock()
-        mock_parsed.metadata_json = metadata_json
-        mock_parsed.skin_indices = [(0, 0, 0, 0)]
-        mock_parsed.skin_weights = [(1.0, 0.0, 0.0, 0.0)]
-        self.mock_parsed_cls.from_pmx_bytes.return_value = mock_parsed
-
-        cmds = MagicMock()
-        cmds.objExists.return_value = False  # mesh doesn't exist
-
-        _apply_fast_skeleton_skin(
-            "model.pmx", "mesh1", "root1", "my_model", cmds
-        )
-
-        # Mesh/provenance validation happens before any partial skeleton.
-        cmds.joint.assert_not_called()
-        cmds.group.assert_not_called()
-        cmds.skinCluster.assert_not_called()
 
 
 class TestSanitizeNodeName(unittest.TestCase):
@@ -1811,7 +1454,6 @@ class TestFastMorphMetadata(unittest.TestCase):
         root_metadata.assert_not_called()
 
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_material_morph_runtime")
-    @patch("mmd_tools.io.cpp_fast_importer._apply_fast_skeleton_skin")
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_morph_metadata")
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
     @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
@@ -1824,7 +1466,6 @@ class TestFastMorphMetadata(unittest.TestCase):
         basic_materials,
         root_metadata,
         morph_metadata,
-        skeleton_skin,
         material_runtime,
     ):
         """Materials, morph metadata, and skinning use the source mesh item."""
@@ -1856,7 +1497,7 @@ class TestFastMorphMetadata(unittest.TestCase):
             result = fast_import(
                 "model.pmx",
                 base_name="demo",
-                mesh_only=False,
+                mesh_only=True,
                 include_morphs=True,
                 vp2_ownership=True,
             )
@@ -1875,14 +1516,6 @@ class TestFastMorphMetadata(unittest.TestCase):
             ["sourceBlendShape"],
         )
         self.assertEqual(parse_native.call_count, 1)
-        skeleton_skin.assert_called_once_with(
-            "model.pmx",
-            "sourceMesh",
-            "root",
-            "demo",
-            cmds_mod,
-            scale=1.0,
-        )
 
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_material_morph_runtime")
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_morph_metadata", return_value=[])

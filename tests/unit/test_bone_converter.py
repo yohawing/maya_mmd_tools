@@ -707,6 +707,12 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         # RigConverterが呼ばれたことを確認
         mock_rig_converter.setup_pmx_rig.assert_called_once()
+        rig_call = mock_rig_converter.setup_pmx_rig.call_args
+        self.assertEqual(
+            rig_call.args[2],
+            {index: joint for index, joint in enumerate(maya_joints)},
+            "rig setup must receive the post-create Maya joint paths",
+        )
 
     @patch("mmd_tools.converters.bone_converter.RigConverter")
     def test_convert_pmx_bones_can_skip_rig_setup(self, mock_rig_converter_class):

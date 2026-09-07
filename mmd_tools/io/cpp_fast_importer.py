@@ -15,14 +15,10 @@ Candidate plugin paths follow the same layout as
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Optional
 
 from mmd_tools.core.constants import (
-    ATTR_MMD_BONE_INDEX,
-    ATTR_MMD_BONE_NAME,
-    ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_MATERIAL,
@@ -32,21 +28,17 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_BONE_PARENT_INDEX,
     ATTR_MMD_AMBIENT_COLOR,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
-    ATTR_MMD_PMX_REST_POSITION,
     ATTR_MMD_PMX_SOFT_BODY_COUNT,
     ATTR_MMD_SHININESS,
     ATTR_MMD_SPECULAR_COLOR,
     GEOMETRY_GROUP,
     SCENE_ROOT_SUFFIX,
-    SKELETON_GROUP,
 )
-from mmd_tools.core import cpp_plugin_locator, maya_mesh_utils, maya_name_utils
-from mmd_tools.core.coordinate_transform import mmd_point_to_maya
+from mmd_tools.core import cpp_plugin_locator, maya_name_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
 from mmd_tools.converters.material_shader_parameters import (
@@ -60,19 +52,6 @@ logger = get_logger(__name__)
 MmdParsedModel = None
 _FAST_NATIVE_PMX_UNSET = object()
 
-
-class _FastSkinData:
-    """Parsed bone and skin data needed by the fast skeleton/skin path."""
-
-    def __init__(
-        self,
-        bones: list[dict],
-        skin_indices: list[tuple[int, int, int, int]],
-        skin_weights: list[tuple[float, float, float, float]],
-    ):
-        self.bones = bones
-        self.skin_indices = skin_indices
-        self.skin_weights = skin_weights
 
 # ---------------------------------------------------------------------------
 # Candidate discovery  (mirrors tests/cpp/smoke_runtime_node.py)
@@ -188,6 +167,8 @@ def fast_import(
     mesh_only: bool = True,
     include_morphs: bool = True,
     vp2_ownership: bool = False,
+    options: Optional[dict] = None,
+    progress_callback=None,
 ) -> Optional[str]:
     """Attempt fast PMX import via the compiled C++ ``mmdFastLoad`` command.
 
@@ -201,8 +182,8 @@ def fast_import(
         Scale factor passed as ``s=`` to ``mmdFastLoad``.
     mesh_only:
         If True (default), only mesh geometry is imported.
-        If False, a basic Maya skeleton (joints) and skinCluster are
-        also created from the mmd-anim parsed metadata.
+        If False, native geometry uses the ordinary PMX authoring pipeline,
+        including skeleton, skin, morphs, physics and model metadata.
     include_morphs:
         If True, asks the C++ command to create PMX vertex morph
         blendShape targets. With VP2 ownership, the Python bridge also creates
@@ -262,6 +243,67 @@ def fast_import(
 
     if vp2_ownership:
         _require_dx11_for_vp2_ownership(cmds)
+
+    if not mesh_only:
+        # Keep the ordinary authoring contract in one place. Only geometry
+        # construction is replaced by mmdFastLoad; bones, morphs, physics and
+        # ownership use the same converters as a regular PMX import.
+        from mmd_tools.io.mmd_importer import (
+            _record_physics_compatibility_warnings,
+            _scoped_settings_override,
+        )
+        from mmd_tools.io.pmx_importer import import_pmx_file, _require_effective_import_scale
+        from mmd_tools.core import settings, settings_keys
+
+        scale = _require_effective_import_scale(scale)
+        try:
+            pmx = parse_pmx_native(filepath)
+        except Exception as exc:
+            logger.debug("Fast native PMX metadata unavailable: %s", exc)
+            return None
+        if pmx is None:
+            return None
+        command_args = {"f": filepath, "n": base_name, "s": scale, "mo": False}
+        split = bool((options or {}).get(
+            "separate_meshes_by_material",
+            settings.get(settings_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
+        ))
+        if split:
+            command_args["sp"] = True
+        if vp2_ownership:
+            command_args["vp2Ownership"] = True
+        try:
+            native_mesh = cmds.mmdFastLoad(**command_args)
+        except RuntimeError as exc:
+            logger.debug("Fast native geometry unavailable: %s", exc)
+            return None
+        expected = 1 if split else (3 if vp2_ownership else 2)
+        if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
+            raise RuntimeError("mmdFastLoad returned an invalid geometry result")
+        if options is not None:
+            _record_physics_compatibility_warnings(pmx, options)
+        import_options = dict(options or {})
+        import_options.update({
+            "import_morphs": include_morphs,
+            "_cpp_fast_load_geometry": native_mesh,
+            "use_cpp_vp2_ownership": vp2_ownership,
+        })
+        native_identity = cmds.ls(native_mesh[0], uuid=True)
+        try:
+            with _scoped_settings_override(import_options):
+                return import_pmx_file(
+                    pmx, filepath, scale, import_options, progress_callback=progress_callback
+                )
+        except Exception:
+            # Preflight may reject the model before the ordinary pipeline adopts
+            # this geometry. UUIDs retain ownership even if authoring renamed it.
+            remaining = cmds.ls(native_identity, long=True) if native_identity else []
+            if remaining:
+                try:
+                    cmds.delete(remaining)
+                except RuntimeError:
+                    logger.warning("Failed to remove rejected Fast Load geometry", exc_info=True)
+            raise
 
     # --- run fast load ----------------------------------------------------
     try:
@@ -393,15 +435,6 @@ def fast_import(
             skipped = runtime_result.get("skipped", []) if isinstance(runtime_result, dict) else []
             reason = "; ".join(str(item) for item in skipped) or "material morph runtime failed"
             raise RuntimeError(f"Fast VP2 material morph runtime failed: {reason}")
-
-    if not mesh_only and mesh_node:
-        # attempt skeleton + skin; any failure falls back to mesh-only result
-        try:
-            _apply_fast_skeleton_skin(
-                filepath, mesh_node, transform_node, base_name, cmds, scale=scale
-            )
-        except Exception as exc:
-            logger.debug("Fast skeleton/skin failed (%s); returning mesh root only", exc)
 
     logger.debug("Fast import succeeded: transform node = %s", transform_node)
     return transform_node
@@ -1238,452 +1271,6 @@ def _create_standard_material(
     except Exception as exc:
         logger.debug("Failed to create fast material %s: %s", raw_name, exc)
         return None
-
-
-def _load_fast_skin_data(filepath: str) -> Optional[_FastSkinData]:
-    """Load bones and skin weights for the fast skeleton/skin add-on path."""
-    pmx_bytes = Path(filepath).read_bytes()
-    parsed_model_cls = _mmd_parsed_model_class()
-    parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
-    if parsed is not None:
-        try:
-            metadata_text = parsed.metadata_json
-            skin_indices = parsed.skin_indices
-            skin_weights = parsed.skin_weights
-        finally:
-            parsed.free()
-
-        if metadata_text and skin_indices is not None and skin_weights is not None:
-            metadata = json.loads(metadata_text)
-            bones = metadata.get("bones") or metadata.get("skeleton", {}).get("bones") or []
-            if bones:
-                return _FastSkinData(list(bones), list(skin_indices), list(skin_weights))
-
-        logger.debug("Parsed-model skin metadata incomplete; trying native PMX parser fallback")
-
-    pmx = parse_pmx_native(filepath)
-    if pmx is None:
-        logger.debug("Native PMX parser fallback unavailable; skipping skeleton/skin")
-        return None
-
-    bones = [
-        {
-            "name": bone.name,
-            "englishName": bone.name_english,
-            "parentIndex": bone.parent_bone_index,
-            "position": bone.position,
-        }
-        for bone in pmx.bones
-    ]
-    skin_indices, skin_weights = _skin_data_from_pmx_vertices(pmx.vertices)
-    return _FastSkinData(bones, skin_indices, skin_weights)
-
-
-def _skin_data_from_pmx_vertices(
-    vertices,
-) -> tuple[list[tuple[int, int, int, int]], list[tuple[float, float, float, float]]]:
-    """Convert PmxVertex skinning fields to fixed four-influence tuples."""
-    skin_indices: list[tuple[int, int, int, int]] = []
-    skin_weights: list[tuple[float, float, float, float]] = []
-
-    for vertex in vertices:
-        indices = [int(i) for i in getattr(vertex, "bone_indices", [])[:4]]
-        weights = [float(w) for w in getattr(vertex, "bone_weights", [])[:4]]
-        mode = int(getattr(vertex, "weight_transform_type", 0))
-
-        if mode == 0:
-            weights = [1.0]
-        elif mode in (1, 3):
-            first = weights[0] if weights else 1.0
-            weights = [first, 1.0 - first]
-        elif mode in (2, 4):
-            pass
-        elif indices:
-            weights = [1.0]
-
-        while len(indices) < 4:
-            indices.append(0)
-        while len(weights) < 4:
-            weights.append(0.0)
-
-        skin_indices.append(tuple(indices[:4]))
-        skin_weights.append(tuple(weights[:4]))
-
-    return skin_indices, skin_weights
-
-
-def _apply_fast_skeleton_skin(
-    filepath: str,
-    mesh_node: str,
-    root_group: str,
-    base_name: str,
-    cmds_module,
-    scale: float = 1.0,
-) -> None:
-    """Create basic Maya joints + skinCluster from mmd-anim parsed metadata.
-
-    Bone positions come from ``metadata_json["bones"]`` (each entry has
-    ``name``, ``englishName``, ``parentIndex``, ``position``).  Vertex skin
-    data comes from ``MmdParsedModel.skin_indices`` / ``skin_weights``.
-
-    On any error the function logs and returns; the caller is responsible
-    for falling back to the mesh-only result.
-    """
-    skin_data = _load_fast_skin_data(filepath)
-    if skin_data is None:
-        return
-
-    bones = skin_data.bones
-    skin_indices = skin_data.skin_indices
-    skin_weights = skin_data.skin_weights
-    if not bones:
-        logger.debug("No bones in metadata; skipping skeleton/skin")
-        return
-
-    remapped_skin = _resolve_fast_skin_rows(
-        mesh_node, skin_indices, skin_weights, cmds_module
-    )
-    if remapped_skin is None:
-        # Do this before creating the skeleton group or any joints.  A mesh
-        # whose local vertices cannot be related to its PMX rows would create
-        # a plausible-looking, but unusable partial rig.
-        return
-    skin_indices, skin_weights = remapped_skin
-
-    # ---- build unique bone/joint names ----
-    joint_names: list[str] = []
-    used_names: set[str] = _scene_name_set(cmds_module)
-    for b in bones:
-        raw = b.get("englishName") or b.get("name") or f"bone_{len(joint_names)}"
-        name = maya_name_utils.sanitize_unique_name(
-            str(raw),
-            used_names,
-            fallback=f"bone_{len(joint_names)}",
-        )
-        joint_names.append(name)
-
-    # ---- create skeleton group ----
-    skeleton_group = cmds_module.group(
-        empty=True,
-        name=SKELETON_GROUP,
-        parent=root_group,
-    )
-
-    # ---- create all joints (initially at world origin) ----
-    joints: list[str] = []
-    for i, b in enumerate(bones):
-        pos = b.get("position", [0.0, 0.0, 0.0])
-        cmds_module.select(clear=True)
-        jnt = cmds_module.joint(
-            name=joint_names[i],
-            position=mmd_point_to_maya(pos, scale),
-        )
-        cmds_module.setAttr(f"{jnt}.segmentScaleCompensate", False)
-        _tag_fast_joint_metadata(cmds_module, jnt, i, b, scale=scale)
-        joints.append(jnt)
-
-    # ---- parent joints according to parentIndex ----
-    for i, b in enumerate(bones):
-        parent_idx = b.get("parentIndex", -1)
-        if 0 <= parent_idx < len(joints):
-            try:
-                cmds_module.parent(joints[i], joints[parent_idx], absolute=True)
-            except Exception:
-                pass
-
-    # ---- parent root joints (parentIndex == -1) into skeleton group ----
-    for i, b in enumerate(bones):
-        parent_idx = b.get("parentIndex", -1)
-        if parent_idx == -1 and cmds_module.objExists(joints[i]):
-            try:
-                cmds_module.parent(joints[i], skeleton_group, absolute=True)
-            except Exception:
-                pass
-
-    # Parent/absolute operations establish the final local bind translation.
-    # Persist that value for Animator Toolset Reset Pose, which intentionally
-    # operates on selected joints instead of opening Rest Pose display mode.
-    # Keep the VMD compatibility helper local so mesh-only fast import does
-    # not import the full VMD scene-state dependency graph at module load.
-    from mmd_tools.converters.vmd_import_state import store_bind_translate
-
-    for joint in joints:
-        try:
-            translate = cmds_module.getAttr(f"{joint}.translate")[0]
-            store_bind_translate(joint, translate, cmds_module=cmds_module)
-        except Exception as exc:
-            logger.debug("Failed to persist fast-path bind translate for %s: %s", joint, exc)
-
-    # ---- create skinCluster ----
-    if not cmds_module.objExists(mesh_node):
-        logger.debug("Mesh node %s does not exist; skipping skinCluster", mesh_node)
-        return
-
-    used_bone_indices = sorted(
-        {
-            int(bone_index)
-            for indices, weights in zip(skin_indices, skin_weights)
-            for bone_index, weight in zip(indices, weights)
-            if float(weight) > 0.0 and 0 <= int(bone_index) < len(joints)
-        }
-    )
-    influence_pairs = [
-        (bone_index, joints[bone_index])
-        for bone_index in used_bone_indices
-        if cmds_module.objExists(joints[bone_index])
-    ]
-    if not influence_pairs:
-        logger.debug("No positive-weight joints for skinCluster; skipping")
-        return
-    influence_joints = [joint for _bone_index, joint in influence_pairs]
-
-    # Evaluate authored-normal state before creating the deformer so Maya's
-    # skinCluster initialization cannot alter the predicate's mesh snapshot.
-    has_authored_normal_difference = maya_mesh_utils.has_materially_different_authored_normals(
-        mesh_node
-    )
-
-    skin_cluster = cmds_module.skinCluster(
-        influence_joints,
-        mesh_node,
-        toSelectedBones=True,
-        normalizeWeights=2,
-        maximumInfluences=4,
-        name=f"{base_name}_skinCluster_fast",
-    )[0]
-
-    maya_mesh_utils.configure_authored_normal_skin_policy(
-        skin_cluster,
-        has_authored_normal_difference,
-        cmds_module=cmds_module,
-    )
-
-    # ---- apply vertex weights ----
-    n_verts = len(skin_indices)
-    if n_verts == 0 or n_verts != len(skin_weights):
-        logger.debug("Skin data vertex count mismatch (%d indices, %d weights); skipping weights",
-                     n_verts, len(skin_weights) if skin_weights else 0)
-        return
-
-    influence_index_by_bone = {
-        bone_index: influence_index
-        for influence_index, (bone_index, _joint) in enumerate(influence_pairs)
-    }
-
-    # Build influence index -> weight for each vertex
-    weights_list: list[list[float]] = []
-    for v in range(n_verts):
-        vw = [0.0] * len(influence_joints)
-        idx4 = skin_indices[v]
-        w4 = skin_weights[v]
-        for k in range(4):
-            bi = int(idx4[k])
-            w = float(w4[k])
-            if w > 0.0 and bi < len(joints):
-                infl_idx = influence_index_by_bone.get(bi)
-                if infl_idx is not None:
-                    vw[infl_idx] = w
-        weights_list.append(vw)
-
-    try:
-        maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
-    except Exception as exc:
-        logger.debug("Failed to apply vertex weights: %s", exc)
-
-
-def _resolve_fast_skin_rows(
-    mesh_node: str,
-    source_skin_indices: list[tuple[int, int, int, int]],
-    source_skin_weights: list[tuple[float, float, float, float]],
-    cmds_module,
-) -> Optional[tuple[list[tuple[int, int, int, int]], list[tuple[float, float, float, float]]]]:
-    """Return skin rows in Maya-local vertex order, or fail before mutation.
-
-    FastLoad welds PMX vertices and stores the representative PMX row for each
-    resulting Maya vertex on the mesh transform.  Older plug-ins did not write
-    that provenance; they remain compatible only when their vertex count is
-    exactly the PMX skin-row count.
-    """
-    if len(source_skin_indices) != len(source_skin_weights):
-        logger.warning(
-            "FastLoad skin data is inconsistent (%d index rows, %d weight rows); "
-            "skipping skeleton before scene mutation",
-            len(source_skin_indices),
-            len(source_skin_weights),
-        )
-        return None
-    if not source_skin_indices:
-        logger.warning("FastLoad has no skin rows; skipping skeleton before scene mutation")
-        return None
-    if any(len(indices) != 4 for indices in source_skin_indices) or any(
-        len(weights) != 4 for weights in source_skin_weights
-    ):
-        logger.warning(
-            "FastLoad skin rows must contain exactly four influences; "
-            "skipping skeleton before scene mutation"
-        )
-        return None
-
-    try:
-        local_vertex_count = int(cmds_module.polyEvaluate(mesh_node, vertex=True))
-    except Exception as exc:
-        logger.warning(
-            "Could not query FastLoad mesh vertex count for %s (%s); "
-            "skipping skeleton before scene mutation",
-            mesh_node,
-            exc,
-        )
-        return None
-    if local_vertex_count < 0:
-        logger.warning(
-            "FastLoad mesh %s has invalid vertex count %d; skipping skeleton before scene mutation",
-            mesh_node,
-            local_vertex_count,
-        )
-        return None
-
-    try:
-        parents = cmds_module.listRelatives(mesh_node, parent=True, fullPath=True) or []
-    except Exception:
-        parents = []
-    provenance_node = str(parents[0]) if parents else mesh_node
-    attr_name = f"{provenance_node}.mmd_source_vertex_indices"
-    try:
-        has_provenance = bool(
-            cmds_module.attributeQuery(
-                "mmd_source_vertex_indices", node=provenance_node, exists=True
-            )
-        )
-    except Exception:
-        has_provenance = False
-
-    if not has_provenance:
-        if local_vertex_count != len(source_skin_indices):
-            logger.warning(
-                "FastLoad mesh %s has %d local vertices but %d PMX skin rows and no "
-                "mmd_source_vertex_indices provenance; skipping skeleton before scene mutation",
-                mesh_node,
-                local_vertex_count,
-                len(source_skin_indices),
-            )
-            return None
-        return list(source_skin_indices), list(source_skin_weights)
-
-    try:
-        local_to_source = cmds_module.getAttr(attr_name)
-    except Exception as exc:
-        logger.warning(
-            "Could not read FastLoad provenance %s (%s); skipping skeleton before scene mutation",
-            attr_name,
-            exc,
-        )
-        return None
-    if not isinstance(local_to_source, (list, tuple)):
-        logger.warning(
-            "FastLoad provenance %s is not an integer array; skipping skeleton before scene mutation",
-            attr_name,
-        )
-        return None
-    if len(local_to_source) != local_vertex_count:
-        logger.warning(
-            "FastLoad provenance %s has %d rows for %d local vertices; "
-            "skipping skeleton before scene mutation",
-            attr_name,
-            len(local_to_source),
-            local_vertex_count,
-        )
-        return None
-
-    source_row_count = len(source_skin_indices)
-    resolved_sources: list[int] = []
-    for local_index, source_value in enumerate(local_to_source):
-        if isinstance(source_value, bool) or not isinstance(source_value, (int, float)):
-            logger.warning(
-                "FastLoad provenance %s[%d] is not a finite integer; "
-                "skipping skeleton before scene mutation",
-                attr_name,
-                local_index,
-            )
-            return None
-        numeric_source = float(source_value)
-        if not math.isfinite(numeric_source) or not numeric_source.is_integer():
-            logger.warning(
-                "FastLoad provenance %s[%d] is not a finite integer; "
-                "skipping skeleton before scene mutation",
-                attr_name,
-                local_index,
-            )
-            return None
-        source_index = int(numeric_source)
-        if source_index < 0 or source_index >= source_row_count:
-            logger.warning(
-                "FastLoad provenance %s[%d]=%d is outside %d PMX skin rows; "
-                "skipping skeleton before scene mutation",
-                attr_name,
-                local_index,
-                source_index,
-                source_row_count,
-            )
-            return None
-        resolved_sources.append(source_index)
-    if len(set(resolved_sources)) != len(resolved_sources):
-        logger.warning(
-            "FastLoad provenance %s contains duplicate source rows; "
-            "skipping skeleton before scene mutation",
-            attr_name,
-        )
-        return None
-
-    return (
-        [source_skin_indices[source] for source in resolved_sources],
-        [source_skin_weights[source] for source in resolved_sources],
-    )
-
-
-def _tag_fast_joint_metadata(
-    cmds_module,
-    joint: str,
-    bone_index: int,
-    bone: dict,
-    *,
-    scale: float = 1.0,
-) -> None:
-    """Attach MMD bone metadata expected by VMD/runtime paths."""
-    attrs = (
-        (ATTR_MMD_BONE_INDEX, "long", int(bone_index)),
-        (ATTR_MMD_BONE_PARENT_INDEX, "long", int(bone.get("parentIndex", -1))),
-        (
-            ATTR_MMD_PMX_REST_POSITION,
-            "double3",
-            tuple(float(value) * scale for value in bone.get("position", (0.0, 0.0, 0.0))),
-        ),
-        (ATTR_MMD_BONE_NAME, "string", str(bone.get("name") or "")),
-        (ATTR_MMD_BONE_NAME_EN, "string", str(bone.get("englishName") or "")),
-    )
-    for attr, attr_type, value in attrs:
-        try:
-            if not cmds_module.attributeQuery(attr, node=joint, exists=True):
-                if attr_type == "string":
-                    cmds_module.addAttr(joint, longName=attr, dataType="string")
-                elif attr_type == "double3":
-                    cmds_module.addAttr(joint, longName=attr, attributeType=attr_type)
-                    for axis in "XYZ":
-                        cmds_module.addAttr(
-                            joint,
-                            longName=f"{attr}{axis}",
-                            attributeType="double",
-                            parent=attr,
-                        )
-                else:
-                    cmds_module.addAttr(joint, longName=attr, attributeType=attr_type)
-            if attr_type == "string":
-                cmds_module.setAttr(f"{joint}.{attr}", value, type="string")
-            elif attr_type == "double3":
-                cmds_module.setAttr(f"{joint}.{attr}", *value, type=attr_type)
-            else:
-                cmds_module.setAttr(f"{joint}.{attr}", value)
-        except Exception:
-            pass
 
 
 def _sanitize_node_name(raw: str) -> str:

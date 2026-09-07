@@ -963,6 +963,13 @@ class MorphConverter:
                     f"{morph_type} morph offset {offset_index} {reference_key} must be a non-negative integer"
                 )
             normalized = {reference_key: reference}
+            if morph_type == "impulse" and "is_local" in offset:
+                is_local = offset["is_local"]
+                if isinstance(is_local, bool) or not isinstance(is_local, int) or is_local not in (0, 1):
+                    raise ValueError(
+                        f"{morph_type} morph offset {offset_index} is_local must be 0 or 1"
+                    )
+                normalized["is_local"] = is_local
             if scalar_key is not None:
                 scalar = offset.get(scalar_key)
                 if isinstance(scalar, bool) or not isinstance(scalar, (int, float)):
@@ -1068,7 +1075,7 @@ class MorphConverter:
                 target_mesh = cmds.rename(target_mesh, template_name)
                 maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
                 sel = om.MSelectionList()
-                sel.add(target_mesh)
+                sel.add(maya_mesh_utils.resolve_mesh_shape(target_mesh))
                 dag = sel.getDagPath(0)
                 mesh_fn = om.MFnMesh(dag)
                 template_ctx["target_mesh"] = target_mesh
@@ -1253,7 +1260,7 @@ class MorphConverter:
         """PMXの頂点オフセットを適用"""
         # MSelectionListを使用してDAGパスを取得
         sel_list = om.MSelectionList()
-        sel_list.add(mesh_node)
+        sel_list.add(maya_mesh_utils.resolve_mesh_shape(mesh_node))
         dag_path = sel_list.getDagPath(0)
 
         # MFnMeshを取得

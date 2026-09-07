@@ -1,7 +1,11 @@
 import unittest
 
 from mmd_tools.adapters import MayaCmdsAdapter
-from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN
+from mmd_tools.core.constants import (
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_MODEL_REGISTRY,
+)
 from mmd_tools.services.scene_model_service import SceneModelService
 
 
@@ -21,11 +25,13 @@ class _FakeCmds:
         self.blend_targets = {}
         self.selected = None
         self.long_paths = {}
+        self.ls_calls = []
 
     def objExists(self, node):
         return node in self.existing
 
     def ls(self, *args, **kwargs):
+        self.ls_calls.append((args, dict(kwargs)))
         if kwargs.get("selection"):
             selected = list(self.selection)
             if kwargs.get("long"):
@@ -231,6 +237,45 @@ class TestSceneModelService(unittest.TestCase):
 
         self.assertEqual(service.list_mmd_models(), ["b_root", "ns:a_root"])
 
+    def test_list_mmd_models_uses_metadata_identity_for_renamed_and_auto_numbered_roots(self):
+        cmds = _FakeCmds()
+        cmds.transforms = [
+            "|Model_root",
+            "|Model_root1",
+            "|RenamedModel",
+            "|ns:RenamedModel2",
+            "|RegistryOnly",
+            "|unrelated",
+        ]
+        cmds.attrs = {
+            "|Model_root": {ATTR_MMD_MODEL_NAME: "Model"},
+            "|Model_root1": {ATTR_MMD_MODEL_NAME_EN: "Model Copy"},
+            "|RenamedModel": {ATTR_MMD_MODEL_NAME: "Renamed"},
+            "|ns:RenamedModel2": {ATTR_MMD_MODEL_NAME_EN: "Namespaced"},
+            "|RegistryOnly": {ATTR_MMD_MODEL_REGISTRY: True},
+        }
+        service = SceneModelService(cmds_module=cmds)
+
+        models = service.list_mmd_models()
+        self.assertEqual(
+            models,
+            [
+                "|Model_root",
+                "|Model_root1",
+                "|RenamedModel",
+                "|ns:RenamedModel2",
+            ],
+        )
+        self.assertNotIn("|RegistryOnly", models)
+
+        discovery_calls = [
+            (args, kwargs)
+            for args, kwargs in cmds.ls_calls
+            if kwargs.get("type") == "transform" and kwargs.get("objectsOnly")
+        ]
+        self.assertEqual(len(discovery_calls), 2)
+        self.assertTrue(all(kwargs.get("recursive") is True for _args, kwargs in discovery_calls))
+
     def test_list_mmd_models_tolerates_none_ls_results(self):
         class _NoneLsCmds(_FakeCmds):
             def ls(self, *args, **kwargs):
@@ -346,6 +391,27 @@ class TestSceneModelService(unittest.TestCase):
         service = SceneModelService(cmds_module=_FailingRelativesCmds())
 
         self.assertIsNone(service.get_parent_mmd_root("|grp|child"))
+
+    def test_get_parent_mmd_root_uses_model_identity_after_rename(self):
+        cmds = _FakeCmds()
+        cmds.parents = {
+            "|RenamedModel|Geometry|body": "|RenamedModel",
+            "|ns:Model_root1|Geometry|body": "|ns:Model_root1",
+        }
+        cmds.attrs = {
+            "|RenamedModel": {ATTR_MMD_MODEL_NAME: "Renamed"},
+            "|ns:Model_root1": {ATTR_MMD_MODEL_NAME_EN: "Model Copy"},
+        }
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(
+            service.get_parent_mmd_root("|RenamedModel|Geometry|body"),
+            "|RenamedModel",
+        )
+        self.assertEqual(
+            service.get_parent_mmd_root("|ns:Model_root1|Geometry|body"),
+            "|ns:Model_root1",
+        )
 
     def test_get_model_display_name_uses_japanese_then_english_then_node_name(self):
         cmds = _FakeCmds()

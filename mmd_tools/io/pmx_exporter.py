@@ -618,6 +618,11 @@ class PmxExporter:
                             "morph Impulse rigid body index out of range at offset "
                             f"{offset_index}: {rigid_body_index}"
                         )
+                    is_local = offset.get("is_local", 0)
+                    if isinstance(is_local, bool) or not isinstance(is_local, int) or is_local not in (0, 1):
+                        raise ValueError(
+                            f"morph Impulse is_local must be 0 or 1 at offset {offset_index}"
+                        )
                     normalized_vectors = {}
                     for vector_name in ("impulse", "torque"):
                         vector = offset[vector_name]
@@ -637,6 +642,7 @@ class PmxExporter:
                     morph.offsets.append(
                         {
                             "rigid_body_index": rigid_body_index,
+                            "is_local": is_local,
                             "impulse": normalized_vectors["impulse"],
                             "torque": normalized_vectors["torque"],
                         }

@@ -30,6 +30,7 @@
 #include <maya/MFnDagNode.h>
 #include <maya/MFnIntArrayData.h>
 #include <maya/MFnMesh.h>
+#include <maya/MFnNumericAttribute.h>
 #include <maya/MImage.h>
 #include <maya/MFnSet.h>
 #include <maya/MFnTransform.h>
@@ -57,6 +58,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -512,6 +514,21 @@ const DecodedTextureAlpha* loadTextureAlpha(
                                                  : &inserted.first->second;
 }
 
+void classifyMaterialTextureAlpha(
+    mmd::MmdRenderQueueInput& input,
+    std::unordered_map<std::string, DecodedTextureAlpha>& cache,
+    const std::vector<float>& uvs, const std::vector<uint32_t>& indices)
+{
+    if (!input.transparencyMode.empty() || input.diffuseAlpha < 0.999F ||
+        input.mainTexturePath.empty()) return;
+    const DecodedTextureAlpha* decoded = loadTextureAlpha(input.mainTexturePath, cache);
+    if (decoded) {
+        input.transparencyMode = mmd::mmdTextureAlphaModeName(
+            mmd::classifyMmdTextureAlpha(decoded->alpha, decoded->width,
+                                        decoded->height, uvs, indices));
+    }
+}
+
 std::string quoteMelName(const std::string& name)
 {
     return "\"" + name + "\"";
@@ -655,7 +672,8 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
                     const std::vector<uint32_t>& indices,
                     double                       scale,
                     const MString&               desiredTransformName,
-                    const std::vector<uint32_t>* cornerSourceIndices = nullptr)
+                    const std::vector<uint32_t>* cornerSourceIndices = nullptr,
+                    const std::vector<uint32_t>* activeUvSources = nullptr)
 {
     BuiltMesh result;
 
@@ -786,8 +804,11 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
         std::map<std::pair<double, double>, int> uvByValue;
         MFloatArray uArr;
         MFloatArray vArr;
-        std::vector<int> sourceUvIds(sourceUvCount, 0);
-        for (size_t i = 0; i < sourceUvCount; ++i) {
+        std::vector<int> sourceUvIds(sourceUvCount, -1);
+        const size_t activeUvCount = activeUvSources ? activeUvSources->size() : sourceUvCount;
+        for (size_t slot = 0; slot < activeUvCount; ++slot) {
+            const size_t i = activeUvSources ? (*activeUvSources)[slot] : slot;
+            if (i >= sourceUvCount) return result;
             const double u = static_cast<double>(uvs[i * 2]);
             const double v = 1.0 - static_cast<double>(uvs[i * 2 + 1]);
             const auto key = std::make_pair(u, v);
@@ -813,6 +834,9 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
             const uint32_t source1 = cornerSourceIndices ? (*cornerSourceIndices)[base + 1U] : indices[base + 1U];
             const uint32_t source2 = cornerSourceIndices ? (*cornerSourceIndices)[base + 2U] : indices[base + 2U];
             if (source0 >= sourceUvCount || source1 >= sourceUvCount || source2 >= sourceUvCount) {
+                return result;
+            }
+            if (sourceUvIds[source0] < 0 || sourceUvIds[source1] < 0 || sourceUvIds[source2] < 0) {
                 return result;
             }
             uvConnects[base]     = sourceUvIds[source2];
@@ -909,6 +933,90 @@ bool makeSourceToLocalMap(const MmdUvSeamWeldPlan& plan,
     return mapping.size() == plan.sourceToLocal.size();
 }
 
+MObject buildVp2Proxy(
+    const MString& shapeName, MObject sourceTransformObject,
+    const MObject& sourceMeshObject,
+    const std::vector<std::vector<float>>& submeshPositions,
+    const std::vector<std::vector<float>>& submeshNormals,
+    const std::vector<std::vector<float>>& submeshUvs,
+    const std::vector<std::vector<uint32_t>>& submeshIndices,
+    const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
+    double scale, const std::vector<std::vector<uint32_t>>& submeshSourceIndices)
+{
+    MStatus status;
+    // A non-null parent makes the custom shape a direct child of the source
+    // transform instead of creating a second top-level transform.
+    MFnDagNode shapeCreator;
+    MObject shapeObject = shapeCreator.create(
+        MmdRenderShape::id, shapeName, sourceTransformObject, &status);
+    if (!status || shapeObject.isNull()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to create VP2 render shape.");
+        return MObject::kNullObj;
+    }
+
+    MmdRenderShape* shape = MmdRenderShape::fromMObject(shapeObject, &status);
+    if (!status || !shape ||
+        !shape->setMaterialSplitGeometry(
+            submeshPositions, submeshNormals, submeshUvs, submeshIndices,
+            queueInputs, scale, submeshSourceIndices)) {
+        MGlobal::displayError(
+            "[mmdFastLoad] VP2 ownership geometry rejected by mmdRenderShape.");
+        return MObject::kNullObj;
+    }
+
+    MStatus sourceDependencyStatus;
+    MFnDependencyNode sourceDependency(sourceMeshObject,
+                                       &sourceDependencyStatus);
+    MStatus shapeDependencyStatus;
+    MFnDependencyNode shapeDependency(shapeObject, &shapeDependencyStatus);
+    if (!sourceDependencyStatus || !shapeDependencyStatus) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to attach VP2 dependency nodes.");
+        return MObject::kNullObj;
+    }
+    MStatus sourcePlugStatus;
+    MPlug sourceOutput =
+        sourceDependency.findPlug("outMesh", true, &sourcePlugStatus);
+    MStatus shapePlugStatus;
+    MPlug shapeInput = shapeDependency.findPlug(
+        MmdRenderShape::aInputMesh, true, &shapePlugStatus);
+    if (!sourcePlugStatus || !shapePlugStatus || sourceOutput.isNull() ||
+        shapeInput.isNull()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to resolve VP2 mesh connection plugs.");
+        return MObject::kNullObj;
+    }
+    MDGModifier connection;
+    if (!connection.connect(sourceOutput, shapeInput) || !connection.doIt()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to connect source mesh to VP2 shape.");
+        return MObject::kNullObj;
+    }
+
+    MStatus visibilityStatus;
+    MPlug sourceVisibility =
+        sourceDependency.findPlug("visibility", true, &visibilityStatus);
+    MStatus proxyVisibilityStatus;
+    MPlug proxyVisibility = shapeDependency.findPlug(
+        MmdRenderShape::aSourceVisibility, true, &proxyVisibilityStatus);
+    if (!visibilityStatus || !proxyVisibilityStatus ||
+        sourceVisibility.isNull() || proxyVisibility.isNull()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to resolve VP2 source visibility plugs.");
+        return MObject::kNullObj;
+    }
+    MDGModifier visibilityConnection;
+    if (!visibilityConnection.connect(proxyVisibility, sourceVisibility) ||
+        !visibilityConnection.doIt()) {
+        MGlobal::displayError(
+            "[mmdFastLoad] Failed to connect VP2 source visibility.");
+        return MObject::kNullObj;
+    }
+
+    return shapeObject;
+}
+
 bool writeWeldProvenance(const MObject& transformObject,
                          const MmdUvSeamWeldPlan& plan)
 {
@@ -916,7 +1024,7 @@ bool writeWeldProvenance(const MObject& transformObject,
     MFnDependencyNode dependency(transformObject, &status);
     if (!status) return false;
     const auto writeArray = [&dependency](const char* name,
-                                          const std::vector<uint32_t>& values) {
+                                          const auto& values) {
         MStatus plugStatus;
         MPlug plug = dependency.findPlug(name, true, &plugStatus);
         if (!plugStatus) {
@@ -930,21 +1038,16 @@ bool writeWeldProvenance(const MObject& transformObject,
         MIntArray ints;
         ints.setLength(static_cast<unsigned int>(values.size()));
         for (size_t i = 0; i < values.size(); ++i) {
-            if (values[i] > static_cast<uint32_t>(std::numeric_limits<int>::max())) return false;
-            ints[static_cast<unsigned int>(i)] = static_cast<int>(values[i]);
+            const int64_t value = static_cast<int64_t>(values[i]);
+            if (value < -1 || value > std::numeric_limits<int>::max()) return false;
+            ints[static_cast<unsigned int>(i)] = static_cast<int>(value);
         }
         MFnIntArrayData arrayData;
         MObject dataObject = arrayData.create(ints, &plugStatus);
         return plugStatus && plug.setValue(dataObject);
     };
-    std::vector<uint32_t> sourceToLocal(plan.sourceToLocal.size());
-    for (size_t source = 0; source < plan.sourceToLocal.size(); ++source) {
-        const int local = plan.sourceToLocal[source];
-        if (local < 0) return false;
-        sourceToLocal[source] = static_cast<uint32_t>(local);
-    }
     return writeArray("mmd_source_vertex_indices", plan.localToSource) &&
-           writeArray("mmd_source_to_local_indices", sourceToLocal);
+           writeArray("mmd_source_to_local_indices", plan.sourceToLocal);
 }
 
 /**
@@ -1204,11 +1307,9 @@ MStatus MmdFastLoad::redoIt()
     const uint8_t* data = pmxBytes.data();
     const size_t   len  = pmxBytes.size();
 
-    if (enableVp2Ownership_) {
-        return loadVp2Ownership(safeName, data, len);
-    }
-    return enableSplit_ ? loadSplit(safeName, data, len)
-                        : loadSingle(safeName, data, len);
+    if (enableSplit_) return loadSplit(safeName, data, len);
+    return enableVp2Ownership_ ? loadVp2Ownership(safeName, data, len)
+                               : loadSingle(safeName, data, len);
 }
 
 MStatus MmdFastLoad::loadSingle(const std::string& safeName,
@@ -1293,166 +1394,161 @@ MStatus MmdFastLoad::loadSingle(const std::string& safeName,
 }
 
 MStatus MmdFastLoad::loadSplit(const std::string& safeName,
-                               const uint8_t* data, size_t len)
+                              const uint8_t* data, size_t len)
 {
-    mmd_runtime_pmx_material_split_t* split =
-        mmd_runtime_pmx_material_split_create(data, len, /*flags=*/0u);
-    if (!split) {
-        MGlobal::displayError(
-            "[mmdFastLoad] mmd_runtime_pmx_material_split_create returned NULL.");
-        return MS::kFailure;
-    }
-
-    const size_t meshCount = mmd_runtime_pmx_material_split_mesh_count(split);
-    if (meshCount == 0) {
-        MGlobal::displayError("[mmdFastLoad] Material split produced no meshes.");
-        mmd_runtime_pmx_material_split_free(split);
-        return MS::kFailure;
-    }
-
-    // Manifest (per-mesh material index + original vertex indices).
-    json manifest = parseJsonBufferAndFree(
-        mmd_runtime_pmx_material_split_manifest_json(split));
-
-    // Non-geometry JSON: material names (always) + morphs (if requested).
-    json nonGeo = parseJsonBufferAndFree(
+    // Share the PMX parse and weld signatures across every material.
+    const std::unique_ptr<mmd_runtime_pmx_material_split_t,
+                         decltype(&mmd_runtime_pmx_material_split_free)> split(
+        mmd_runtime_pmx_material_split_create(data, len, 0u),
+        &mmd_runtime_pmx_material_split_free);
+    if (!split) return MS::kFailure;
+    const size_t meshCount = mmd_runtime_pmx_material_split_mesh_count(split.get());
+    const json manifest = parseJsonBufferAndFree(
+        mmd_runtime_pmx_material_split_manifest_json(split.get()));
+    const json nonGeo = parseJsonBufferAndFree(
         mmd_runtime_parse_pmx_non_geometry_json(data, len));
-    const json* materials = (nonGeo.is_object() && nonGeo.contains("materials") &&
-                             nonGeo["materials"].is_array())
-                                ? &nonGeo["materials"] : nullptr;
-    const json* morphs = (enableMorphs_ && nonGeo.is_object() &&
-                          nonGeo.contains("morphs") && nonGeo["morphs"].is_array())
-                             ? &nonGeo["morphs"] : nullptr;
-    const json* manifestMeshes = (manifest.is_object() && manifest.contains("meshes") &&
-                                  manifest["meshes"].is_array())
-                                     ? &manifest["meshes"] : nullptr;
-
-    // The material-split ABI exposes one submesh per material.  Build the
-    // native ordering contract before creating Maya nodes so the future VP2
-    // render-item owner can consume the same pass/material order.  Creation
-    // order alone is not claimed as a VP2 draw-order guarantee.
-    std::vector<mmd::MmdRenderQueueInput> queueInputs;
-    queueInputs.reserve(meshCount);
-    for (size_t i = 0; i < meshCount; ++i) {
-        size_t originalMaterialIndex = i;
-        if (manifestMeshes && i < manifestMeshes->size()) {
-            originalMaterialIndex =
-                (*manifestMeshes)[i].value("originalMaterialIndex", i);
-        }
-
-        mmd::MmdRenderQueueInput input;
-        input.materialIndex = originalMaterialIndex;
-        input.submeshIndex = i;
-        if (materials && originalMaterialIndex < materials->size()) {
-            const json& material = (*materials)[originalMaterialIndex];
-            input.transparencyMode = "opaque";
-            input.diffuseAlpha = materialDiffuseAlpha(material);
-            input.selfShadowMap = materialSelfShadowMap(material);
-            input.selfShadow = materialSelfShadow(material);
-        }
-        queueInputs.push_back(std::move(input));
-    }
-    const std::vector<mmd::MmdRenderQueueEntry> renderQueue =
-        mmd::buildMmdRenderQueue(queueInputs);
-
-    // ---- Root group transform ----
-    MStringArray groupResult;
-    MStatus status = MGlobal::executeCommand(
-        MString(("group -empty -name " + quoteMelName(safeName + "_fast")).c_str()),
-        groupResult, false, false);
-    if (!status || groupResult.length() == 0) {
-        MGlobal::displayError("[mmdFastLoad] Failed to create split group.");
-        mmd_runtime_pmx_material_split_free(split);
+    if (!meshCount || !manifest.contains("meshes") ||
+        !manifest["meshes"].is_array() || manifest["meshes"].size() != meshCount ||
+        !nonGeo.contains("materials") || !nonGeo["materials"].is_array()) {
+        MGlobal::displayError("[mmdFastLoad] Incomplete material-split metadata.");
         return MS::kFailure;
     }
-    const MString groupName = groupResult[0];
-
-    std::set<std::string> usedNames;
-    usedNames.insert(groupName.asChar());
-    unsigned int totalMorphs = 0;
-
-    for (const mmd::MmdRenderQueueEntry& queueEntry : renderQueue) {
-        const size_t i = queueEntry.submeshIndex;
-        std::vector<float>    positions = bufferToFloatsAndFree(
-            mmd_runtime_pmx_material_split_positions_buffer(split, i));
-        std::vector<float>    normals = bufferToFloatsAndFree(
-            mmd_runtime_pmx_material_split_normals_buffer(split, i));
-        std::vector<float>    uvs = bufferToFloatsAndFree(
-            mmd_runtime_pmx_material_split_uvs_buffer(split, i));
-        std::vector<uint32_t> indices = bufferToU32AndFree(
-            mmd_runtime_pmx_material_split_indices_buffer(split, i));
-        if (positions.empty() || indices.empty()) {
-            continue;
-        }
-
-        // Resolve a friendly material name for this submesh.
-        std::string matName = "material_" + std::to_string(i);
-        size_t originalMaterialIndex = i;
-        if (manifestMeshes && i < manifestMeshes->size()) {
-            originalMaterialIndex =
-                (*manifestMeshes)[i].value("originalMaterialIndex", i);
-        }
-        if (materials && originalMaterialIndex < materials->size()) {
-            const std::string n =
-                (*materials)[originalMaterialIndex].value("name", std::string());
-            if (!n.empty()) {
-                matName = n;
-            }
-        }
-        const std::string meshNodeName =
-            uniqueName(safeName + "_" + matName, usedNames);
-
-        BuiltMesh mesh = buildMesh(positions, normals, uvs, indices, scale_,
-                                   MString(meshNodeName.c_str()));
-        if (!mesh.ok) {
-            MGlobal::displayWarning(
-                MString("[mmdFastLoad] Failed to build submesh: ") +
-                meshNodeName.c_str());
-            continue;
-        }
-
-        MGlobal::executeCommand(
-            MString(("parent " + quoteMelName(mesh.transformName) + " " +
-                     quoteMelName(groupName)).c_str()),
-            false, false);
-
-        // Per-submesh vertex morphs: remap global PMX vertex -> local index.
-        if (morphs && manifestMeshes && i < manifestMeshes->size()) {
-            const json& mm = (*manifestMeshes)[i];
-            auto ovIt = mm.find("originalVertexIndices");
-            if (ovIt != mm.end() && ovIt->is_array()) {
-                std::unordered_map<uint32_t, uint32_t> globalToLocal;
-                globalToLocal.reserve(ovIt->size());
-                uint32_t local = 0;
-                for (const json& g : *ovIt) {
-                    globalToLocal.emplace(g.get<uint32_t>(), local);
-                    ++local;
-                }
-                totalMorphs += buildVertexMorphBlendShapes(
-                    *morphs, mesh.transformName, mesh.points,
-                    mesh.polygonCounts, mesh.polygonConnects, scale_,
-                    &globalToLocal);
-            }
-        }
+    MmdUvSeamWeldGeometry geometry;
+    if (!loadMmdUvSeamWeldGeometry(std::vector<uint8_t>(data, data + len), geometry)) {
+        return MS::kFailure;
     }
+    const size_t sourceCount = geometry.positions.size() / 3U;
+    std::vector<float> sourceNormals(sourceCount * 3U);
+    std::vector<float> sourceUvs(sourceCount * 2U);
+    const auto modelDirectory = nativeModelDirectory(filePath_);
+    std::unordered_map<std::string, DecodedTextureAlpha> alphaCache;
 
-    mmd_runtime_pmx_material_split_free(split);
-
-    transformName_ = groupName;
+    MStatus status;
+    MFnTransform groupFn;
+    MObject group = groupFn.create(MObject::kNullObj, &status);
+    if (!status) return status;
+    groupFn.setName(MString((safeName + "_fast").c_str()));
+    auto fail = [&]() {
+        MDagModifier cleanup;
+        cleanup.deleteNode(group);
+        cleanup.doIt();
+        MGlobal::displayError("[mmdFastLoad] Material-split construction failed.");
+        return MS::kFailure;
+    };
+    std::set<std::string> usedNames;
+    try {
+        for (size_t i = 0; i < meshCount; ++i) {
+            const json& entry = manifest["meshes"][i];
+            if (!entry.contains("originalMaterialIndex") ||
+                !entry.contains("originalVertexIndices") ||
+                !entry["originalVertexIndices"].is_array()) return fail();
+            const size_t materialIndex = entry["originalMaterialIndex"].get<size_t>();
+            if (materialIndex >= nonGeo["materials"].size() ||
+                materialIndex > static_cast<size_t>(std::numeric_limits<int>::max())) return fail();
+            const auto positions = bufferToFloatsAndFree(
+                mmd_runtime_pmx_material_split_positions_buffer(split.get(), i));
+            const auto normals = bufferToFloatsAndFree(
+                mmd_runtime_pmx_material_split_normals_buffer(split.get(), i));
+            const auto uvs = bufferToFloatsAndFree(
+                mmd_runtime_pmx_material_split_uvs_buffer(split.get(), i));
+            const auto indices = bufferToU32AndFree(
+                mmd_runtime_pmx_material_split_indices_buffer(split.get(), i));
+            if (positions.empty() && indices.empty()) continue;
+            size_t vertexCount = 0;
+            if (!validateFastLoadGeometry("material-split geometry", positions, normals,
+                                          uvs, indices, &vertexCount)) return fail();
+            const auto sources = entry["originalVertexIndices"].get<std::vector<uint32_t>>();
+            if (sources.size() != vertexCount) return fail();
+            std::vector<int> sourceToOldLocal(sourceCount, -1);
+            for (size_t v = 0; v < sources.size(); ++v) {
+                if (sources[v] >= sourceCount || v > static_cast<size_t>(std::numeric_limits<int>::max())) return fail();
+                sourceToOldLocal[sources[v]] = static_cast<int>(v);
+                // Reuse the split handle's buffers instead of reparsing the PMX.
+                std::copy_n(normals.data() + v * 3U, 3U, sourceNormals.data() + sources[v] * 3U);
+                std::copy_n(uvs.data() + v * 2U, 2U, sourceUvs.data() + sources[v] * 2U);
+            }
+            std::vector<int> counts(indices.size() / 3U, 3);
+            std::vector<int> connects(indices.size());
+            std::vector<uint32_t> sourceCorners(indices.size());
+            for (size_t face = 0; face < counts.size(); ++face) {
+                for (size_t corner = 0; corner < 3; ++corner) {
+                    const size_t slot = face * 3U + corner;
+                    const uint32_t local = indices[slot];
+                    if (local >= sources.size()) return fail();
+                    sourceCorners[slot] = sources[local];
+                    connects[face * 3U + 2U - corner] = static_cast<int>(local);
+                }
+            }
+            MmdUvSeamWeldPlan plan;
+            if (!buildMmdUvSeamWeldPlan(geometry, sources, sourceToOldLocal,
+                                        counts, connects, plan)) return fail();
+            std::vector<float> weldedPositions;
+            for (uint32_t source : plan.localToSource) {
+                if (source >= sourceCount) return fail();
+                const auto begin = geometry.positions.begin() + source * 3U;
+                weldedPositions.insert(weldedPositions.end(), begin, begin + 3U);
+            }
+            std::vector<uint32_t> weldedIndices(indices.size());
+            for (size_t face = 0; face < counts.size(); ++face) {
+                for (size_t corner = 0; corner < 3; ++corner) {
+                    weldedIndices[face * 3U + corner] =
+                        static_cast<uint32_t>(plan.remappedPolygonConnects[face * 3U + 2U - corner]);
+                }
+            }
+            const json& material = nonGeo["materials"][materialIndex];
+            const std::string name = uniqueName(safeName + "_material_" + std::to_string(materialIndex), usedNames);
+            BuiltMesh mesh = buildMesh(weldedPositions, sourceNormals, sourceUvs,
+                                       weldedIndices, scale_, MString(name.c_str()), &sourceCorners, &sources);
+            MSelectionList selection;
+            MObject transform;
+            if (!selection.add(mesh.transformName) || !selection.getDependNode(0, transform)) return fail();
+            // Parent immediately so every later failure removes this mesh too.
+            MDagModifier parent;
+            if (!parent.reparentNode(transform, group) || !parent.doIt()) return fail();
+            if (!mesh.ok || !writeWeldProvenance(transform, plan)) return fail();
+            MFnDagNode transformFn(transform);
+            const MObject meshObject = transformFn.child(0);
+            MFnNumericAttribute indexAttribute;
+            const MObject index = indexAttribute.create("mmd_material_index", "mmd_material_index",
+                MFnNumericData::kInt, static_cast<int>(materialIndex), &status);
+            if (!status || !transformFn.addAttribute(index)) return fail();
+            if (!assignInitialShadingGroup(meshObject)) return fail();
+            if (enableMorphs_ && nonGeo.contains("morphs") && nonGeo["morphs"].is_array()) {
+                std::unordered_map<uint32_t, uint32_t> mapping;
+                for (size_t source = 0; source < plan.sourceToLocal.size(); ++source) {
+                    if (plan.sourceToLocal[source] >= 0)
+                        mapping.emplace(static_cast<uint32_t>(source), static_cast<uint32_t>(plan.sourceToLocal[source]));
+                }
+                buildVertexMorphBlendShapes(nonGeo["morphs"], transformFn.fullPathName(),
+                    mesh.points, mesh.polygonCounts, mesh.polygonConnects, scale_, &mapping);
+            }
+            if (enableVp2Ownership_) {
+                mmd::MmdRenderQueueInput input;
+                input.materialIndex = materialIndex;
+                input.submeshIndex = 0;
+                populateNativeMaterial(material, modelDirectory, input);
+                input.transparencyMode = materialTransparencyMode(material);
+                classifyMaterialTextureAlpha(input, alphaCache, uvs, indices);
+                std::vector<uint32_t> localSources;
+                for (uint32_t source : sources) {
+                    const int local = plan.sourceToLocal[source];
+                    if (local < 0) return fail();
+                    localSources.push_back(static_cast<uint32_t>(local));
+                }
+                if (buildVp2Proxy(MString((name + "_render").c_str()), transform, meshObject,
+                        {positions}, {normals}, {uvs}, {indices}, {input}, scale_, {localSources}).isNull()) return fail();
+            }
+        }
+    } catch (const json::exception& error) {
+        MGlobal::displayError(MString("[mmdFastLoad] Invalid split metadata: ") + error.what());
+        return fail();
+    }
+    transformName_ = groupFn.fullPathName();
     meshName_.clear();
-    createdRoots_.append(groupName);
-
+    createdRoots_.append(transformName_);
     MStringArray result;
-    result.append(groupName);
+    result.append(transformName_);
     setResult(result);
-
-    MGlobal::displayInfo(
-        MString("[mmdFastLoad] Created material-split group: ") + groupName +
-        " (" + std::to_string(meshCount).c_str() + " meshes" +
-        (totalMorphs > 0
-             ? MString(", ") + std::to_string(totalMorphs).c_str() + " morph targets"
-             : MString("")) +
-        ")");
     return MS::kSuccess;
 }
 
@@ -1662,20 +1758,7 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
     // use the translucent technique even when authored diffuse alpha is 1.
     std::unordered_map<std::string, DecodedTextureAlpha> alphaCache;
     for (size_t i = 0; i < meshCount; ++i) {
-        mmd::MmdRenderQueueInput& input = queueInputs[i];
-        if (!input.transparencyMode.empty() || input.diffuseAlpha < 0.999F ||
-            input.mainTexturePath.empty()) {
-            continue;
-        }
-        const DecodedTextureAlpha* decoded =
-            loadTextureAlpha(input.mainTexturePath, alphaCache);
-        if (!decoded) {
-            continue;
-        }
-        input.transparencyMode = mmd::mmdTextureAlphaModeName(
-            mmd::classifyMmdTextureAlpha(
-                decoded->alpha, decoded->width, decoded->height,
-                submeshUvs[i], submeshIndices[i]));
+        classifyMaterialTextureAlpha(queueInputs[i], alphaCache, submeshUvs[i], submeshIndices[i]);
     }
     releaseSplit();
 
@@ -1772,80 +1855,11 @@ MStatus MmdFastLoad::loadVp2Ownership(const std::string& safeName,
         }
     }
 
-    // A non-null parent makes the custom shape a direct child of the source
-    // transform instead of creating a second top-level transform.
-    MFnDagNode shapeCreator;
-    const MString shapeName((safeName + "_render").c_str());
-    MObject shapeObject = shapeCreator.create(
-        MmdRenderShape::id, shapeName, sourceTransformObject, &status);
-    if (!status || shapeObject.isNull()) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to create VP2 render shape.");
-        deleteRoot(sourceTransformObject);
-        return MS::kFailure;
-    }
-
-    MmdRenderShape* shape = MmdRenderShape::fromMObject(shapeObject, &status);
-    if (!status || !shape ||
-        !shape->setMaterialSplitGeometry(
-            submeshPositions, submeshNormals, submeshUvs, submeshIndices,
-            queueInputs, scale_, submeshSourceIndices)) {
-        MGlobal::displayError(
-            "[mmdFastLoad] VP2 ownership geometry rejected by mmdRenderShape.");
-        deleteRoot(sourceTransformObject);
-        return MS::kFailure;
-    }
-
-    MStatus sourceDependencyStatus;
-    MFnDependencyNode sourceDependency(sourceMeshObject,
-                                       &sourceDependencyStatus);
-    MStatus shapeDependencyStatus;
-    MFnDependencyNode shapeDependency(shapeObject, &shapeDependencyStatus);
-    if (!sourceDependencyStatus || !shapeDependencyStatus) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to attach VP2 dependency nodes.");
-        deleteRoot(sourceTransformObject);
-        return MS::kFailure;
-    }
-    MStatus sourcePlugStatus;
-    MPlug sourceOutput =
-        sourceDependency.findPlug("outMesh", true, &sourcePlugStatus);
-    MStatus shapePlugStatus;
-    MPlug shapeInput = shapeDependency.findPlug(
-        MmdRenderShape::aInputMesh, true, &shapePlugStatus);
-    if (!sourcePlugStatus || !shapePlugStatus || sourceOutput.isNull() ||
-        shapeInput.isNull()) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to resolve VP2 mesh connection plugs.");
-        deleteRoot(sourceTransformObject);
-        return MS::kFailure;
-    }
-    MDGModifier connection;
-    if (!connection.connect(sourceOutput, shapeInput) || !connection.doIt()) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to connect source mesh to VP2 shape.");
-        deleteRoot(sourceTransformObject);
-        return MS::kFailure;
-    }
-
-    MStatus visibilityStatus;
-    MPlug sourceVisibility =
-        sourceDependency.findPlug("visibility", true, &visibilityStatus);
-    MStatus proxyVisibilityStatus;
-    MPlug proxyVisibility = shapeDependency.findPlug(
-        MmdRenderShape::aSourceVisibility, true, &proxyVisibilityStatus);
-    if (!visibilityStatus || !proxyVisibilityStatus ||
-        sourceVisibility.isNull() || proxyVisibility.isNull()) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to resolve VP2 source visibility plugs.");
-        deleteRoot(sourceTransformObject);
-        return MS::kFailure;
-    }
-    MDGModifier visibilityConnection;
-    if (!visibilityConnection.connect(proxyVisibility, sourceVisibility) ||
-        !visibilityConnection.doIt()) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to connect VP2 source visibility.");
+    const MObject shapeObject = buildVp2Proxy(
+        MString((safeName + "_render").c_str()), sourceTransformObject,
+        sourceMeshObject, submeshPositions, submeshNormals, submeshUvs,
+        submeshIndices, queueInputs, scale_, submeshSourceIndices);
+    if (shapeObject.isNull()) {
         deleteRoot(sourceTransformObject);
         return MS::kFailure;
     }

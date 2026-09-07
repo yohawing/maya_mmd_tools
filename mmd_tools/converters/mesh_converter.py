@@ -2027,72 +2027,88 @@ class MeshConverter:
         # Build the topology before MFnMesh.create(). UV seams remain in the
         # per-corner UV connections; only safe coincident source vertices are
         # shared by the Maya geometry.
-        face_records = []
-        face_offset = 0
-        for i, material in enumerate(all_materials):
-            num_material_faces = material.face_count // 3
-            face_records.extend(
-                (i, face)
-                for face in all_faces[face_offset : face_offset + num_material_faces]
+        if getattr(self, "cpp_fast_load_geometry", False):
+            result = self.cpp_fast_load_geometry
+            created_mesh = cmds.rename(result[0], mesh_name)
+            source_indices = cmds.getAttr(f"{created_mesh}.{ATTR_MMD_SOURCE_VERTEX_INDICES}")
+            self._persist_additional_uvs(created_mesh, all_vertices, source_indices, additional_uv_count)
+            material_face_ranges = {}
+            face_offset = 0
+            for index, material in enumerate(all_materials):
+                next_face = face_offset + material.face_count // 3
+                material_face_ranges[index] = (face_offset, next_face)
+                face_offset = next_face
+            mesh_data = {"material_face_ranges": material_face_ranges}
+            self.profile["created_mesh_count"] += 1
+            self.profile["source_vertex_count"] = len(all_vertices)
+            self.profile["face_count"] += face_offset
+        else:
+            face_records = []
+            face_offset = 0
+            for i, material in enumerate(all_materials):
+                num_material_faces = material.face_count // 3
+                face_records.extend(
+                    (i, face)
+                    for face in all_faces[face_offset : face_offset + num_material_faces]
+                )
+                face_offset += num_material_faces
+
+            mesh_data = self._build_maya_mesh_data(
+                all_vertices,
+                face_records,
+                weld_keys=weld_keys,
             )
-            face_offset += num_material_faces
 
-        mesh_data = self._build_maya_mesh_data(
-            all_vertices,
-            face_records,
-            weld_keys=weld_keys,
-        )
-
-        # 統合メッシュを作成
-        create_start = time.perf_counter()
-        created_mesh = maya_mesh_utils.create_mesh_with_uvs(
-            name=mesh_name,
-            vertices=mesh_data["vertices"],
-            face_counts=mesh_data["face_counts"],
-            face_connects=mesh_data["face_connects"],
-            uvs=mesh_data["uvs"],
-            face_uv_connects=mesh_data["face_uv_connects"],
-            normals=mesh_data["normals"],
-        )
-        self._add_profile_time("mesh_create_sec", create_start)
-        self.profile["created_mesh_count"] += 1
-        self.profile["source_vertex_count"] = len(all_vertices)
-        self.profile["mesh_vertex_slots_estimated"] += len(mesh_data["vertices"])
-        self._persist_source_to_local_indices(
-            created_mesh,
-            mesh_data["source_to_local_indices"],
-        )
-        native_welded_count = self._run_cpp_uv_weld(
-            created_mesh,
-            mesh_data["source_vertex_indices"],
-        )
-        post_weld_source_indices = self._post_weld_source_indices(
-            created_mesh,
-            mesh_data["source_vertex_indices"],
-            native_welded_count,
-        )
-        self._persist_additional_uvs(
-            created_mesh,
-            all_vertices,
-            post_weld_source_indices,
-            additional_uv_count,
-        )
-        self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
-        if native_welded_count is not None:
-            self.profile["uv_welded_vertex_count"] += native_welded_count
-        self.profile["face_count"] += len(mesh_data["face_counts"])
-
-        if (
-            not self._use_cpp_uv_weld
-            and len(mesh_data["source_vertex_indices"]) != len(all_vertices)
-        ):
-            maya_attribute_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-            maya_attribute_utils.set_attribute(
+            # 統合メッシュを作成
+            create_start = time.perf_counter()
+            created_mesh = maya_mesh_utils.create_mesh_with_uvs(
+                name=mesh_name,
+                vertices=mesh_data["vertices"],
+                face_counts=mesh_data["face_counts"],
+                face_connects=mesh_data["face_connects"],
+                uvs=mesh_data["uvs"],
+                face_uv_connects=mesh_data["face_uv_connects"],
+                normals=mesh_data["normals"],
+            )
+            self._add_profile_time("mesh_create_sec", create_start)
+            self.profile["created_mesh_count"] += 1
+            self.profile["source_vertex_count"] = len(all_vertices)
+            self.profile["mesh_vertex_slots_estimated"] += len(mesh_data["vertices"])
+            self._persist_source_to_local_indices(
                 created_mesh,
-                ATTR_MMD_SOURCE_VERTEX_INDICES,
-                mesh_data["source_vertex_indices"],
-                "longArray",
+                mesh_data["source_to_local_indices"],
             )
+            native_welded_count = self._run_cpp_uv_weld(
+                created_mesh,
+                mesh_data["source_vertex_indices"],
+            )
+            post_weld_source_indices = self._post_weld_source_indices(
+                created_mesh,
+                mesh_data["source_vertex_indices"],
+                native_welded_count,
+            )
+            self._persist_additional_uvs(
+                created_mesh,
+                all_vertices,
+                post_weld_source_indices,
+                additional_uv_count,
+            )
+            self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
+            if native_welded_count is not None:
+                self.profile["uv_welded_vertex_count"] += native_welded_count
+            self.profile["face_count"] += len(mesh_data["face_counts"])
+
+            if (
+                not self._use_cpp_uv_weld
+                and len(mesh_data["source_vertex_indices"]) != len(all_vertices)
+            ):
+                maya_attribute_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+                maya_attribute_utils.set_attribute(
+                    created_mesh,
+                    ATTR_MMD_SOURCE_VERTEX_INDICES,
+                    mesh_data["source_vertex_indices"],
+                    "longArray",
+                )
 
         # マテリアルを作成して、適切な面に割り当てる
         for i, material in enumerate(all_materials):
@@ -2184,89 +2200,110 @@ class MeshConverter:
         pending_native_welds = []
         face_offset = 0
 
+        native_group = None
+        native_meshes = {}
+        if getattr(self, "cpp_fast_load_geometry", None):
+            native_group = self.cpp_fast_load_geometry[0]
+            for mesh in cmds.listRelatives(native_group, children=True, type="transform", fullPath=True) or []:
+                index = int(cmds.getAttr(f"{mesh}.{ATTR_MMD_MATERIAL_INDEX}"))
+                if index in native_meshes:
+                    raise RuntimeError(f"Duplicate native split material {index}")
+                native_meshes[index] = mesh
+            expected = {i for i, material in enumerate(all_materials) if material.face_count > 0}
+            if native_meshes.keys() != expected:
+                raise RuntimeError("Native split meshes do not cover the PMX materials")
+
         for i, material in enumerate(all_materials):
             num_material_faces = material.face_count // 3
             if num_material_faces == 0:
                 continue
 
-            material_faces = all_faces[face_offset : face_offset + num_material_faces]
-            face_records = [(i, face) for face in material_faces]
-            if is_pmd:
-                active_source_indices = range(len(all_vertices))
-            else:
-                active_source_indices = []
-                active_source_set = set()
-                for face in material_faces:
-                    for raw_index in getattr(face, "indices", ()) or ():
-                        source_index = int(raw_index)
-                        if source_index not in active_source_set:
-                            active_source_set.add(source_index)
-                            active_source_indices.append(source_index)
-
-            mesh_data = self._build_maya_mesh_data(
-                all_vertices,
-                face_records,
-                active_source_indices=active_source_indices,
-                weld_keys=weld_keys,
-            )
-            face_offset += num_material_faces
-            if not mesh_data["face_counts"]:
-                continue
-
             # マテリアル名からメッシュ名生成
             mat_name = material.get_name() if material.get_name() else f"material_{i}"
             sub_mesh_name = maya_name_utils.sanitize_text(f"{model_name}_{mat_name}_mesh")
-
-            create_start = time.perf_counter()
-            created_mesh = maya_mesh_utils.create_mesh_with_uvs(
-                name=sub_mesh_name,
-                vertices=mesh_data["vertices"],
-                face_counts=mesh_data["face_counts"],
-                face_connects=mesh_data["face_connects"],
-                uvs=mesh_data["uvs"],
-                face_uv_connects=mesh_data["face_uv_connects"],
-                normals=mesh_data["normals"],
-            )
-            self._add_profile_time("mesh_create_sec", create_start)
-            self.profile["created_mesh_count"] += 1
-            self.profile["source_vertex_count"] = len(all_vertices)
-            self.profile["mesh_vertex_slots_estimated"] += len(mesh_data["vertices"])
-            self._persist_source_to_local_indices(
-                created_mesh,
-                mesh_data["source_to_local_indices"],
-            )
-            if self._use_cpp_uv_weld_batch:
-                self._persist_source_vertex_indices(
-                    created_mesh,
-                    mesh_data["source_vertex_indices"],
-                )
-                pending_native_welds.append(
-                    {
-                        "mesh": created_mesh,
-                        "source_vertex_indices": mesh_data["source_vertex_indices"],
-                        "mesh_data": mesh_data,
-                    }
-                )
+            if native_group:
+                created_mesh = cmds.rename(native_meshes[i], sub_mesh_name)
+                local_sources = cmds.getAttr(f"{created_mesh}.{ATTR_MMD_SOURCE_VERTEX_INDICES}")
+                self._persist_additional_uvs(created_mesh, all_vertices, local_sources, additional_uv_count)
+                self.profile["created_mesh_count"] += 1
+                self.profile["source_vertex_count"] = len(all_vertices)
+                self.profile["mesh_vertex_slots_estimated"] += len(local_sources)
             else:
-                native_welded_count = self._run_cpp_uv_weld(
-                    created_mesh,
-                    mesh_data["source_vertex_indices"],
-                )
-                post_weld_source_indices = self._post_weld_source_indices(
-                    created_mesh,
-                    mesh_data["source_vertex_indices"],
-                    native_welded_count,
-                )
-                self._persist_additional_uvs(
-                    created_mesh,
+                material_faces = all_faces[face_offset : face_offset + num_material_faces]
+                face_records = [(i, face) for face in material_faces]
+                if is_pmd:
+                    active_source_indices = range(len(all_vertices))
+                else:
+                    active_source_indices = []
+                    active_source_set = set()
+                    for face in material_faces:
+                        for raw_index in getattr(face, "indices", ()) or ():
+                            source_index = int(raw_index)
+                            if source_index not in active_source_set:
+                                active_source_set.add(source_index)
+                                active_source_indices.append(source_index)
+
+                mesh_data = self._build_maya_mesh_data(
                     all_vertices,
-                    post_weld_source_indices,
-                    additional_uv_count,
+                    face_records,
+                    active_source_indices=active_source_indices,
+                    weld_keys=weld_keys,
                 )
-                self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
-                if native_welded_count is not None:
-                    self.profile["uv_welded_vertex_count"] += native_welded_count
-            self.profile["face_count"] += len(mesh_data["face_counts"])
+                face_offset += num_material_faces
+                if not mesh_data["face_counts"]:
+                    continue
+
+
+                create_start = time.perf_counter()
+                created_mesh = maya_mesh_utils.create_mesh_with_uvs(
+                    name=sub_mesh_name,
+                    vertices=mesh_data["vertices"],
+                    face_counts=mesh_data["face_counts"],
+                    face_connects=mesh_data["face_connects"],
+                    uvs=mesh_data["uvs"],
+                    face_uv_connects=mesh_data["face_uv_connects"],
+                    normals=mesh_data["normals"],
+                )
+                self._add_profile_time("mesh_create_sec", create_start)
+                self.profile["created_mesh_count"] += 1
+                self.profile["source_vertex_count"] = len(all_vertices)
+                self.profile["mesh_vertex_slots_estimated"] += len(mesh_data["vertices"])
+                self._persist_source_to_local_indices(
+                    created_mesh,
+                    mesh_data["source_to_local_indices"],
+                )
+                if self._use_cpp_uv_weld_batch:
+                    self._persist_source_vertex_indices(
+                        created_mesh,
+                        mesh_data["source_vertex_indices"],
+                    )
+                    pending_native_welds.append(
+                        {
+                            "mesh": created_mesh,
+                            "source_vertex_indices": mesh_data["source_vertex_indices"],
+                            "mesh_data": mesh_data,
+                        }
+                    )
+                else:
+                    native_welded_count = self._run_cpp_uv_weld(
+                        created_mesh,
+                        mesh_data["source_vertex_indices"],
+                    )
+                    post_weld_source_indices = self._post_weld_source_indices(
+                        created_mesh,
+                        mesh_data["source_vertex_indices"],
+                        native_welded_count,
+                    )
+                    self._persist_additional_uvs(
+                        created_mesh,
+                        all_vertices,
+                        post_weld_source_indices,
+                        additional_uv_count,
+                    )
+                    self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
+                    if native_welded_count is not None:
+                        self.profile["uv_welded_vertex_count"] += native_welded_count
+            self.profile["face_count"] += num_material_faces
             _set_mesh_double_sided(created_mesh, _material_is_double_sided(material))
             maya_attribute_utils.set_custom_attributes(
                 created_mesh,
@@ -2275,7 +2312,7 @@ class MeshConverter:
                     "mmd_material_split_mesh": True,
                 },
             )
-            if not is_pmd and not self._use_cpp_uv_weld:
+            if not native_group and not is_pmd and not self._use_cpp_uv_weld:
                 maya_attribute_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
                 maya_attribute_utils.set_attribute(
                     created_mesh,
@@ -2309,7 +2346,7 @@ class MeshConverter:
             # 全 face にマテリアルを割り当て
             assign_start = time.perf_counter()
             maya_material_utils.assign_material_to_faces(
-                created_mesh, shader, f"{created_mesh}.f[0:{len(mesh_data['face_counts']) - 1}]"
+                created_mesh, shader, f"{created_mesh}.f[0:{num_material_faces - 1}]"
             )
             self._add_profile_time("material_assign_sec", assign_start)
 
@@ -2317,7 +2354,7 @@ class MeshConverter:
             parent_start = time.perf_counter()
             created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
             self._add_profile_time("parent_sec", parent_start)
-            if self._use_cpp_uv_weld_batch:
+            if self._use_cpp_uv_weld_batch and not native_group:
                 pending_native_welds[-1]["mesh"] = created_mesh
             mesh_names.append(created_mesh)
 
@@ -2357,6 +2394,8 @@ class MeshConverter:
         if disable_backface_culling:
             maya_viewport_utils.set_viewport_backface_culling(False)
 
+        if native_group:
+            cmds.delete(native_group)
         return mesh_names
 
     def _create_material(

@@ -11,6 +11,18 @@ from mmd_tools.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def resolve_mesh_shape(mesh_node):
+    """Resolve the editable mesh, excluding render proxies and intermediate shapes."""
+    if cmds.nodeType(mesh_node) == "mesh":
+        return mesh_node
+    shapes = cmds.listRelatives(
+        mesh_node, shapes=True, noIntermediate=True, type="mesh", fullPath=True
+    ) or []
+    if len(shapes) != 1:
+        raise ValueError(f"Expected one editable mesh below {mesh_node}, got {len(shapes)}")
+    return shapes[0]
+
+
 # A dot product below this bound represents a meaningful authored-vs-geometric
 # normal difference (approximately 0.8 degrees for unit vectors).
 _AUTHORED_NORMAL_DOT_TOLERANCE = 1.0e-4
@@ -259,7 +271,7 @@ def apply_vertex_weights(
     influence_count = len(influence_paths)
 
     mesh_selection_list = om.MSelectionList()
-    mesh_selection_list.add(mesh_node)
+    mesh_selection_list.add(resolve_mesh_shape(mesh_node))
     shape_dag_path = mesh_selection_list.getDagPath(0)
     mesh_fn = om.MFnMesh(shape_dag_path)
     vertex_count = mesh_fn.numVertices

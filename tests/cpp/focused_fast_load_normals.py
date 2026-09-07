@@ -53,6 +53,34 @@ def _assert_uv_dedup_and_face_corner_mapping(mesh_fn) -> None:
         raise RuntimeError("mmdFastLoad UV face-corner IDs do not follow reversed winding")
 
 
+def _assert_unused_material_split(cmds):
+    """An unused material must not prevent either split geometry route."""
+    import copy
+    import tempfile
+    from mmd_tools.core.mmd_parser import parse_pmx_file
+
+    pmx = parse_pmx_file(str(SPLIT_FIXTURE), use_native_pmx_parse=False)
+    empty = copy.deepcopy(pmx.materials[0])
+    empty.face_count = 0
+    pmx.materials.insert(0, empty)
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = Path(directory) / "unused-material.pmx"
+        pmx.write_file(str(fixture))
+        for vp2 in (False, True):
+            result = cmds.mmdFastLoad(f=str(fixture), n="unused_material", sp=True, mo=False, vp2Ownership=vp2)
+            group = result[0]
+            meshes = cmds.listRelatives(group, children=True, type="transform", fullPath=True) or []
+            indices = sorted(cmds.getAttr(mesh + ".mmd_material_index") for mesh in meshes)
+            if indices != [1, 2]:
+                raise RuntimeError(f"Unused material changed split identity: {indices}")
+            proxies = cmds.listRelatives(group, allDescendents=True, type="mmdRenderShape") or []
+            if len(proxies) != (2 if vp2 else 0):
+                raise RuntimeError("Unused material changed VP2 split geometry")
+            cmds.undo()
+            if cmds.objExists(group):
+                raise RuntimeError("Unused material split Undo left its group")
+
+
 def _plugin_path() -> Path:
     """Resolve the built C++ plugin for the selected Maya/config pair."""
     explicit = os.environ.get("MMD_TOOLS_CPP_PLUGIN")
@@ -199,13 +227,23 @@ def main() -> int:
         if sorted(signs) != [-1, 1]:
             raise RuntimeError(f"split authored normal signs mismatch: {signs!r}")
 
-        # The split command creates a group plus child meshes; explicit delete
-        # avoids Maya 2024 standalone undo selection crashes while preserving
-        # the single-mesh command undo assertion above.
-        cmds.delete(split_group)
+        # Split construction is owned by the native command, including its
+        # child meshes, so undo/redo must cover the complete group.
+        cmds.undo()
         if cmds.objExists(split_group):
-            raise RuntimeError("split mmdFastLoad cleanup did not delete the group")
-        print("OK: focused mmdFastLoad authored normals (single + split)")
+            raise RuntimeError("split mmdFastLoad undo did not delete the group")
+        cmds.redo()
+        restored = cmds.listRelatives(split_group, allDescendents=True, type="mesh", fullPath=True) or []
+        if len(restored) != 2:
+            raise RuntimeError("split mmdFastLoad redo did not restore both meshes")
+        for mesh in restored:
+            transform = cmds.listRelatives(mesh, parent=True, fullPath=True)[0]
+            mapping = cmds.getAttr(f"{transform}.mmd_source_to_local_indices")
+            if -1 not in mapping or {v for v in mapping if v >= 0} != {0, 1, 2, 3}:
+                raise RuntimeError("split source mapping lost its absent-vertex sentinel")
+        cmds.delete(split_group)
+        _assert_unused_material_split(cmds)
+        print("OK: focused mmdFastLoad authored normals (single + split + unused material)")
         return 0
     finally:
         maya.standalone.uninitialize()

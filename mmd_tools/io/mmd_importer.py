@@ -315,13 +315,10 @@ def import_mmd_file(
 
     if strategy.use_cpp_fast_load:
         _emit_progress(10)
-        mesh_only = options.get(
-            "cpp_fast_load_mesh_only",
-            settings.get(settings_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True),
-        )
+        mesh_only = options.get("cpp_fast_load_mesh_only", False)
         if options.get("create_mmd_control_rig", False):
             # The control-rig analyzer needs the indexed joints emitted by
-            # the fast skeleton/skin path.  A requested rig therefore takes
+            # the shared PMX authoring path.  A requested rig therefore takes
             # precedence over the mesh-only performance option.
             mesh_only = False
         base_name = options.get("custom_namespace") or Path(filepath).stem
@@ -341,6 +338,10 @@ def import_mmd_file(
         # RenderOverride route without changing the direct API contract.
         if options.get("use_cpp_vp2_ownership", False):
             fast_kwargs["vp2_ownership"] = True
+        if not mesh_only:
+            fast_kwargs["options"] = options
+            if progress_callback is not None:
+                fast_kwargs["progress_callback"] = progress_callback
         try:
             fast_root = fast_import(filepath, **fast_kwargs)
         except Exception as exc:

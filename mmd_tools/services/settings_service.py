@@ -307,10 +307,8 @@ class SettingsService:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
         if is_dev:
             opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
-            opts["cpp_fast_load_mesh_only"] = self.get(
-                setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY,
-                True,
-            )
+            # UI imports include ordinary PMX authoring, including legacy profiles.
+            opts["cpp_fast_load_mesh_only"] = False
             opts["use_cpp_vp2_ownership"] = self.get(
                 setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
                 False,
@@ -331,7 +329,7 @@ class SettingsService:
             opts.update(
                 {
                     "use_cpp_fast_load": False,
-                    "cpp_fast_load_mesh_only": True,
+                    "cpp_fast_load_mesh_only": False,
                     "use_cpp_vp2_ownership": False,
                     "use_native_pmx_parse": False,
                     "require_native_pmx_parse": False,
