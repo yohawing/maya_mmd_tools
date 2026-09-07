@@ -151,7 +151,8 @@ bool isMaterialValuesPlug(const MPlug& plug)
 {
     MPlug current = plug;
     while (!current.isNull()) {
-        if (current.attribute() == MmdRenderShape::aMaterialValues) {
+        if (current.attribute() == MmdRenderShape::aMaterialValues ||
+            current.attribute() == MmdRenderShape::aMaterialSettings) {
             return true;
         }
         MStatus status;
@@ -392,6 +393,8 @@ MObject MmdRenderShape::aInputMesh;
 MObject MmdRenderShape::aMaterialAlpha;
 MObject MmdRenderShape::aMaterialValues;
 MObject MmdRenderShape::aMaterialValueChildren[13];
+MObject MmdRenderShape::aMaterialSettings;
+MObject MmdRenderShape::aMaterialSettingChildren[7];
 MObject MmdRenderShape::aProxyReady;
 MObject MmdRenderShape::aSourceVisibility;
 
@@ -500,6 +503,36 @@ MStatus MmdRenderShape::initialize()
         return status;
     }
 
+    MFnCompoundAttribute settingsAttribute;
+    aMaterialSettings = settingsAttribute.create("materialSettings", "ms", &status);
+    if (!status) return status;
+    const char* settingNames[] = {"drawFlags", "sphereMode", "sharedToon",
+        "toonIndex", "mainTexturePath", "sphereTexturePath", "toonTexturePath"};
+    const char* settingShortNames[] = {"df", "sm", "st", "ti", "mtp", "stp", "ttp"};
+    for (unsigned int index = 0; index < 7U; ++index) {
+        if (index < 4U) {
+            aMaterialSettingChildren[index] = numericAttribute.create(
+                settingNames[index], settingShortNames[index], MFnNumericData::kInt,
+                index == 3U ? -1 : 0, &status);
+            if (!status) return status;
+            configureMaterialAttribute(numericAttribute);
+        } else {
+            aMaterialSettingChildren[index] = typedAttribute.create(
+                settingNames[index], settingShortNames[index], MFnData::kString,
+                MObject::kNullObj, &status);
+            if (!status) return status;
+            configureMaterialAttribute(typedAttribute);
+        }
+        status = settingsAttribute.addChild(aMaterialSettingChildren[index]);
+        if (!status) return status;
+    }
+    settingsAttribute.setArray(true);
+    settingsAttribute.setIndexMatters(true);
+    settingsAttribute.setUsesArrayDataBuilder(true);
+    configureMaterialAttribute(settingsAttribute);
+    status = addAttribute(aMaterialSettings);
+    if (!status) return status;
+
     aProxyReady = numericAttribute.create(
         "proxyReady", "pr", MFnNumericData::kBoolean, false, &status);
     if (!status) {
@@ -553,6 +586,12 @@ MStatus MmdRenderShape::preEvaluation(
 {
     if (context.isNormal()) {
         MStatus status;
+        for (const MObject& child : aMaterialSettingChildren) {
+            if (evaluationNode.dirtyPlugExists(child, &status) && status) {
+                MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+                break;
+            }
+        }
         if (evaluationNode.dirtyPlugExists(aInputMesh, &status) && status) {
             meshInputDirty_ = true;
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
@@ -1364,6 +1403,62 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
     }
 }
 
+void MmdRenderShape::updateEvaluatedMaterialSettings()
+{
+    MPlug settings(thisMObject(), aMaterialSettings);
+    MStatus status;
+    const unsigned int count = settings.evaluateNumElements(&status);
+    if (!status || count == 0U) return;
+    auto nextInputs = geometry_.queueInputs;
+    bool changed = false;
+    for (unsigned int physical = 0; physical < count; ++physical) {
+        const MPlug element = settings.elementByPhysicalIndex(physical, &status);
+        if (!status) return;
+        const unsigned int materialIndex = element.logicalIndex(&status);
+        if (!status) return;
+        const int flags = element.child(0U).asInt(&status);
+        if (!status) return;
+        const int sphereMode = element.child(1U).asInt(&status);
+        if (!status) return;
+        const bool sharedToon = element.child(2U).asInt(&status) != 0;
+        if (!status) return;
+        const int toonIndex = element.child(3U).asInt(&status);
+        if (!status) return;
+        const std::string mainPath = element.child(4U).asString(&status).asUTF8();
+        if (!status) return;
+        const std::string spherePath = element.child(5U).asString(&status).asUTF8();
+        if (!status) return;
+        const std::string toonPath = element.child(6U).asString(&status).asUTF8();
+        if (!status) return;
+        const int sharedIndex = sharedToon ? toonIndex : -1;
+        for (auto& input : nextInputs) {
+            if (input.materialIndex != materialIndex) continue;
+            if (input.doubleSided == bool(flags & 1) &&
+                input.selfShadowMap == bool(flags & 4) &&
+                input.selfShadow == bool(flags & 8) &&
+                input.edgeDrawing == bool(flags & 16) &&
+                input.sphereMode == sphereMode && input.sharedToonIndex == sharedIndex &&
+                input.mainTexturePath == mainPath && input.sphereTexturePath == spherePath &&
+                input.toonTexturePath == toonPath) continue;
+            if (input.mainTexturePath != mainPath) input.mainTextureAvailable = false;
+            input.doubleSided = bool(flags & 1);
+            input.selfShadowMap = bool(flags & 4);
+            input.selfShadow = bool(flags & 8);
+            input.edgeDrawing = bool(flags & 16);
+            input.sphereMode = sphereMode;
+            input.sharedToonIndex = sharedIndex;
+            input.mainTexturePath = mainPath;
+            input.sphereTexturePath = spherePath;
+            input.toonTexturePath = toonPath;
+            changed = true;
+        }
+    }
+    if (changed && resyncMaterialQueue(nextInputs)) {
+        clearRenderItemWitness();
+        clearMaterialBindingDiagnostics();
+    }
+}
+
 bool MmdRenderShape::updateMainTextureAvailability(
     const std::vector<bool>& availability)
 {
@@ -1594,6 +1689,7 @@ bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
     geometry_.queueInputs = std::move(nextInputs);
     geometry_.renderQueue = std::move(nextQueue);
     geometry_.queueGeometry = std::move(reordered);
+    ++renderDataRevision_;
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;

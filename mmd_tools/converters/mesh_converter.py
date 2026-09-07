@@ -2568,7 +2568,28 @@ class MeshConverter:
         """カスタムアトリビュートを適用する共通処理"""
         # mmd_materialフラグを追加（このマテリアルがMMDマテリアルであることを示す）
 
+        def resolved_path(uniforms, fallback):
+            # Texture repair may have replaced a non-ASCII source path with a
+            # cache file. Inherit the actual file node path after shader setup.
+            for uniform in uniforms:
+                if not cmds.attributeQuery(uniform, node=shader, exists=True):
+                    continue
+                nodes = cmds.listConnections(f"{shader}.{uniform}", source=True,
+                                             destination=False, type="file") or []
+                if isinstance(nodes, (list, tuple)) and len(nodes) == 1:
+                    path = cmds.getAttr(f"{nodes[0]}.fileTextureName")
+                    if isinstance(path, str) and path:
+                        return path
+            return _resolve_texture_path(self.texture_dir, fallback) if fallback else ""
+
+        sphere_source = _source_texture_path(
+            all_textures, getattr(material, "sphere_texture_index", -1), sphere_texture_path
+        )
         custom_attrs = {
+            "mmd_resolved_texture_path": resolved_path(("MainTexture", "baseColor"), texture_path),
+            "mmd_resolved_sphere_texture_path": resolved_path(("SphereTexture",), sphere_source),
+            "mmd_resolved_toon_texture_path": resolved_path(("ToonTexture",),
+                _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)),
             ATTR_MMD_MATERIAL: 1,  # MMDマテリアルであることを示すフラグ
             ATTR_MMD_MATERIAL_INDEX: material.material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
@@ -2712,9 +2733,6 @@ class MeshConverter:
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
         maya_attribute_utils.set_attribute(shader, "metalness", 0.0, "float")
 
-        # カスタムアトリビュートを適用
-        self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
-
         # テクスチャの設定
         raw_texture_path = original_texture_path or texture_path
         if raw_texture_path:
@@ -2844,6 +2862,10 @@ class MeshConverter:
                 tuple(float(value) for value in material.ambient[:3]),
                 "double3",
             )
+
+        # Resolve metadata only after file nodes (including repaired cache
+        # paths) have been installed.
+        self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
 
     def _setup_glsl_shader(
         self,

@@ -1098,6 +1098,20 @@ void MmdNativeCasterRenderOverride::registerReceiverShader(
     }
 }
 
+void MmdNativeCasterRenderOverride::deactivateReceiverShader(
+    MHWRender::MShaderInstance* shader)
+{
+    std::unique_lock<std::mutex> lock(gReceiverMutex);
+    gReceiverShaders.erase(shader);
+    gReceiverCv.wait(lock, [shader] {
+        const auto pin = gReceiverPins.find(shader);
+        return pin == gReceiverPins.end() || pin->second == 0U;
+    });
+    // Keep the borrowed target assignment alive until the shader is actually
+    // released. Only its participation in future receiver updates ends here.
+    gDiagnostics.receiverShaderRegistered = gReceiverShaders.size();
+}
+
 bool MmdNativeCasterRenderOverride::beginReceiverShaderRetire(
     MHWRender::MShaderInstance* shader)
 {

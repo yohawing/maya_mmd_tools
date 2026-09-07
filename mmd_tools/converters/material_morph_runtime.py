@@ -360,6 +360,32 @@ def bind_native_material_alpha(
     if evaluators_by_shader is None:
         evaluators_by_shader = _collect_existing_evaluators()
     for material_index, shader in sorted(shaders_by_index.items()):
+        settings = {
+            "drawFlags": "mmd_draw_flags",
+            "sphereMode": "mmd_sphere_mode",
+            "sharedToon": "mmd_shared_toon_flag",
+            "toonIndex": "mmd_toon_texture_index",
+            "mainTexturePath": "mmd_resolved_texture_path",
+            "sphereTexturePath": "mmd_resolved_sphere_texture_path",
+            "toonTexturePath": "mmd_resolved_toon_texture_path",
+        }
+        # Bind a complete record only; legacy shaders keep their original queue
+        # settings instead of replacing missing fields with attribute defaults.
+        if cmds.attributeQuery("materialSettings", node=render_shape, exists=True) and all(
+            cmds.attributeQuery(attribute, node=shader, exists=True)
+            for attribute in settings.values()
+        ):
+            try:
+                for field, attribute in settings.items():
+                    _connect_if_needed(
+                        f"{shader}.{attribute}",
+                        f"{render_shape}.materialSettings[{material_index}].{field}",
+                        force=True,
+                    )
+            except Exception:
+                result["success"] = False
+                result["skipped"].append(f"material_settings_failed:{material_index}:{shader}")
+                logger.warning("Failed to bind native material settings for %s", shader, exc_info=True)
         evaluator = evaluators_by_shader.get(shader)
         if evaluator and not _is_valid_evaluator(evaluator):
             result["success"] = False
@@ -380,7 +406,10 @@ def bind_native_material_alpha(
                     force=True,
                 )
             else:
-                cmds.setAttr(destination, float(base_alpha))
+                if cmds.attributeQuery("mmd_diffuse_alpha", node=shader, exists=True):
+                    _connect_if_needed(f"{shader}.mmd_diffuse_alpha", destination, force=True)
+                else:
+                    cmds.setAttr(destination, float(base_alpha))
         except Exception:
             result["success"] = False
             failure = "bind_failed" if evaluator else "reset_failed"
@@ -457,8 +486,26 @@ def bind_native_material_alpha(
                     for output, destination in zip(outputs, destinations):
                         _connect_if_needed(output, destination, force=True)
                 else:
-                    for destination, value in zip(destinations, values):
-                        cmds.setAttr(destination, float(value))
+                    source_attribute = {
+                        "DiffuseColorRGB": ATTR_MMD_DIFFUSE_COLOR,
+                        "SpecularColor": ATTR_MMD_SPECULAR_COLOR,
+                        "Shininess": ATTR_MMD_SHININESS,
+                        "AmbientColor": ATTR_MMD_AMBIENT_COLOR,
+                        "EdgeColorRGB": ATTR_MMD_EDGE_COLOR,
+                        "EdgeColorA": ATTR_MMD_EDGE_ALPHA,
+                        "EdgeSize": ATTR_MMD_EDGE_SIZE,
+                    }.get(route.uniform)
+                    if source_attribute:
+                        # Authored metadata is canonical. A DG connection also
+                        # carries edits and Undo without a Python refresh callback.
+                        _connect_if_needed(
+                            f"{shader}.{source_attribute}",
+                            f"{render_shape}.materialValues[{material_index}].{route.uniform}",
+                            force=True,
+                        )
+                    else:
+                        for destination, value in zip(destinations, values):
+                            cmds.setAttr(destination, float(value))
                 value_bindings[route.uniform] = tuple(values)
             result["material_values"].append(
                 {

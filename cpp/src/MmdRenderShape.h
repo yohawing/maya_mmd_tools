@@ -50,6 +50,8 @@ public:
     // untouched.
     static MObject aMaterialValues;
     static MObject aMaterialValueChildren[13];
+    static MObject aMaterialSettings;
+    static MObject aMaterialSettingChildren[7];
     // Internal, non-persistent DG input.  VP2 publishes readiness here so
     // Maya dirties and reevaluates the connected visibility output.
     static MObject aProxyReady;
@@ -136,6 +138,7 @@ public:
 
     /** Pull present DG material-value records without rebuilding vertex buffers. */
     void updateEvaluatedMaterialValues();
+    void updateEvaluatedMaterialSettings();
 
     /** Synchronize transient main-texture availability in one queue rebuild. */
     bool updateMainTextureAvailability(

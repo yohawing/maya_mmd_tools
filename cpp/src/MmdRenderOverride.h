@@ -66,6 +66,7 @@ public:
     static void setPluginLoadPath(const MString& loadPath);
     static void markRegistered(bool registered);
     static void registerReceiverShader(MHWRender::MShaderInstance* shader);
+    static void deactivateReceiverShader(MHWRender::MShaderInstance* shader);
     // The caller owns the shader while refreshing it after material binding.
     static bool refreshReceiverShaderParameters(MHWRender::MShaderInstance* shader);
     static bool beginReceiverShaderRetire(MHWRender::MShaderInstance* shader);

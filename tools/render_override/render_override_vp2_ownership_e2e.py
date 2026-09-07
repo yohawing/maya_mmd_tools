@@ -499,6 +499,7 @@ def run_probe(
     material_reindex: bool = False,
     authoring_checks: bool = False,
     performance_checks: bool = False,
+    material_checks: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -1048,6 +1049,10 @@ def run_probe(
                     raise RuntimeError(
                         f"native VP2 capture-only check failed: {check_name}"
                     )
+            if material_checks:
+                from tools.render_override.material_checks import check_material_edits
+
+                report["materials"] = check_material_edits(cmds, root_name, shape_name, panel, output_dir)
             if performance_checks:
                 from tools.render_override.performance_checks import check_camera_updates
 
@@ -1297,6 +1302,7 @@ def main() -> int:
         help="Verify test_morph_model controller Undo/Redo and source scene reload.",
     )
     parser.add_argument("--performance-checks", action="store_true")
+    parser.add_argument("--material-checks", action="store_true")
     args = parser.parse_args()
 
     model_path = args.model
@@ -1322,6 +1328,8 @@ def main() -> int:
         parser.error("--authoring-checks requires --capture-only and --ui-import")
     if args.performance_checks and not (args.capture_only and args.ui_import):
         parser.error("--performance-checks requires --capture-only and --ui-import")
+    if args.material_checks and not (args.capture_only and args.ui_import):
+        parser.error("--material-checks requires --capture-only and --ui-import")
     camera_config = None
     if args.camera_json is not None:
         try:
@@ -1350,7 +1358,8 @@ def main() -> int:
         f"ui_import={bool(args.ui_import)!r}, "
         f"material_reindex={bool(args.material_reindex)!r}, "
         f"authoring_checks={bool(args.authoring_checks)!r}, "
-        f"performance_checks={bool(args.performance_checks)!r})\n"
+        f"performance_checks={bool(args.performance_checks)!r}, "
+        f"material_checks={bool(args.material_checks)!r})\n"
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",

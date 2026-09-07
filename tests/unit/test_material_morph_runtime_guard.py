@@ -823,7 +823,7 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         """A rebuild at a non-zero weight must restore the immutable base alpha."""
         cmds = mock.Mock()
         cmds.objExists.return_value = True
-        cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr != "materialValues"
+        cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr not in {"materialValues", "materialSettings"}
         cmds.nodeType.side_effect = lambda node: (
             "mmdMaterialMorphEval" if node == "eval" else "standardSurface"
         )
@@ -962,18 +962,19 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         self.assertEqual(
             [call.args[1] for call in cmds.setAttr.call_args_list
              if call.args and call.args[0] == "nativeShape.materialAlpha[1]"],
-            [0.25],
+            [],
         )
+        connect_mock.assert_any_call("shader.mmd_diffuse_alpha", "nativeShape.materialAlpha[1]", force=True)
+        connect_mock.assert_any_call("shader.diffuse_color", "nativeShape.materialValues[1].DiffuseColorRGB", force=True)
+        connect_mock.assert_any_call("shader.mmd_edge_alpha", "nativeShape.materialValues[1].EdgeColorA", force=True)
         reset_values = {
             call.args[0]: call.args[1]
             for call in cmds.setAttr.call_args_list
             if call.args and ".materialValues[1]." in call.args[0]
         }
-        self.assertEqual(reset_values["nativeShape.materialValues[1].DiffuseColorRGBX"], 0.2)
-        self.assertEqual(reset_values["nativeShape.materialValues[1].EdgeColorA"], 0.7)
         self.assertEqual(reset_values["nativeShape.materialValues[1].MainTextureMultiplyR"], 1.0)
         self.assertEqual(reset_values["nativeShape.materialValues[1].MainTextureAddR"], 0.0)
-        self.assertEqual(len(reset_values), 39)
+        self.assertEqual(len(reset_values), 24)
 
     def test_native_material_values_skip_when_authored_metadata_is_missing(self):
         """Missing legacy metadata must preserve native values and alpha routing."""
@@ -1051,11 +1052,8 @@ class TestResolveShaderColorRoute(unittest.TestCase):
                 )
             ],
         )
-        connect_mock.assert_not_called()
-        self.assertEqual(
-            [call.args[0] for call in cmds.setAttr.call_args_list],
-            ["nativeShape.materialAlpha[1]"],
-        )
+        connect_mock.assert_called_once_with("shader.mmd_diffuse_alpha", "nativeShape.materialAlpha[1]", force=True)
+        cmds.setAttr.assert_not_called()
         self.assertFalse(
             any(
                 call.args and ".materialValues[1]." in call.args[0]
@@ -1126,7 +1124,7 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         """After network deletion, the graph rebuild restores each native alpha base."""
         cmds = mock.Mock()
         cmds.objExists.return_value = True
-        cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr != "materialValues"
+        cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr not in {"materialValues", "materialSettings"}
         cmds.getAttr.side_effect = lambda plug, **kwargs: (
             1.0 if plug.endswith(".mmd_diffuse_alpha") else "double"
             if kwargs.get("type")
@@ -1153,19 +1151,18 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             material_morph_runtime,
             "_collect_native_render_shapes",
             return_value=["nativeShape"],
-        ):
+        ), mock.patch.object(
+            material_morph_runtime, "_connect_if_needed"
+        ) as connect_mock:
             result = material_morph_runtime.build_material_morph_graph("root")
 
         self.assertTrue(result["success"])
         self.assertEqual(result["skipped"], ["no_material_morph_contributions"])
-        self.assertEqual(
-            [call.args[0] for call in cmds.setAttr.call_args_list],
-            ["nativeShape.materialAlpha[0]", "nativeShape.materialAlpha[1]"],
-        )
-        self.assertEqual(
-            [call.args[1] for call in cmds.setAttr.call_args_list],
-            [1.0, 1.0],
-        )
+        cmds.setAttr.assert_not_called()
+        connect_mock.assert_has_calls([
+            mock.call("shader0.mmd_diffuse_alpha", "nativeShape.materialAlpha[0]", force=True),
+            mock.call("shader1.mmd_diffuse_alpha", "nativeShape.materialAlpha[1]", force=True),
+        ])
         existing_evaluators_mock.assert_called_once_with()
         cmds.disconnectAttr.assert_not_called()
         self.assertNotIn("missing_evaluator:0:shader0", result["skipped"])

@@ -323,6 +323,7 @@ void MmdRenderGeometryOverride::updateDG()
 
     shape_->updateEvaluatedMaterialAlpha();
     shape_->updateEvaluatedMaterialValues();
+    shape_->updateEvaluatedMaterialSettings();
 
     if (!shape_->consumeMeshInputDirty()) {
         return;
@@ -597,6 +598,9 @@ void MmdRenderGeometryOverride::updateRenderItems(
             return false;
         }
         diagnostic.shaderAvailable = true;
+        if (!queueGeometry.material.selfShadow && receiverShaders_.count(materialShader)) {
+            MmdNativeCasterRenderOverride::deactivateReceiverShader(materialShader);
+        }
         const bool parameterBindingSuccess = setNativeMaterialParameters(
             materialShader, queueGeometry.material, textureManager, &diagnostic) &&
             (outline || !queueGeometry.material.selfShadow ||
