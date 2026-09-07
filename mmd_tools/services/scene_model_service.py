@@ -8,7 +8,6 @@ from ..adapters import MayaCmdsAdapter
 from ..core.constants import (
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
-    ATTR_MMD_MODEL_REGISTRY,
     SCENE_ROOT_SUFFIX,
 )
 from ..core.logger import get_logger
@@ -49,7 +48,6 @@ class SceneModelService:
         for attribute in (
             ATTR_MMD_MODEL_NAME,
             ATTR_MMD_MODEL_NAME_EN,
-            ATTR_MMD_MODEL_REGISTRY,
         ):
             candidates.extend(
                 self._cmds_adapter.ls(
@@ -96,7 +94,6 @@ class SceneModelService:
             for attribute in (
                 ATTR_MMD_MODEL_NAME,
                 ATTR_MMD_MODEL_NAME_EN,
-                ATTR_MMD_MODEL_REGISTRY,
             )
         )
 

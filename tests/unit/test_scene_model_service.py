@@ -244,18 +244,21 @@ class TestSceneModelService(unittest.TestCase):
             "|Model_root1",
             "|RenamedModel",
             "|ns:RenamedModel2",
+            "|RegistryOnly",
             "|unrelated",
         ]
         cmds.attrs = {
             "|Model_root": {ATTR_MMD_MODEL_NAME: "Model"},
             "|Model_root1": {ATTR_MMD_MODEL_NAME_EN: "Model Copy"},
             "|RenamedModel": {ATTR_MMD_MODEL_NAME: "Renamed"},
-            "|ns:RenamedModel2": {ATTR_MMD_MODEL_REGISTRY: True},
+            "|ns:RenamedModel2": {ATTR_MMD_MODEL_NAME_EN: "Namespaced"},
+            "|RegistryOnly": {ATTR_MMD_MODEL_REGISTRY: True},
         }
         service = SceneModelService(cmds_module=cmds)
 
+        models = service.list_mmd_models()
         self.assertEqual(
-            service.list_mmd_models(),
+            models,
             [
                 "|Model_root",
                 "|Model_root1",
@@ -263,13 +266,14 @@ class TestSceneModelService(unittest.TestCase):
                 "|ns:RenamedModel2",
             ],
         )
+        self.assertNotIn("|RegistryOnly", models)
 
         discovery_calls = [
             (args, kwargs)
             for args, kwargs in cmds.ls_calls
             if kwargs.get("type") == "transform" and kwargs.get("objectsOnly")
         ]
-        self.assertEqual(len(discovery_calls), 3)
+        self.assertEqual(len(discovery_calls), 2)
         self.assertTrue(all(kwargs.get("recursive") is True for _args, kwargs in discovery_calls))
 
     def test_list_mmd_models_tolerates_none_ls_results(self):
@@ -396,7 +400,7 @@ class TestSceneModelService(unittest.TestCase):
         }
         cmds.attrs = {
             "|RenamedModel": {ATTR_MMD_MODEL_NAME: "Renamed"},
-            "|ns:Model_root1": {ATTR_MMD_MODEL_REGISTRY: True},
+            "|ns:Model_root1": {ATTR_MMD_MODEL_NAME_EN: "Model Copy"},
         }
         service = SceneModelService(cmds_module=cmds)
 
