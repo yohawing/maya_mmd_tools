@@ -55,6 +55,7 @@ private:
         MmdRenderShape::MaterialBindingDiagnostic* diagnostic);
 
     MmdRenderShape* shape_ = nullptr;
+    std::uint64_t uploadedRevision_ = 0U;
     std::unordered_map<std::string, MHWRender::MShaderInstance*>
         materialShaders_;
     // Shared stock shader for the wireframe-only compatibility items.

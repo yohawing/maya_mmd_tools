@@ -376,6 +376,7 @@ public:
                << (lastError_.empty() ? "active" : "error")
                << "\",\"enabled\":true,\"drawCount\":" << drawCount_
                << ",\"casterDrawCount\":" << casterDrawCount_
+               << ",\"geometryUploads\":" << geometryUploadCount_
                << ",\"casterMaterialIndices\":[";
         for (std::size_t index = 0U; index < casterMaterialIndices_.size();
              ++index) {
@@ -487,6 +488,18 @@ private:
         MMatrix world = MMatrix::identity;
         unsigned int firstIndex = 0U;
         unsigned int indexCount = 0U;
+    };
+
+    struct GeometryKey {
+        MObjectHandle handle;
+        std::uint64_t revision;
+        MMatrix world;
+        bool visible;
+        bool operator==(const GeometryKey& other) const
+        {
+            return handle == other.handle && revision == other.revision &&
+                   world == other.world && visible == other.visible;
+        }
     };
 
 #ifdef _WIN32
@@ -962,7 +975,34 @@ private:
         std::vector<NativeVertex> vertices;
         std::vector<unsigned int> indices;
         MSelectionList visibleSelection;
-        if (!collectFrame(plans, vertices, indices, visibleSelection)) {
+        if (!ensureResources(drawContext)) {
+            framePreparationFailed_ = true;
+            return false;
+        }
+        std::vector<GeometryKey> key;
+        bool keyValid = true;
+        for (const ShapeRecord& record : records_) {
+            MStatus status;
+            MmdRenderShape* shape = record.handle.isValid() && record.handle.isAlive()
+                ? MmdRenderShape::fromMObject(record.handle.object(), &status) : nullptr;
+            if (!shape || !status || !shape->hasValidGeometry() || !record.path.isValid()) {
+                keyValid = false;
+                break;
+            }
+            const bool visible = record.path.isVisible() && !record.path.isTemplated();
+            key.push_back({record.handle, shape->renderDataRevision(),
+                           record.path.inclusiveMatrix(), visible});
+        }
+        const bool reuseGeometry = keyValid && key == cachedGeometryKey_ &&
+                                   vertexBuffer_ && indexBuffer_;
+        if (reuseGeometry) {
+            plans = cachedGeometryPlans_;
+            for (std::size_t i = 0; i < key.size(); ++i) {
+                if (key[i].visible && !visibleSelection.add(records_[i].path)) {
+                    return fail("ordered cached selection could not be built") == MS::kSuccess;
+                }
+            }
+        } else if (!collectFrame(plans, vertices, indices, visibleSelection)) {
             framePreparationFailed_ = true;
             return false;
         }
@@ -971,10 +1011,12 @@ private:
             framePrepared_ = true;
             return true;
         }
-        if (!ensureResources(drawContext) || !uploadFrame(vertices, indices)) {
+        if (!reuseGeometry && !uploadFrame(vertices, indices)) {
             framePreparationFailed_ = true;
             return false;
         }
+        cachedGeometryKey_ = std::move(key);
+        cachedGeometryPlans_ = plans;
         MmdNativeCasterRenderOverride* nativeCasterOwner =
             owner_ ? owner_->nativeCasterOwner_ : nullptr;
         if (!nativeCasterOwner) {
@@ -1116,6 +1158,7 @@ private:
         }
         std::memcpy(mapped.pData, indices.data(), indexBytes);
         context_->Unmap(indexBuffer_, 0U);
+        ++geometryUploadCount_;
         return true;
     }
 
@@ -1394,6 +1437,8 @@ private:
 
     bool releaseResourcesForUnload()
     {
+        cachedGeometryKey_.clear();
+        cachedGeometryPlans_.clear();
         if (!releaseShaderCache()) {
             return false;
         }
@@ -1454,6 +1499,9 @@ private:
     std::vector<ShapeRecord> records_;
     std::string shaderPath_;
     unsigned int drawCount_ = 0U;
+    unsigned int geometryUploadCount_ = 0U;
+    std::vector<GeometryKey> cachedGeometryKey_;
+    std::vector<DrawPlan> cachedGeometryPlans_;
     unsigned int casterDrawCount_ = 0U;
     unsigned int receiverDrawCount_ = 0U;
     std::string lastError_;

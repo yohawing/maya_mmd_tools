@@ -306,7 +306,7 @@ bool MmdRenderGeometryOverride::supportsEvaluationManagerParallelUpdate() const
 
 bool MmdRenderGeometryOverride::requiresGeometryUpdate() const
 {
-    return shape_ != nullptr;
+    return shape_ && uploadedRevision_ != shape_->renderDataRevision();
 }
 
 bool MmdRenderGeometryOverride::requiresUpdateRenderItems(
@@ -323,6 +323,10 @@ void MmdRenderGeometryOverride::updateDG()
 
     shape_->updateEvaluatedMaterialAlpha();
     shape_->updateEvaluatedMaterialValues();
+
+    if (!shape_->consumeMeshInputDirty()) {
+        return;
+    }
 
     MPlug inputPlug(shape_->thisMObject(), MmdRenderShape::aInputMesh);
     if (inputPlug.isNull()) {
@@ -368,10 +372,10 @@ void MmdRenderGeometryOverride::updateRenderItems(
     // Disable stale items before rebuilding the pass list.  They are enabled
     // by findOrCreateItem only after the current shape still owns geometry for
     // that pass; populateGeometry disables them again on any buffer failure.
-    shape_->clearRenderItemWitness();
     shape_->clearMaterialBindingDiagnostics();
     disableItems(list);
     if (!shape_->hasValidGeometry()) {
+        shape_->clearRenderItemWitness();
         return;
     }
 
@@ -936,6 +940,8 @@ void MmdRenderGeometryOverride::populateGeometry(
         }
         disableItems(renderItems);
         shape_->clearRenderItemWitness();
+    } else {
+        uploadedRevision_ = shape_->renderDataRevision();
     }
 }
 

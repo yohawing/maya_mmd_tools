@@ -553,6 +553,10 @@ MStatus MmdRenderShape::preEvaluation(
 {
     if (context.isNormal()) {
         MStatus status;
+        if (evaluationNode.dirtyPlugExists(aInputMesh, &status) && status) {
+            meshInputDirty_ = true;
+            MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+        }
         if (evaluationNode.dirtyPlugExists(aMaterialAlpha, &status) &&
             status) {
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
@@ -579,6 +583,10 @@ MStatus MmdRenderShape::preEvaluation(
 MStatus MmdRenderShape::setDependentsDirty(const MPlug& plug,
                                            MPlugArray& /*plugArray*/)
 {
+    if (!plug.isNull() && plug.attribute() == aInputMesh) {
+        meshInputDirty_ = true;
+        MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+    }
     if (!plug.isNull() &&
         (plug.attribute() == aMaterialAlpha || isMaterialValuesPlug(plug))) {
         MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
@@ -949,6 +957,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     std::vector<float> nextStaticPositions = next.positions;
     std::vector<float> nextStaticNormals = next.normals;
     geometry_ = std::move(next);
+    ++renderDataRevision_;
+    meshInputDirty_ = true;
     staticPositions_ = std::move(nextStaticPositions);
     staticNormals_ = std::move(nextStaticNormals);
     boundingBox_ = nextBounds;
@@ -964,6 +974,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
 
 bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 {
+    ++geometryUpdateCount_;
+    ++renderDataRevision_;
     auto reject = [this](const std::string& reason) {
         const bool reasonChanged = recordRenderFallbackReason(reason);
         if (reasonChanged) {
@@ -975,6 +987,8 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         // override until a later DG update supplies a valid mesh (or the
         // input is disconnected and static geometry is explicitly restored).
         geometryValid_ = false;
+        // A transient evaluation failure must remain eligible for retry.
+        meshInputDirty_ = true;
         evaluatedNormalRepairCount_ = 0U;
         evaluatedNormalStaticFallbackCount_ = 0U;
         clearMaterialBindingDiagnostics();
@@ -1169,6 +1183,7 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 void MmdRenderShape::useStaticGeometry()
 {
     if (!geometryValid_ || evaluatedGeometryActive_) {
+        ++renderDataRevision_;
         // Build both replacements before swapping either stream so a failed
         // allocation cannot expose a half-restored geometry state.
         std::vector<float> restoredPositions = staticPositions_;
@@ -1406,6 +1421,7 @@ bool MmdRenderShape::resyncMaterialQueue(
         sourceIndexByInput[inputIndex] = candidateIndex;
     }
 
+    ++renderDataRevision_;
     bool orderChanged = geometry_.renderQueue.size() != nextQueue.size();
     if (!orderChanged) {
         for (std::size_t index = 0; index < nextQueue.size(); ++index) {
@@ -1637,6 +1653,7 @@ void MmdRenderShape::recordGeometryWitness(std::size_t vertexCount,
                                            std::size_t indexCount,
                                            const std::string& descriptorSummary)
 {
+    ++bufferUploadCount_;
     geometryWitnessVertexCount_ = vertexCount;
     geometryWitnessIndexCount_ = indexCount;
     geometryWitnessDescriptorSummary_ = descriptorSummary;
@@ -1686,7 +1703,10 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
                                                               : "failed");
     stream << "{\"version\":1,\"status\":"
            << jsonEscape(status) << ",\"fallbackReason\":"
-           << jsonEscape(renderFallbackReason_) << ",\"items\":[";
+           << jsonEscape(renderFallbackReason_)
+           << ",\"geometryUpdates\":" << geometryUpdateCount_
+           << ",\"bufferUploads\":" << bufferUploadCount_
+           << ",\"items\":[";
     for (std::size_t index = 0; index < materialBindingDiagnostics_.size();
          ++index) {
         if (index != 0U) {

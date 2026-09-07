@@ -9,6 +9,16 @@ SHAPE_SOURCE = ROOT / "cpp" / "src" / "MmdRenderShape.cpp"
 OVERRIDE_SOURCE = ROOT / "cpp" / "src" / "MmdRenderGeometryOverride.cpp"
 
 
+def test_failed_geometry_and_publication_remain_retryable():
+    source = SHAPE_SOURCE.read_text(encoding="utf-8")
+    reject = source[source.index("auto reject = [this]") :]
+    reject = reject[: reject.index("return false;")]
+    assert "meshInputDirty_ = true;" in reject
+    override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
+    publish = override[override.index("if (!shape_->setProxyReady(true))") :]
+    assert publish.index("} else {") < publish.index("uploadedRevision_ =")
+
+
 def test_render_shape_exposes_storable_mesh_input_and_source_mapping():
     header = SHAPE_HEADER.read_text(encoding="utf-8")
     source = SHAPE_SOURCE.read_text(encoding="utf-8")

@@ -107,6 +107,14 @@ public:
      */
     bool updateEvaluatedMesh(const MObject& meshObject);
 
+    bool consumeMeshInputDirty()
+    {
+        const bool dirty = meshInputDirty_;
+        meshInputDirty_ = false;
+        return dirty;
+    }
+    std::uint64_t renderDataRevision() const { return renderDataRevision_; }
+
     /** Mark the static geometry usable after an absent input mesh. */
     void useStaticGeometry();
 
@@ -266,6 +274,10 @@ private:
     MBoundingBox boundingBox_;
     MBoundingBox staticBoundingBox_;
     bool geometryValid_ = true;
+    bool meshInputDirty_ = true;
+    std::uint64_t renderDataRevision_ = 1U;
+    std::uint64_t geometryUpdateCount_ = 0U;
+    std::uint64_t bufferUploadCount_ = 0U;
     bool evaluatedGeometryActive_ = false;
     bool renderItemWitnessValid_ = false;
     std::vector<mmd::MmdRenderQueueEntry> renderItemWitnessEntries_;
