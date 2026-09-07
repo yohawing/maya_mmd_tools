@@ -727,26 +727,30 @@ class MayaMorphMetadataRepository:
             "flip": {"morph_index": ("index", None), "flip_rate": ("number", None)},
             "impulse": {
                 "rigid_body_index": ("index", None),
+                "is_local": ("flag", None),
                 "impulse": ("vector", 3),
                 "torque": ("vector", 3),
             },
         }
         schema = schemas["uv"] if morph_type.startswith("additional_uv") else schemas[morph_type]
         actual = set(offset)
-        expected = set(schema)
-        if actual != expected:
-            unknown = sorted(actual - expected)
-            missing = sorted(expected - actual)
+        optional = {"is_local"} if morph_type == "impulse" else set()
+        required = set(schema) - optional
+        if actual not in (required, set(schema)):
+            unknown = sorted(actual - set(schema))
+            missing = sorted(required - actual)
             raise self._error(
                 f"{path} fields mismatch; unknown={unknown!r}, missing={missing!r}"
             )
         result: dict[str, Any] = {}
         for key, (kind, size) in schema.items():
+            if key not in actual:
+                continue
             field = f"{path}.{key}"
             item = offset[key]
-            if kind in {"index", "signed_index", "operation"}:
+            if kind in {"index", "signed_index", "operation", "flag"}:
                 minimum = -1 if kind == "signed_index" else 0
-                maximum = 1 if kind == "operation" else None
+                maximum = 1 if kind in {"operation", "flag"} else None
                 result[key] = self._strict_json_int(
                     item, field, minimum=minimum, maximum=maximum
                 )

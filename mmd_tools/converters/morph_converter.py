@@ -963,6 +963,13 @@ class MorphConverter:
                     f"{morph_type} morph offset {offset_index} {reference_key} must be a non-negative integer"
                 )
             normalized = {reference_key: reference}
+            if morph_type == "impulse" and "is_local" in offset:
+                is_local = offset["is_local"]
+                if isinstance(is_local, bool) or not isinstance(is_local, int) or is_local not in (0, 1):
+                    raise ValueError(
+                        f"{morph_type} morph offset {offset_index} is_local must be 0 or 1"
+                    )
+                normalized["is_local"] = is_local
             if scalar_key is not None:
                 scalar = offset.get(scalar_key)
                 if isinstance(scalar, bool) or not isinstance(scalar, (int, float)):
