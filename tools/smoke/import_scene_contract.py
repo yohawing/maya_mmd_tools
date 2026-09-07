@@ -1356,6 +1356,20 @@ def _touches_nodes(link: Mapping[str, Any], paths: set[str]) -> bool:
     return False
 
 
+def _without_implementation_links(value: Any, paths: set[str]) -> Any:
+    """Apply the declared native-node allowance to duplicated nested links too."""
+    if isinstance(value, Mapping):
+        return {key: _without_implementation_links(item, paths) for key, item in value.items()}
+    if isinstance(value, list):
+        return [
+            _without_implementation_links(item, paths)
+            for item in value
+            if not (isinstance(item, Mapping) and "src" in item and "dst" in item
+                    and _touches_nodes(item, paths))
+        ]
+    return value
+
+
 def _check(checks: list[dict[str, Any]], name: str, passed: bool, **details: Any) -> None:
     checks.append({"name": name, "pass": bool(passed), **{key: _summary(value) for key, value in details.items()}})
 
@@ -1384,6 +1398,16 @@ def compare_scenes(left: Mapping[str, Any], right: Mapping[str, Any]) -> dict[st
             "exclusions": list(EXCLUSIONS),
             "tolerances": dict(TOLERANCES),
         }
+
+    # Native render connections also occur in material/morph/registry rows.
+    # Keep their full original ledger, but apply the same allowance everywhere
+    # they are duplicated inside the semantic contract.
+    left, right = dict(left), dict(right)
+    for snapshot in (left, right):
+        paths = {str(row.get("path", row.get("key", ""))) for row in snapshot.get("implementationNodes", [])}
+        for section in ("semanticDag", "meshes", "morphs", "bones", "physics", "registryNodes", "proxies", "connections"):
+            if section in snapshot:
+                snapshot[section] = _without_implementation_links(snapshot[section], paths)
 
     _check(checks, "root-contract", _equal(left.get("root", {}), right.get("root", {}), "root"), left=left.get("root", {}), right=right.get("root", {}))
 

@@ -256,6 +256,20 @@ class TestImportSceneContract(unittest.TestCase):
         changed["implementationNodes"] = [{"key": "|other", "type": "other"}]
         self.assertEqual(compare_scenes(_snapshot(), changed)["status"], "fail")
 
+    def test_nested_native_links_use_allowance_without_hiding_shader_links(self):
+        changed = _snapshot()
+        link = {"src": "morph.outputDiffuse", "dst": "|render.materialValues[0]"}
+        changed["implementationNodes"] = [{"path": "|render", "type": "mmdRenderShape"}]
+        changed["implementationLinks"] = [link]
+        links = changed["meshes"][0]["materials"][0]["connections"]
+        links.append(link)
+        result = compare_scenes(_snapshot(), changed)
+        self.assertEqual(result["status"], "pass")
+        ledger = next(c for c in result["checks"] if c["name"] == "mmdRenderShape-implementation-allowed")
+        self.assertEqual(ledger["rightLinks"], [link])
+        links.append({"src": "morph.outputDiffuse", "dst": "shader.diffuse"})
+        self.assertEqual(compare_scenes(_snapshot(), changed)["status"], "fail")
+
     def test_morph_metadata_without_current_evaluation_fails(self):
         left = _snapshot()
         right = _snapshot()
