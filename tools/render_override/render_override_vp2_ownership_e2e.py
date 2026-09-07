@@ -501,6 +501,7 @@ def run_probe(
     performance_checks: bool = False,
     material_checks: bool = False,
     shadow_checks: bool = False,
+    display_checks: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -745,7 +746,9 @@ def run_probe(
             panel_flags = {
                 "rendererName": "vp2Renderer",
                 "displayAppearance": "smoothShaded",
-                "displayTextures": parity_mode,
+                # The native renderer now honors this switch. Baseline
+                # material/shadow captures need textures in every mode.
+                "displayTextures": True,
                 "wireframeOnShaded": False,
                 "grid": False,
                 "cameras": False,
@@ -1066,6 +1069,10 @@ def run_probe(
                     raise RuntimeError(
                         f"native VP2 capture-only check failed: {check_name}"
                     )
+            if display_checks:
+                from tools.render_override.display_checks import check_display_modes
+
+                report["display"] = check_display_modes(cmds, root_name, shape_name, panel, output_dir)
             if material_checks:
                 from tools.render_override.material_checks import check_material_edits
 
@@ -1325,6 +1332,7 @@ def main() -> int:
     parser.add_argument("--performance-checks", action="store_true")
     parser.add_argument("--material-checks", action="store_true")
     parser.add_argument("--shadow-checks", action="store_true")
+    parser.add_argument("--display-checks", action="store_true")
     args = parser.parse_args()
 
     model_path = args.model
@@ -1354,6 +1362,8 @@ def main() -> int:
         parser.error("--material-checks requires --capture-only and --ui-import")
     if args.shadow_checks and not (args.capture_only and args.ui_import):
         parser.error("--shadow-checks requires --capture-only and --ui-import")
+    if args.display_checks and not (args.capture_only and args.ui_import):
+        parser.error("--display-checks requires --capture-only and --ui-import")
     camera_config = None
     if args.camera_json is not None:
         try:
@@ -1384,7 +1394,8 @@ def main() -> int:
         f"authoring_checks={bool(args.authoring_checks)!r}, "
         f"performance_checks={bool(args.performance_checks)!r}, "
         f"material_checks={bool(args.material_checks)!r}, "
-        f"shadow_checks={bool(args.shadow_checks)!r})\n"
+        f"shadow_checks={bool(args.shadow_checks)!r}, "
+        f"display_checks={bool(args.display_checks)!r})\n"
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",

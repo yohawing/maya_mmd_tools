@@ -1788,9 +1788,13 @@ class TestFastDagOrganization(unittest.TestCase):
             "|Hero_Model_root|Geometry|Hero_Model_mesh|proxy",
             "Hero_Model_root|Geometry|Hero_Model_mesh_render", shape=True, relative=True,
         )
-        cmds.connectAttr.assert_called_once_with(
+        cmds.connectAttr.assert_any_call(
             "Hero_Model_mesh.matrix",
             "Hero_Model_root|Geometry|Hero_Model_mesh_render.offsetParentMatrix",
+        )
+        cmds.connectAttr.assert_any_call(
+            "Hero_Model_mesh.visibility",
+            "Hero_Model_root|Geometry|Hero_Model_mesh_render.visibility",
         )
 
 

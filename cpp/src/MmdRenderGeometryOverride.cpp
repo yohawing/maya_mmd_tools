@@ -6,7 +6,6 @@
 #include "MmdRenderGeometryOverride.h"
 
 #include "MmdNativeMaterial.h"
-#include "MmdOrderedRenderOverride.h"
 #include "MmdRenderShape.h"
 #include "MmdRenderOverride.h"
 
@@ -381,9 +380,9 @@ void MmdRenderGeometryOverride::updateRenderItems(
     }
 
     MRenderer* renderer = MRenderer::theRenderer();
-    const bool orderedActive =
+    const bool nativeCasterActive =
         renderer &&
-        renderer->activeRenderOverride() == MmdOrderedRenderOverride::overrideName();
+        renderer->activeRenderOverride() == MmdNativeCasterRenderOverride::overrideName();
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     MTextureManager* textureManager =
@@ -528,16 +527,18 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.mainTextureAcquired = mainTexture != nullptr;
         diagnostic.sphereMode = queueGeometry.material.sphereMode;
         // kRenderOpaqueShadedItems draws MaterialSceneItem entries only.
-        // Opaque caster-off body/outline items can therefore remain normally
-        // viewport-visible as NonMaterialSceneItem without entering the
-        // caster scene.  Transparent items must remain MaterialSceneItem for
+        // Only the diagnostic native caster route needs caster-off body/hull
+        // items in the UI category. Default/Ordered preparation can run before
+        // activeRenderOverride is set; categorizing those hulls as UI would
+        // redraw them after Ordered and leak filled geometry into wireframe.
+        // Transparent items must remain MaterialSceneItem for
         // Maya's transparent pass, and are excluded by the opaque scene
         // filter instead.
         const bool casterEligible = !outline &&
                                     queueGeometry.material.selfShadowMap &&
                                     !effectiveTransparent;
         const MRenderItem::RenderItemType itemType =
-            (orderedActive || casterEligible || effectiveTransparent)
+            (!nativeCasterActive || casterEligible || effectiveTransparent)
                 ? MRenderItem::MaterialSceneItem
                 : MRenderItem::NonMaterialSceneItem;
         diagnostic.casterEligible = casterEligible;

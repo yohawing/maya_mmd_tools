@@ -25,6 +25,9 @@ def separate_render_proxy(mesh_transform, parent, cmds_module=cmds):
         cmds_module.connectAttr(
             f"{mesh_transform}.matrix", f"{render_transform}.offsetParentMatrix"
         )
+        cmds_module.connectAttr(
+            f"{mesh_transform}.visibility", f"{render_transform}.visibility"
+        )
         cmds_module.setAttr(f"{render_transform}.hiddenInOutliner", True)
     except Exception:
         cmds_module.delete(render_transform)

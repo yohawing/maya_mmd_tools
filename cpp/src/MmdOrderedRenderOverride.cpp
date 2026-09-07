@@ -308,6 +308,13 @@ public:
 #ifndef _WIN32
         return fail("MMD ordered render requires DirectX 11");
 #else
+        // Raw DX11 draws bypass VP2 render-item draw modes. Respect this
+        // panel's style before drawing any filled body, hull or shadow pass.
+        const unsigned int style = drawContext.getDisplayStyle();
+        if (!(style & (MHWRender::MFrameContext::kGouraudShaded |
+                       MHWRender::MFrameContext::kFlatShaded))) {
+            return MStatus::kSuccess;
+        }
         if (!prepareFrame(drawContext)) {
             return MStatus::kFailure;
         }
@@ -331,7 +338,8 @@ public:
                 return fail("ordered shader bind failed");
             }
             int selfShadowMode = 0;
-            if (!bindMaterial(shader, plan.material) ||
+            if (!bindMaterial(shader, plan.material,
+                              (style & MHWRender::MFrameContext::kTextured) != 0U) ||
                 (!plan.outline && !bindToonSampler(shader)) ||
                 !setBodyShadowParameters(shader, plan, selfShadowMode) ||
                 !setFrameParameters(shader, drawContext, plan.world) ||
@@ -1234,18 +1242,19 @@ private:
     }
 
     bool bindMaterial(MShaderInstance* shader,
-                      const mmd::MmdRenderQueueInput& material)
+                      const mmd::MmdRenderQueueInput& material,
+                      bool textured = true)
     {
         const std::string toonPath = material.toonTexturePath.empty()
                                          ? mmd::nativeMaterialSharedToonPath(
                                                material.sharedToonIndex)
                                          : material.toonTexturePath;
-        MTexture* mainTexture = acquireTexture(material.mainTexturePath);
-        MTexture* sphereTexture = acquireTexture(material.sphereTexturePath);
-        MTexture* toonTexture = acquireTexture(toonPath);
+        MTexture* mainTexture = textured ? acquireTexture(material.mainTexturePath) : nullptr;
+        MTexture* sphereTexture = textured ? acquireTexture(material.sphereTexturePath) : nullptr;
+        MTexture* toonTexture = textured ? acquireTexture(toonPath) : nullptr;
         return mmd::bindNativeMaterialParameters(
             shader, material, mainTexture, sphereTexture, toonTexture,
-            !toonPath.empty(), nullptr);
+            textured && !toonPath.empty(), nullptr);
     }
 
     bool bindToonSampler(MShaderInstance* shader)
@@ -1347,7 +1356,9 @@ private:
                 }
                 return false;
             }
-            if (!bindMaterial(shader, plan.material)) {
+            if (!bindMaterial(shader, plan.material,
+                              (drawContext.getDisplayStyle() &
+                               MHWRender::MFrameContext::kTextured) != 0U)) {
                 if (lastError_.empty()) {
                     fail("ordered preflight material binding failed");
                 }
