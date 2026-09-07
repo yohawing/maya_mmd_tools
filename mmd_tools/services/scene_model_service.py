@@ -5,7 +5,12 @@ ApplicationStateやPresenterがMayaコマンドへ直接依存しすぎないよ
 """
 
 from ..adapters import MayaCmdsAdapter
-from ..core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN, SCENE_ROOT_SUFFIX
+from ..core.constants import (
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_MODEL_REGISTRY,
+    SCENE_ROOT_SUFFIX,
+)
 from ..core.logger import get_logger
 from ..core.maya_identity import canonical_node_identity
 from ..core.name_display import preferred_pmx_display_name
@@ -40,23 +45,29 @@ class SceneModelService:
 
     def list_mmd_models(self):
         """シーン内のMMDモデル root を名前順で返す。"""
-        namespaced = self._cmds_adapter.ls(
-            "*:*{}".format(SCENE_ROOT_SUFFIX), type="transform", long=True
-        ) or []
-        plain = self._cmds_adapter.ls(
-            "*{}".format(SCENE_ROOT_SUFFIX), type="transform", long=True
-        ) or []
+        candidates = []
+        for attribute in (
+            ATTR_MMD_MODEL_NAME,
+            ATTR_MMD_MODEL_NAME_EN,
+            ATTR_MMD_MODEL_REGISTRY,
+        ):
+            candidates.extend(
+                self._cmds_adapter.ls(
+                    "*.{}".format(attribute),
+                    type="transform",
+                    objectsOnly=True,
+                    long=True,
+                    recursive=True,
+                )
+                or []
+            )
 
         mmd_models = set()
-        for transform in set(namespaced + plain):
+        for transform in set(candidates):
             identity = self.canonical_node(transform)
             if not identity:
                 continue
-            if self._cmds_adapter.attribute_exists(
-                ATTR_MMD_MODEL_NAME, node=identity
-            ) or self._cmds_adapter.attribute_exists(
-                ATTR_MMD_MODEL_NAME_EN, node=identity
-            ):
+            if self._has_model_identity(identity):
                 mmd_models.add(identity)
 
         return sorted(mmd_models)
@@ -66,10 +77,7 @@ class SceneModelService:
         try:
             current = node
             while current:
-                if current.endswith(SCENE_ROOT_SUFFIX) and (
-                    self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME, node=current)
-                    or self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME_EN, node=current)
-                ):
+                if self._has_model_identity(current):
                     return current
 
                 parents = self._cmds_adapter.list_relatives(current, parent=True, fullPath=True) or []
@@ -80,6 +88,17 @@ class SceneModelService:
             logger.warning(f"Failed to find parent MMD root for {node}: {e}")
 
         return None
+
+    def _has_model_identity(self, node):
+        """Return whether a transform carries persisted MMD model identity."""
+        return any(
+            self._cmds_adapter.attribute_exists(attribute, node=node)
+            for attribute in (
+                ATTR_MMD_MODEL_NAME,
+                ATTR_MMD_MODEL_NAME_EN,
+                ATTR_MMD_MODEL_REGISTRY,
+            )
+        )
 
     def get_model_display_name(self, model_root, language="ja"):
         """MMDモデルの表示名を返す。"""
