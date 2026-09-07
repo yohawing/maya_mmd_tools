@@ -108,6 +108,7 @@ class PmxMorph:
                 offset_data["rigid_body_index"] = struct.unpack(
                     self.type_formats["rigid_body"], f.read(self.rigid_body_index_size)
                 )[0]
+                offset_data["is_local"] = struct.unpack("<B", f.read(1))[0]
                 offset_data["impulse"] = struct.unpack("<fff", f.read(12))
                 offset_data["torque"] = struct.unpack("<fff", f.read(12))
             else:
@@ -175,6 +176,7 @@ class PmxMorph:
                 f.write(struct.pack("<f", offset_data["flip_rate"]))
             elif self.morph_type == PmxMorphType.ImpulseMorph:
                 f.write(struct.pack(self.type_formats["rigid_body"], offset_data["rigid_body_index"]))
+                f.write(struct.pack("<B", int(offset_data.get("is_local", 0))))
                 f.write(struct.pack("<fff", *offset_data["impulse"]))
                 f.write(struct.pack("<fff", *offset_data["torque"]))
             else:
