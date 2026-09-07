@@ -1881,6 +1881,17 @@ def maya_render_override_gui_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def fast_import_authoring(session: nox.Session) -> None:
+    """Compare GUI Fast Load animation and save/reopen with ordinary PMX import."""
+    session.run(
+        sys.executable,
+        "tools/smoke/maya_fast_import_authoring.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def fast_import_parity(session: nox.Session) -> None:
     """Compare Python PMX import with the C++ FastLoad VP2 scene contract."""
     maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
