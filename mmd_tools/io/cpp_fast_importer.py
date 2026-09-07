@@ -253,6 +253,7 @@ def fast_import(
             _scoped_settings_override,
         )
         from mmd_tools.io.pmx_importer import import_pmx_file, _require_effective_import_scale
+        from mmd_tools.core import settings, settings_keys
 
         scale = _require_effective_import_scale(scale)
         try:
@@ -263,6 +264,12 @@ def fast_import(
         if pmx is None:
             return None
         command_args = {"f": filepath, "n": base_name, "s": scale, "mo": False}
+        split = bool((options or {}).get(
+            "separate_meshes_by_material",
+            settings.get(settings_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
+        ))
+        if split:
+            command_args["sp"] = True
         if vp2_ownership:
             command_args["vp2Ownership"] = True
         try:
@@ -270,7 +277,7 @@ def fast_import(
         except RuntimeError as exc:
             logger.debug("Fast native geometry unavailable: %s", exc)
             return None
-        expected = 3 if vp2_ownership else 2
+        expected = 1 if split else (3 if vp2_ownership else 2)
         if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
             raise RuntimeError("mmdFastLoad returned an invalid geometry result")
         if options is not None:
