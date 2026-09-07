@@ -1952,6 +1952,10 @@ class MeshConverter:
                 additional_uv_count=additional_uv_count,
             )
 
+        native_geometry = getattr(self, "cpp_fast_load_geometry", None)
+        if not separate_by_material and native_geometry and len(native_geometry) == 3:
+            maya_mesh_utils.separate_render_proxy(created_mesh, geo_group)
+
         maya_scene_utils.select_objects(geo_group)
         return geo_group, created_mesh
 

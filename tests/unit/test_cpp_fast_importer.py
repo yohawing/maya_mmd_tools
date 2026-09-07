@@ -621,6 +621,23 @@ class TestFastImportMetadata(unittest.TestCase):
                 self.assertIsNone(fast_import("model.pmx", mesh_only=False))
                 author.assert_not_called()
 
+    def test_failed_full_import_removes_separated_proxy_owner(self):
+        with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=object()), patch.object(
+            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+        ), patch.object(cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True), patch(
+            "maya.cmds.mmdFastLoad", create=True, return_value=["source", "mesh", "proxy"]
+        ), patch("maya.cmds.ls", side_effect=[["sourceUuid"], ["proxyUuid"], ["renamedSource"], ["movedProxy"]]), patch(
+            "maya.cmds.listRelatives", return_value=["proxyOwner"]
+        ), patch("maya.cmds.delete") as delete, patch(
+            "mmd_tools.io.pmx_importer.import_pmx_file", side_effect=RuntimeError("authoring rejected")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "authoring rejected"):
+                fast_import("model.pmx", mesh_only=False, vp2_ownership=True,
+                            options={"separate_meshes_by_material": False})
+        delete.assert_called_once_with(["renamedSource", "proxyOwner"])
+
     def test_fast_import_keeps_root_identity_without_persisting_scale(self):
         """Fast import preserves PMX header metadata without root scale state."""
         raw_metadata = {
@@ -1751,6 +1768,30 @@ class TestFastDagOrganization(unittest.TestCase):
             "Hero_Model",
         )
         self.assertEqual(_fast_model_scene_name(None, "fallback model"), "fallback_model")
+
+    def test_proxy_is_separated_before_morph_transform_duplication(self):
+        cmds = self._Cmds()
+        original_relatives = cmds.listRelatives
+        cmds.listRelatives = lambda node, **kwargs: (
+            ["|Hero_Model_root|Geometry|Hero_Model_mesh|proxy"]
+            if kwargs.get("type") == "mmdRenderShape"
+            else original_relatives(node, **kwargs)
+        )
+        cmds.parent = MagicMock(return_value=["proxy"])
+        cmds.connectAttr = MagicMock()
+        _organize_fast_dag(
+            "fast_source", "fast_sourceShape",
+            {"metadata": {"englishName": "Hero Model"}}, "fallback", cmds,
+            render_shape="|fast_source|proxy",
+        )
+        cmds.parent.assert_any_call(
+            "|Hero_Model_root|Geometry|Hero_Model_mesh|proxy",
+            "Hero_Model_root|Geometry|Hero_Model_mesh_render", shape=True, relative=True,
+        )
+        cmds.connectAttr.assert_called_once_with(
+            "Hero_Model_mesh.matrix",
+            "Hero_Model_root|Geometry|Hero_Model_mesh_render.offsetParentMatrix",
+        )
 
 
 class TestCppFastImporterDebugLogging(unittest.TestCase):

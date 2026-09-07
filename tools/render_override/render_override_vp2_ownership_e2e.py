@@ -497,6 +497,7 @@ def run_probe(
     capture_only: bool = False,
     ui_import: bool = False,
     material_reindex: bool = False,
+    authoring_checks: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -556,6 +557,7 @@ def run_probe(
         log(f"vp2 device: {cmds.ogs(deviceInformation=True)}")
 
         if ui_import:
+            cmds.loadPlugin(str(_ROOT / "plug-ins" / "mmd_tools_plugin.py"), quiet=True)
             from mmd_tools.core import settings_keys
             from mmd_tools.io.mmd_importer import import_mmd_file
             from mmd_tools.services.settings_service import SettingsService
@@ -1045,6 +1047,12 @@ def run_probe(
                     raise RuntimeError(
                         f"native VP2 capture-only check failed: {check_name}"
                     )
+            if authoring_checks:
+                from tools.render_override.authoring_checks import check_authoring
+
+                report["authoring"] = check_authoring(
+                    cmds, root_name, output_dir / "authoring.ma"
+                )
             report["status"] = "pass"
             return
 
@@ -1279,6 +1287,10 @@ def main() -> int:
         action="store_true",
         help="Exercise adjacent native queue reindex plus Maya Undo/Redo in capture-only mode.",
     )
+    parser.add_argument(
+        "--authoring-checks", action="store_true",
+        help="Verify test_morph_model controller Undo/Redo and source scene reload.",
+    )
     args = parser.parse_args()
 
     model_path = args.model
@@ -1300,6 +1312,8 @@ def main() -> int:
         parser.error("--camera-json requires --parity")
     if args.material_reindex and not args.capture_only:
         parser.error("--material-reindex requires --capture-only")
+    if args.authoring_checks and not (args.capture_only and args.ui_import):
+        parser.error("--authoring-checks requires --capture-only and --ui-import")
     camera_config = None
     if args.camera_json is not None:
         try:
@@ -1326,7 +1340,8 @@ def main() -> int:
         f"camera_config={camera_config!r}, parity_mode={bool(args.parity)!r}, "
         f"frame={args.frame}, capture_only={bool(args.capture_only)!r}, "
         f"ui_import={bool(args.ui_import)!r}, "
-        f"material_reindex={bool(args.material_reindex)!r})\n"
+        f"material_reindex={bool(args.material_reindex)!r}, "
+        f"authoring_checks={bool(args.authoring_checks)!r})\n"
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
