@@ -288,10 +288,22 @@ def fast_import(
             "_cpp_fast_load_geometry": native_mesh,
             "use_cpp_vp2_ownership": vp2_ownership,
         })
-        with _scoped_settings_override(import_options):
-            return import_pmx_file(
-                pmx, filepath, scale, import_options, progress_callback=progress_callback
-            )
+        native_identity = cmds.ls(native_mesh[0], uuid=True)
+        try:
+            with _scoped_settings_override(import_options):
+                return import_pmx_file(
+                    pmx, filepath, scale, import_options, progress_callback=progress_callback
+                )
+        except Exception:
+            # Preflight may reject the model before the ordinary pipeline adopts
+            # this geometry. UUIDs retain ownership even if authoring renamed it.
+            remaining = cmds.ls(native_identity, long=True) if native_identity else []
+            if remaining:
+                try:
+                    cmds.delete(remaining)
+                except RuntimeError:
+                    logger.warning("Failed to remove rejected Fast Load geometry", exc_info=True)
+            raise
 
     # --- run fast load ----------------------------------------------------
     try:
