@@ -946,6 +946,7 @@ def run_probe(
         # alone cannot detect opaque surfaces disappearing with MSAA disabled.
         original_msaa = cmds.getAttr("hardwareRenderingGlobals.multiSampleEnable")
         original_override = cmds.modelEditor(panel, query=True, rendererOverrideName=True)
+        original_visibility = cmds.getAttr(f"{root_name}.visibility")
         try:
             for enabled in (False, True):
                 cmds.setAttr("hardwareRenderingGlobals.multiSampleEnable", enabled)
@@ -955,6 +956,14 @@ def run_probe(
                     panel, width, height, frame,
                 )
                 report["captures"][f"msaa{int(enabled)}"] = str(aa_capture)
+                cmds.setAttr(f"{root_name}.visibility", False)
+                cmds.refresh(force=True)
+                hidden_capture = _capture_view(
+                    cmds, output_dir / f"native_hidden_msaa_{int(enabled)}.png",
+                    panel, width, height, frame,
+                )
+                report["captures"][f"hiddenMsaa{int(enabled)}"] = str(hidden_capture)
+                cmds.setAttr(f"{root_name}.visibility", original_visibility)
                 cmds.modelEditor(panel, edit=True, rendererOverrideName="")
                 cmds.refresh(force=True)
                 plain_capture = _capture_view(
@@ -964,6 +973,7 @@ def run_probe(
                 report["captures"][f"plainMsaa{int(enabled)}"] = str(plain_capture)
                 cmds.modelEditor(panel, edit=True, rendererOverrideName=original_override)
         finally:
+            cmds.setAttr(f"{root_name}.visibility", original_visibility)
             cmds.setAttr("hardwareRenderingGlobals.multiSampleEnable", original_msaa)
             cmds.modelEditor(panel, edit=True, rendererOverrideName=original_override)
 
@@ -971,6 +981,10 @@ def run_probe(
         report["msaaCoverage"] = compare_msaa_coverage(
             Path(report["captures"]["msaa0"]), Path(report["captures"]["msaa1"])
         )
+        from tools.render_override.render_override_visual_gate import compare_model_coverage
+        report["modelCoverage"] = compare_model_coverage(*(
+            Path(report["captures"][key]) for key in ("msaa0", "msaa1", "hiddenMsaa0", "hiddenMsaa1")
+        ))
 
         if capture_only:
             reindex_checks: dict[str, bool] = {}
@@ -1022,6 +1036,7 @@ def run_probe(
                 and ",indices=" in witness,
                 "captureCreated": capture.is_file() and capture.stat().st_size > 0,
                 "msaaCoverageStable": report["msaaCoverage"]["pass"],
+                "visibleModelPixels": report["modelCoverage"]["pass"],
                 "connectedSourceMeshPresent": bool(connected_source_meshes),
                 "connectedSourceMeshHidden": source_meshes_hidden,
                 "noCustomMfnMeshDuplicate": not unexpected_custom_meshes,
@@ -1032,6 +1047,7 @@ def run_probe(
                 **reindex_checks,
             }
             required_checks = [
+                "visibleModelPixels",
                 "drawPreparationReady",
                 "materialBindingDiagnosticsReady",
                 "geometryBuffersPrepared",

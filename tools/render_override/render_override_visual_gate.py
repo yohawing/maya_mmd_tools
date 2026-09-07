@@ -480,6 +480,27 @@ def compare_msaa_coverage(off_path: Path, on_path: Path) -> Dict[str, Any]:
     }
 
 
+def compare_model_coverage(off_path: Path, on_path: Path, hidden_off_path: Path,
+                           hidden_on_path: Path) -> Dict[str, Any]:
+    """Measure the model, not a surviving grid, rig or unrelated scene object."""
+    images = [read_png_rgb(path) for path in (off_path, on_path, hidden_off_path, hidden_on_path)]
+    width, height, _ = images[0]
+    if any(image[:2] != (width, height) for image in images):
+        return {"pass": False, "reason": "capture dimensions differ"}
+    masks = []
+    for visible, hidden in ((images[0][2], images[2][2]), (images[1][2], images[3][2])):
+        masks.append({index for index, (left, right) in enumerate(zip(visible, hidden))
+                      if max(abs(a - b) for a, b in zip(left, right)) > 8})
+    union = masks[0] | masks[1]
+    overlap = len(masks[0] & masks[1]) / len(union) if union else 0.0
+    coverage = min(len(mask) for mask in masks) / (width * height)
+    # The harness fits the model to its camera. A handful of surviving edge
+    # pixels must not count as a visible model.
+    return {"pass": coverage >= 0.01 and overlap >= 0.9,
+            "offModelPixels": len(masks[0]), "onModelPixels": len(masks[1]),
+            "minimumCoverage": coverage, "intersectionOverUnion": overlap}
+
+
 def write_png_rgb(path: Path, width: int, height: int, pixels: Sequence[Tuple[int, int, int]]) -> None:
     """Write a dependency-free 8-bit RGB PNG."""
 
