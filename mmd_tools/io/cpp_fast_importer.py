@@ -290,6 +290,19 @@ def fast_import(
         })
         native_identity = cmds.ls(native_mesh[0], uuid=True)
         proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
+        if split:
+            # Split source transforms leave their temporary group during
+            # authoring; render shapes can then leave those source transforms.
+            sources = cmds.listRelatives(
+                native_mesh[0], children=True, type="transform", fullPath=True
+            ) or []
+            proxies = cmds.listRelatives(
+                native_mesh[0], allDescendents=True, type="mmdRenderShape", fullPath=True
+            ) or []
+            if sources:
+                native_identity.extend(cmds.ls(sources, uuid=True) or [])
+            if proxies:
+                proxy_identity = cmds.ls(proxies, uuid=True) or []
         try:
             with _scoped_settings_override(import_options):
                 return import_pmx_file(
@@ -305,7 +318,7 @@ def fast_import(
                 remaining.extend(cmds.listRelatives(proxy, parent=True, fullPath=True) or [])
             if remaining:
                 try:
-                    cmds.delete(remaining)
+                    cmds.delete(list(dict.fromkeys(remaining)))
                 except RuntimeError:
                     logger.warning("Failed to remove rejected Fast Load geometry", exc_info=True)
             raise
