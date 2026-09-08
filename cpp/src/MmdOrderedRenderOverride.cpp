@@ -311,7 +311,7 @@ public:
         pmxOrder_.clear();
         outlineOrder_.clear();
         lastError_.clear();
-        frameResources_ = MmdNativeCasterRenderOverride::FrameResources();
+        frameResources_ = MmdShadowResources::FrameResources();
         frameResourcesReady_ = false;
         shadowReady_ = false;
         targetWidth_ = 0U;
@@ -482,7 +482,7 @@ private:
         int rowPitch = 0;
         std::size_t slicePitch = 0U;
         void* raw = frameResources_.colorTarget->rawData(rowPitch, slicePitch);
-        const unsigned int size = MmdNativeCasterRenderOverride::kTargetSize;
+        const unsigned int size = MmdShadowResources::kTargetSize;
         if (!raw || rowPitch < static_cast<int>(size * sizeof(float)) ||
             slicePitch < static_cast<std::size_t>(rowPitch) * size) {
             if (raw) {
@@ -893,7 +893,7 @@ private:
                 MStatus::kSuccess) {
                 return false;
             }
-            MmdNativeCasterRenderOverride::registerReceiverShader(shader);
+            MmdShadowResources::registerReceiverShader(shader);
             receiverShaders_.insert(shader);
         }
         if (frameResourcesReady_ &&
@@ -1063,8 +1063,8 @@ private:
         }
         cachedGeometryKey_ = std::move(key);
         cachedGeometryPlans_ = plans;
-        MmdNativeCasterRenderOverride* nativeCasterOwner =
-            owner_ ? owner_->nativeCasterOwner_ : nullptr;
+        MmdShadowResources* nativeCasterOwner =
+            owner_ ? owner_->nativeCasterOwner_.get() : nullptr;
         if (!nativeCasterOwner) {
             fail("ordered native caster resource owner is unavailable");
             framePreparationFailed_ = true;
@@ -1469,12 +1469,12 @@ private:
                 const bool receiver =
                     receiverShaders_.count(shader.second) != 0U;
                 if (receiver) {
-                    MmdNativeCasterRenderOverride::beginReceiverShaderRetire(
+                    MmdShadowResources::beginReceiverShaderRetire(
                         shader.second);
                 }
                 shaderManager->releaseShader(shader.second);
                 if (receiver) {
-                    MmdNativeCasterRenderOverride::finishReceiverShaderRetire(
+                    MmdShadowResources::finishReceiverShaderRetire(
                         shader.second);
                 }
             }
@@ -1558,7 +1558,7 @@ private:
     std::vector<DrawPlan> framePlans_;
     bool framePrepared_ = false;
     bool framePreparationFailed_ = false;
-    MmdNativeCasterRenderOverride::FrameResources frameResources_;
+    MmdShadowResources::FrameResources frameResources_;
     bool frameResourcesReady_ = false;
     bool shadowReady_ = false;
     unsigned int targetWidth_ = 0U;
@@ -1591,15 +1591,10 @@ private:
     OrderedRenderOperation* owner_ = nullptr;
 };
 
-MmdOrderedRenderOverride::MmdOrderedRenderOverride(
-    MmdNativeCasterRenderOverride* nativeCasterOwner)
+MmdOrderedRenderOverride::MmdOrderedRenderOverride()
     : MRenderOverride(overrideName())
-    , nativeCasterOwner_(nativeCasterOwner)
+    , nativeCasterOwner_(new MmdShadowResources())
 {
-    if (!nativeCasterOwner_) {
-        privateNativeCasterOwner_.reset(new MmdNativeCasterRenderOverride());
-        nativeCasterOwner_ = privateNativeCasterOwner_.get();
-    }
     gOrderedOverride = this;
 }
 

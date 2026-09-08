@@ -69,7 +69,6 @@ set(SOURCES
     MmdNativeMaterial.cpp
     MmdTextureAlphaClassifier.cpp
     MmdRenderShape.cpp
-    MmdRenderGeometryOverride.cpp
     MmdOrderedRenderOverride.cpp
     MmdRenderOverride.cpp
     MmdUvSeamWeldPlan.cpp
@@ -93,7 +92,6 @@ set(HEADERS
     MmdNativeMaterial.h
     MmdTextureAlphaClassifier.h
     MmdRenderShape.h
-    MmdRenderGeometryOverride.h
     MmdOrderedRenderOverride.h
     MmdRenderOverride.h
     MmdUvSeamWeldPlan.h

@@ -132,7 +132,7 @@ bool bindNativeMaterialParameters(
         shader->setParameter("NativeCasterHardShadow", 0) &&
         shader->setParameter(
             "NativeCasterShadowBias",
-            MmdNativeCasterRenderOverride::kDefaultHardShadowBias) &&
+            MmdShadowResources::kDefaultHardShadowBias) &&
         shader->setParameter("UseShadows", false) &&
         shader->setParameter("ShadowStrength", 1.0F) &&
         shader->setParameter("ToonCoordinateOffset", 0.55F) &&

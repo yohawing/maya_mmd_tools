@@ -10,11 +10,11 @@ def check_self_shadow(cmds, root, shape, panel, output_dir):
     """Check mode and PMX flag A/B/A on an imported, textured representative."""
     from mmd_tools.converters.light_converter import find_mmd_light
     from mmd_tools.converters.material_morph_runtime import _collect_shaders_by_material_index
-    from tools.render_override.render_override_vp2_ownership_e2e import _make_parity_camera
+    from tools.render_override.common import make_parity_camera
 
     light = find_mmd_light()
     assert light, "missing model light controller"
-    camera = _make_parity_camera(cmds, {"position": [0.04, 0.58, 3.4],
+    camera = make_parity_camera(cmds, {"position": [0.04, 0.58, 3.4],
         "target": [0.04, 0.58, 0.0], "fov": 28.0, "near": 0.1, "far": 10000.0})
     cmds.lookThru(panel, camera)
     cmds.select(root)

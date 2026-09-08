@@ -21,14 +21,14 @@ from tools.render_override.render_override_visual_gate import read_png_rgb, writ
 MARKER = "MMD RENDER SEPARATION FINISHED"
 
 
-def run_probe(output, plugin, split=False, migrate_legacy=False, caster_transition=False, textured=False):
+def run_probe(output, plugin, split=False, migrate_legacy=False, textured=False):
     # Each user operation returns to Maya's event loop before the next capture.
     # A monolithic commandPort call suppresses deferred DG/VP2 notifications.
     try:
         from PySide6.QtCore import QTimer
     except ImportError:
         from PySide2.QtCore import QTimer
-    steps = _probe_steps(output, plugin, split, migrate_legacy, caster_transition, textured)
+    steps = _probe_steps(output, plugin, split, migrate_legacy, textured)
 
     def advance():
         try:
@@ -43,7 +43,7 @@ def run_probe(output, plugin, split=False, migrate_legacy=False, caster_transiti
     cmds.evalDeferred(advance, lowestPriority=True)
 
 
-def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_transition=False, textured=False):
+def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=False):
     from maya import cmds
     from mmd_tools.converters import MorphConverter
     from mmd_tools.converters.export_scene_collector import _collect_mmd_material_dict
@@ -151,17 +151,6 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_trans
             report["displayModes"] = yield from check_edit_render_display(
                 cmds, root, (edit, render), capture, initial, changed,
             )
-        if caster_transition:
-            cmds.modelEditor(render, e=True, rendererOverrideName="mmdNativeCaster")
-            yield
-            capture("caster_diagnostic")
-            report["casterWitness"] = cmds.mmdRenderWitness(node=proxies[0])
-            assert report["casterWitness"].startswith("ready"), report["casterWitness"]
-            cmds.modelEditor(render, e=True, rendererOverrideName="mmdOrdered")
-            yield
-            assert capture("caster_restored") == initial
-            report["restoredWitness"] = cmds.mmdRenderWitness(node=proxies[0])
-            assert report["restoredWitness"] == "pending", report["restoredWitness"]
         controller = cmds.listConnections(root + ".mmd_morph_controller", s=True, d=False)[0]
         weight = controller + ".inputWeight[0]"
         cmds.setAttr(weight, 1.0)
@@ -312,6 +301,8 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_trans
         from tools.render_override.performance_checks import check_camera_updates
         current_proxy = cmds.listRelatives(root, ad=True, type="mmdRenderShape", fullPath=True)[0]
         report["cameraPerformance"] = check_camera_updates(cmds, current_proxy, render)
+        from tools.smoke.maya_fast_import_authoring import _viewport
+        report["authoringViewport"] = _viewport(cmds, root, out)
         report["status"] = "pass"
     except Exception:
         report["error"] = traceback.format_exc()
@@ -325,7 +316,6 @@ def main():
     parser.add_argument("--port", type=int, default=7741)
     parser.add_argument("--split-materials", action="store_true")
     parser.add_argument("--migrate-legacy", action="store_true")
-    parser.add_argument("--caster-transition", action="store_true")
     parser.add_argument("--textured", action="store_true")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -336,11 +326,10 @@ def main():
         log_path=out / "probe.log", report_path=out / "report.json",
         command=("from tools.render_override.separation_e2e import run_probe\n"
                  f"run_probe({str(out)!r}, {str(plugin)!r}, {args.split_materials!r}, "
-                 f"{args.migrate_legacy!r}, {args.caster_transition!r}, {args.textured!r})"),
+                 f"{args.migrate_legacy!r}, {args.textured!r})"),
         marker=MARKER, send_label="mmd-render-separation",
         stale_paths=(out / "probe.log", out / "report.json"),
         env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11", "MMD_TOOLS_CPP_PLUGIN": str(plugin),
-                       "MMD_TOOLS_CPP_ENABLE_NATIVE_CASTER": "1" if args.caster_transition else "0",
                        "PATH": str(plugin.parent) + os.pathsep + os.environ.get("PATH", "")},
     )
     print(json.dumps(report, indent=2))

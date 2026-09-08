@@ -14,12 +14,11 @@
 #include <memory>
 #include <string>
 
-class MmdNativeCasterRenderOverride;
+class MmdShadowResources;
 
 class MmdOrderedRenderOverride : public MHWRender::MRenderOverride {
 public:
-    explicit MmdOrderedRenderOverride(
-        MmdNativeCasterRenderOverride* nativeCasterOwner = nullptr);
+    MmdOrderedRenderOverride();
     ~MmdOrderedRenderOverride() override;
 
     MHWRender::DrawAPI supportedDrawAPIs() const override;
@@ -40,9 +39,7 @@ private:
     void requestFallback(const std::string& reason);
     void clearFallback();
 
-    MmdNativeCasterRenderOverride* nativeCasterOwner_ = nullptr;
-    std::unique_ptr<MmdNativeCasterRenderOverride>
-        privateNativeCasterOwner_;
+    std::unique_ptr<MmdShadowResources> nativeCasterOwner_;
     OrderedRenderOperation* operation_ = nullptr;
     bool operationsInstalled_ = false;
     bool fallbackRequested_ = false;

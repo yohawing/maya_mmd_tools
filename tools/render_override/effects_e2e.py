@@ -77,6 +77,9 @@ def run_probe(config_path):
                  if item["pass"] == "Transparent" and not item["outline"]]
         assert len(order) > 1 and order == sorted(order), order
         report["transparentOrder"] = order
+        from tools.render_override.lifecycle_checks import check_renderer_lifecycle
+
+        report["lifecycle"] = check_renderer_lifecycle(cmds, panel, plugin, out)
         report["status"] = "pass"
     except Exception:
         report["error"] = traceback.format_exc()

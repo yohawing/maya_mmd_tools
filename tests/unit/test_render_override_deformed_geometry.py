@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SHAPE_HEADER = ROOT / "cpp" / "src" / "MmdRenderShape.h"
 SHAPE_SOURCE = ROOT / "cpp" / "src" / "MmdRenderShape.cpp"
-OVERRIDE_SOURCE = ROOT / "cpp" / "src" / "MmdRenderGeometryOverride.cpp"
+OVERRIDE_SOURCE = ROOT / "cpp" / "src" / "MmdOrderedRenderOverride.cpp"
 
 
 def test_failed_geometry_and_publication_remain_retryable():
@@ -15,8 +15,7 @@ def test_failed_geometry_and_publication_remain_retryable():
     reject = reject[: reject.index("return false;")]
     assert "meshInputDirty_ = true;" in reject
     override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
-    publish = override[override.index("if (!shape_->setProxyReady(true))") :]
-    assert publish.index("} else {") < publish.index("uploadedRevision_ =")
+    assert "!shape->hasValidGeometry()" in override
 
 
 def test_render_shape_exposes_storable_mesh_input_and_source_mapping():
@@ -53,29 +52,13 @@ def test_proxy_readiness_is_a_nonpersistent_dg_output():
     assert "readiness.setBool(nextReady)" in readiness_helper
     assert "sourceVisibility.setBool" not in readiness_helper
 
-    cleanup = override[override.index("void MmdRenderGeometryOverride::cleanUp()") :]
-    assert "setProxyReady(false)" not in cleanup
+    assert "setProxyReady(true)" not in override
 
     plugin_main = (ROOT / "cpp" / "src" / "pluginMain.cpp").read_text(encoding="utf-8")
     unload = plugin_main[plugin_main.index("MStatus uninitializePlugin") :]
     assert unload.index("MmdRenderShape::prepareForPluginUnload()") < unload.index(
         'plugin.deregisterCommand("mmdVmdBatchSample")'
     )
-
-
-def test_proxy_ready_is_published_only_after_committed_geometry():
-    override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
-
-    populate = override[override.index("void MmdRenderGeometryOverride::populateGeometry") :]
-    assert "buffer->commit(destination);" in populate
-    assert "indexBuffer->commit(destination);" in populate
-    assert "shape_->recordGeometryWitness(" in populate
-    assert "shape_->recordRenderItemWitness(geometry.renderQueue);" in populate
-    assert "shape_->setProxyReady(true)" in populate
-    assert populate.index("indexBuffer->commit(destination);") < populate.index(
-        "shape_->setProxyReady(true)"
-    )
-    assert "shape_->clearRenderItemWitness();" in populate
 
 
 def test_render_shape_reports_transient_fallback_reason():
@@ -113,20 +96,6 @@ def test_render_shape_reports_transient_fallback_reason():
     assert "return changed;" in failure
 
 
-def test_wireframe_item_uses_mesh_object_selection_without_component_mapping():
-    shape = SHAPE_SOURCE.read_text(encoding="utf-8")
-    override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
-
-    assert '"_wire"' in override
-    assert "MGeometry::kWireframe" in override
-    assert "MShaderManager::k3dSolidShader" in override
-    assert "wireItem->setSelectionMask(" in override
-    assert "MSelectionMask::kSelectMeshes" in override
-    assert "No component" in override
-    assert "renderItemName(candidate, queueIndex, false, true)" in override
-    assert "MSelectionMask(MSelectionMask::kSelectMeshes)" in shape
-
-
 def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     shape = SHAPE_SOURCE.read_text(encoding="utf-8")
     override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
@@ -146,16 +115,14 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "geometry_.normals = std::move(nextNormals);" in shape
     assert "static_cast<std::size_t>(points.length()) < expectedSourceVertexCount" in shape
 
-    update_dg = override[override.index("void MmdRenderGeometryOverride::updateDG()") :]
-    assert "shape_->updateEvaluatedData();" in update_dg
+    assert "shape->updateEvaluatedData();" in override
     shared_update = shape[shape.index("void MmdRenderShape::updateEvaluatedData()") :]
     assert "MmdRenderShape::aInputMesh" in shared_update
     assert "inputPlug.asMDataHandle" in shared_update
     assert "inputHandle.asMesh()" in shared_update
     assert "updateEvaluatedMesh(meshObject);" in shared_update
     assert "useStaticGeometry();" in shared_update
-    assert "disableItems(list);" in override
-    assert "if (!shape_->hasValidGeometry())" in override
+    assert "!shape->hasValidGeometry()" in override
 
     evaluated_update = shape[
         shape.index("bool MmdRenderShape::updateEvaluatedMesh") : shape.index(
