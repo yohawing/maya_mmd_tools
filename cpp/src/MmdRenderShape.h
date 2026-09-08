@@ -296,6 +296,10 @@ private:
     // VP2 streams and never mutates the source Maya mesh.
     std::size_t evaluatedNormalRepairCount_ = 0U;
     std::size_t evaluatedNormalStaticFallbackCount_ = 0U;
+    // Maya may report the same invalid normal slots on every playback frame.
+    // Keep the first warning useful without flooding the Script Editor and
+    // stalling playback with repeated UI logging.
+    bool evaluatedNormalRepairWarningEmitted_ = false;
     std::string renderFallbackReason_;
     std::vector<MaterialBindingDiagnostic> materialBindingDiagnostics_;
 };

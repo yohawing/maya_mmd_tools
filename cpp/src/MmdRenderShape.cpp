@@ -1008,6 +1008,7 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     evaluatedGeometryActive_ = false;
     evaluatedNormalRepairCount_ = 0U;
     evaluatedNormalStaticFallbackCount_ = 0U;
+    evaluatedNormalRepairWarningEmitted_ = false;
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
@@ -1151,6 +1152,7 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         meshInputDirty_ = true;
         evaluatedNormalRepairCount_ = 0U;
         evaluatedNormalStaticFallbackCount_ = 0U;
+        evaluatedNormalRepairWarningEmitted_ = false;
         clearMaterialBindingDiagnostics();
         return false;
     };
@@ -1323,18 +1325,19 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     boundingBox_ = nextBounds;
     geometryValid_ = true;
     evaluatedGeometryActive_ = true;
-    if (normalRepairCount != evaluatedNormalRepairCount_ ||
-        staticFallbackCount != evaluatedNormalStaticFallbackCount_) {
-        if (normalRepairCount > 0U) {
-            std::ostringstream warning;
-            warning << "[mmdRenderShape] Repaired " << normalRepairCount
-                    << " invalid evaluated mesh normal(s) with "
-                    << staticFallbackCount << " import-time static fallback(s).";
-            MGlobal::displayWarning(MString(warning.str().c_str()));
-        }
-        evaluatedNormalRepairCount_ = normalRepairCount;
-        evaluatedNormalStaticFallbackCount_ = staticFallbackCount;
+    if (normalRepairCount > 0U && !evaluatedNormalRepairWarningEmitted_) {
+        std::ostringstream warning;
+        warning << "[mmdRenderShape] Repaired " << normalRepairCount
+                << " invalid evaluated mesh normal(s) with "
+                << staticFallbackCount << " import-time static fallback(s).";
+        MGlobal::displayWarning(MString(warning.str().c_str()));
+        evaluatedNormalRepairWarningEmitted_ = true;
     }
+    // Keep the latest counts in the diagnostic witness even when the set of
+    // invalid slots changes during playback; warning emission is independent
+    // from per-frame state updates.
+    evaluatedNormalRepairCount_ = normalRepairCount;
+    evaluatedNormalStaticFallbackCount_ = staticFallbackCount;
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
@@ -1355,6 +1358,7 @@ void MmdRenderShape::useStaticGeometry()
         evaluatedGeometryActive_ = false;
         evaluatedNormalRepairCount_ = 0U;
         evaluatedNormalStaticFallbackCount_ = 0U;
+        evaluatedNormalRepairWarningEmitted_ = false;
         clearRenderItemWitness();
         clearMaterialBindingDiagnostics();
     }

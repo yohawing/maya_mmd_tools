@@ -105,6 +105,7 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "getVertexNormals(true, normals, MSpace::kObject)" in shape
     assert "normalRepairRenderVertices" in shape
     assert "import-time static fallback" in shape
+    assert "evaluatedNormalRepairWarningEmitted_" in shape
     assert "normal repair failed for source vertex" in shape
     assert "source mapping index exceeds input mesh vertex count" in shape
     assert "geometryValid_ = false;" in shape
@@ -132,12 +133,66 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "recordRenderFallbackReason(reason);" in evaluated_update
     assert "if (reasonChanged)" in evaluated_update
     assert "normalRepairCount > 0U" in evaluated_update
+    assert "!evaluatedNormalRepairWarningEmitted_" in evaluated_update
+    assert "evaluatedNormalRepairWarningEmitted_ = true;" in evaluated_update
     assert "staticNormals_" in evaluated_update
     assert "getVertexNormals(false" not in evaluated_update
     assert "getTriangles(" not in evaluated_update
     assert "input mesh contains a zero-length normal" not in evaluated_update
     assert "repairedNormals=" in shape
     assert "staticNormalFallbacks=" in shape
+
+
+def test_normal_repair_warning_latches_until_geometry_is_rearmed():
+    source = SHAPE_SOURCE.read_text(encoding="utf-8")
+
+    evaluated_update = source[
+        source.index("bool MmdRenderShape::updateEvaluatedMesh") : source.index(
+            "void MmdRenderShape::useStaticGeometry"
+        )
+    ]
+    warning_guard = evaluated_update[
+        evaluated_update.index("if (normalRepairCount > 0U") : evaluated_update.index(
+            "// Keep the latest counts in the diagnostic witness"
+        )
+    ]
+    assert warning_guard.index("!evaluatedNormalRepairWarningEmitted_") < warning_guard.index(
+        "MGlobal::displayWarning"
+    )
+    assert warning_guard.index("MGlobal::displayWarning") < warning_guard.index(
+        "evaluatedNormalRepairWarningEmitted_ = true;"
+    )
+    assert evaluated_update.index(
+        "evaluatedNormalRepairWarningEmitted_ = true;"
+    ) < evaluated_update.index("evaluatedNormalRepairCount_ = normalRepairCount;")
+    assert evaluated_update.index(
+        "evaluatedNormalRepairCount_ = normalRepairCount;"
+    ) < evaluated_update.index("evaluatedNormalStaticFallbackCount_ = staticFallbackCount;")
+    assert evaluated_update.count(
+        "evaluatedNormalRepairWarningEmitted_ = false;"
+    ) == 1
+
+    rebuilt_geometry = source[
+        source.index("bool MmdRenderShape::setMaterialSplitGeometry") : source.index(
+            "bool MmdRenderShape::updateEvaluatedMesh"
+        )
+    ]
+    assert "evaluatedNormalRepairWarningEmitted_ = false;" in rebuilt_geometry
+
+    reject = evaluated_update[
+        evaluated_update.index("auto reject = [this]") : evaluated_update.index(
+            "return false;"
+        )
+    ]
+    assert "evaluatedNormalRepairWarningEmitted_ = false;" in reject
+
+    restored_geometry = source[
+        source.index("void MmdRenderShape::useStaticGeometry") : source.index(
+            "bool MmdRenderShape::hasValidGeometry"
+        )
+    ]
+    assert "evaluatedNormalRepairWarningEmitted_ = false;" in restored_geometry
+    assert source.count("evaluatedNormalRepairWarningEmitted_ = false;") == 3
 
 
 def test_static_geometry_path_keeps_queue_streams_unchanged():
