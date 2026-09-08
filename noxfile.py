@@ -1919,12 +1919,18 @@ def render_override_authoring(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_stock_preview(session: nox.Session) -> None:
+    """Verify standardSurface texture/color/alpha on OpenGL Core in Maya GUI."""
+    session.run(sys.executable, "tools/render_override/stock_preview_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_override_self_shadow(session: nox.Session) -> None:
     """Verify Ordered shadow modes and flags using an explicit textured PMX."""
     session.run(
         sys.executable,
-        "tools/render_override/render_override_vp2_ownership_e2e.py",
-        "--capture-only", "--ui-import", "--shadow-checks",
+        "tools/render_override/effects_e2e.py",
         *session.posargs,
         external=True,
     )
