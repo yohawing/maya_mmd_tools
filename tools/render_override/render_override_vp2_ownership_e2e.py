@@ -23,6 +23,7 @@ Example::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import math
@@ -502,6 +503,7 @@ def run_probe(
     material_checks: bool = False,
     shadow_checks: bool = False,
     display_checks: bool = False,
+    split_materials: bool = False,
 ) -> None:
     """Run the Maya-side native ownership probe and always write its report.
 
@@ -542,6 +544,7 @@ def run_probe(
         "materialReindex": bool(material_reindex),
         "frame": int(frame),
         "errors": [],
+        "splitMaterials": bool(split_materials),
     }
 
     def log(message: object) -> None:
@@ -558,6 +561,9 @@ def run_probe(
         cmds.file(new=True, force=True)
         loaded_plugin = _require_requested_plugin(cmds, plugin_path, log)
         report["loadedPluginPath"] = str(loaded_plugin)
+        report["loadedPluginSha256"] = hashlib.sha256(loaded_plugin.read_bytes()).hexdigest()
+        report["mayaVersion"] = cmds.about(version=True)
+        report["pythonExecutable"] = sys.executable
         log(f"vp2 device: {cmds.ogs(deviceInformation=True)}")
 
         if ui_import:
@@ -587,6 +593,14 @@ def run_probe(
             # Physics is unrelated to this visual witness and can make a
             # full-character import fail before the VP2 path is reached.
             ui_options["import_physics"] = False
+            ui_options["separate_meshes_by_material"] = split_materials
+            from mmd_tools.converters import mesh_converter
+            from mmd_tools.io import cpp_fast_importer
+
+            report["pythonModules"] = {
+                "mesh_converter": mesh_converter.__file__,
+                "cpp_fast_importer": cpp_fast_importer.__file__,
+            }
             report["importRoute"] = "mmd_tools_ui_settings"
             report["uiImportOptions"] = {
                 key: ui_options.get(key)
@@ -596,6 +610,7 @@ def run_probe(
                     "cpp_fast_load_mesh_only",
                     "import_morphs",
                     "import_physics",
+                    "separate_meshes_by_material",
                 )
             }
             from mmd_tools.ui.application_state import ApplicationState
@@ -622,9 +637,21 @@ def run_probe(
             }
             ui_tab.deleteLater()
             log(f"UI import options: {report['uiImportOptions']}")
-            root_result = import_mmd_file(
-                str(Path(model_path).resolve()), options=ui_options
-            )
+            from maya.api import OpenMaya as om
+
+            report["importWarnings"] = []
+
+            def record_warning(message, message_type, _client_data):
+                if message_type in (om.MCommandMessage.kWarning, om.MCommandMessage.kError):
+                    report["importWarnings"].append(message)
+
+            callback = om.MCommandMessage.addCommandOutputCallback(record_warning)
+            try:
+                root_result = import_mmd_file(
+                    str(Path(model_path).resolve()), options=ui_options
+                )
+            finally:
+                om.MMessage.removeCallback(callback)
             if not root_result:
                 raise RuntimeError("UI import returned no root")
             root_name = str(root_result)
@@ -654,6 +681,7 @@ def run_probe(
             if not result or len(result) < 2:
                 raise RuntimeError(f"mmdFastLoad returned no shape: {result!r}")
             root_name, shape_name = str(result[0]), str(result[-1])
+            shape_candidates = [shape_name]
             report["importRoute"] = "mmdFastLoad"
         report["root"] = root_name
         report["shape"] = shape_name
@@ -801,7 +829,7 @@ def run_probe(
                 # viewFit takes a camera/object target, not a modelPanel name.
                 # Include only the custom shape and the ordinary control; fitting
                 # all DAG nodes also includes Maya's default cameras/lights.
-                cmds.select([shape_name, control_transform], replace=True)
+                cmds.select([*shape_candidates, control_transform], replace=True)
                 cmds.viewFit(active_camera, all=False, animate=False, fitFactor=0.8)
             except Exception as exc:
                 log(f"viewFit warning: {exc}")
@@ -813,7 +841,7 @@ def run_probe(
             pass
 
         try:
-            report["worldBounds"] = list(cmds.exactWorldBoundingBox(shape_name))
+            report["worldBounds"] = list(cmds.exactWorldBoundingBox(*shape_candidates))
             report["camera"] = {
                 "translate": list(
                     cmds.xform(active_camera, query=True, worldSpace=True, translation=True)
@@ -832,6 +860,17 @@ def run_probe(
             cmds, shape_name, log
         )
         report["materialBindingDiagnostics"] = material_binding_diagnostics
+        report["proxies"] = {}
+        for candidate in shape_candidates:
+            candidate_witness = _wait_for_witness(cmds, candidate, log)
+            candidate_materials = _read_material_binding_diagnostics(cmds, candidate, log)
+            report["proxies"][candidate] = {
+                "witness": candidate_witness, "materialBindingDiagnostics": candidate_materials,
+            }
+            if not candidate_witness.startswith("ready ") or "geometry=vertices=" not in candidate_witness:
+                raise RuntimeError(f"proxy geometry was not prepared: {candidate}: {candidate_witness}")
+            if not _material_binding_diagnostics_ready(candidate_materials):
+                raise RuntimeError(f"proxy materials were not prepared: {candidate}")
         material_summary = material_binding_diagnostics.get("summary")
         if isinstance(material_summary, dict):
             issue_values = material_summary.get("issues", [])
@@ -861,9 +900,10 @@ def run_probe(
         ]
         connected_source_meshes = [
             str(item)
+            for candidate in shape_candidates
             for item in (
                 cmds.listConnections(
-                    f"{shape_name}.inputMesh",
+                    f"{candidate}.inputMesh",
                     source=True,
                     destination=False,
                     shapes=True,
@@ -1089,7 +1129,8 @@ def run_probe(
                 from tools.render_override.authoring_checks import check_authoring
 
                 report["authoring"] = check_authoring(
-                    cmds, root_name, output_dir / "authoring.ma"
+                    cmds, root_name, output_dir / "authoring.ma",
+                    expected_sources=2 if split_materials else 1,
                 )
             report["status"] = "pass"
             return
@@ -1333,6 +1374,8 @@ def main() -> int:
     parser.add_argument("--material-checks", action="store_true")
     parser.add_argument("--shadow-checks", action="store_true")
     parser.add_argument("--display-checks", action="store_true")
+    parser.add_argument("--split-materials", action="store_true",
+                        help="Exercise the UI material-split import route.")
     args = parser.parse_args()
 
     model_path = args.model
@@ -1364,6 +1407,8 @@ def main() -> int:
         parser.error("--shadow-checks requires --capture-only and --ui-import")
     if args.display_checks and not (args.capture_only and args.ui_import):
         parser.error("--display-checks requires --capture-only and --ui-import")
+    if args.split_materials and not (args.capture_only and args.ui_import):
+        parser.error("--split-materials requires --capture-only and --ui-import")
     camera_config = None
     if args.camera_json is not None:
         try:
@@ -1395,7 +1440,8 @@ def main() -> int:
         f"performance_checks={bool(args.performance_checks)!r}, "
         f"material_checks={bool(args.material_checks)!r}, "
         f"shadow_checks={bool(args.shadow_checks)!r}, "
-        f"display_checks={bool(args.display_checks)!r})\n"
+        f"display_checks={bool(args.display_checks)!r}, "
+        f"split_materials={bool(args.split_materials)!r})\n"
     )
     env_overrides = {
         "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",

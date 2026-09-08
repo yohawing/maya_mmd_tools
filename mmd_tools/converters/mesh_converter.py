@@ -2357,6 +2357,10 @@ class MeshConverter:
             # グループに追加
             parent_start = time.perf_counter()
             created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
+            if native_group and cmds.listRelatives(
+                created_mesh, shapes=True, type="mmdRenderShape", fullPath=True
+            ):
+                maya_mesh_utils.separate_render_proxy(created_mesh, geo_group)
             self._add_profile_time("parent_sec", parent_start)
             if self._use_cpp_uv_weld_batch and not native_group:
                 pending_native_welds[-1]["mesh"] = created_mesh
