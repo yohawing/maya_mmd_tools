@@ -143,6 +143,16 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "staticNormalFallbacks=" in shape
 
 
+def test_ordered_witness_distinguishes_registered_from_selected_panel():
+    override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
+
+    assert "bool isOrderedPanelSelected()" in override
+    assert 'getPanel -type \\"modelPanel\\"' in override
+    assert "rendererOverrideName" in override
+    assert "if (!isOrderedPanelSelected())" in override
+    assert '\\"state\\":\\"inactive\\"' in override
+
+
 def test_normal_repair_warning_latches_until_geometry_is_rearmed():
     source = SHAPE_SOURCE.read_text(encoding="utf-8")
 

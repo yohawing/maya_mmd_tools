@@ -31,6 +31,7 @@
 #include <maya/MStatus.h>
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
+#include <maya/MStringArray.h>
 #include <maya/MViewport2Renderer.h>
 
 #ifdef _WIN32
@@ -81,6 +82,28 @@ std::string jsonEscape(const std::string& value)
         result.push_back(character);
     }
     return result;
+}
+
+bool isOrderedPanelSelected()
+{
+    MStringArray panels;
+    if (!MGlobal::executeCommand(
+            MString("getPanel -type \"modelPanel\""), panels, false, false)) {
+        return false;
+    }
+
+    for (unsigned int index = 0U; index < panels.length(); ++index) {
+        MStatus status;
+        MString command("modelEditor -q -rendererOverrideName \"");
+        command += panels[index];
+        command += "\"";
+        const MString selected = MGlobal::executeCommandStringResult(
+            command, false, false, &status);
+        if (status && selected == MString(kOverrideName)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool isMmdShape(const MDagPath& path)
@@ -1867,6 +1890,25 @@ std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
         return std::string("{\"override\":\"mmdOrdered\",\"registered\":") +
                (gRegistered ? "true" : "false") +
                ",\"state\":\"unavailable\"}";
+    }
+    if (!isOrderedPanelSelected()) {
+        std::ostringstream result;
+        result << "{\"override\":\"mmdOrdered\",\"registered\":"
+               << (gRegistered ? "true" : "false")
+               << ",\"state\":\"inactive\",\"enabled\":false"
+               << ",\"drawCount\":0,\"panel\":\"\",\"shapeCount\":0"
+               << ",\"casterDrawCount\":0,\"geometryUploads\":0"
+               << ",\"casterMaterialIndices\":[],\"receiverDrawCount\":0"
+               << ",\"frameResourcesReady\":false"
+               << ",\"sameFrameShadowReady\":false,\"selfShadowMode\":0"
+               << ",\"targetSize\":{\"width\":0,\"height\":0}"
+               << ",\"targetHandleReady\":false,\"error\":\"\""
+               << ",\"pmxOrder\":[]";
+        if (captureShadowDepth) {
+            result << ",\"shadowDepth\":{\"available\":false}";
+        }
+        result << "}";
+        return result.str();
     }
     if (gOrderedOverride->fallbackReason_.empty() &&
         gOrderedOverride->operation_) {
