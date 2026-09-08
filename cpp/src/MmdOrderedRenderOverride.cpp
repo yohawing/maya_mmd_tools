@@ -14,6 +14,7 @@
 #include "MmdRenderShape.h"
 
 #include <maya/MDagPath.h>
+#include <maya/M3dView.h>
 #include <maya/MArgDatabase.h>
 #include <maya/MDoubleArray.h>
 #include <maya/MDrawContext.h>
@@ -1628,7 +1629,7 @@ MHWRender::DrawAPI MmdOrderedRenderOverride::supportedDrawAPIs() const
 
 MString MmdOrderedRenderOverride::uiName() const
 {
-    return MString("MMD Ordered");
+    return MString("MMD Render");
 }
 
 MStatus MmdOrderedRenderOverride::setup(const MString& destination)
@@ -1668,6 +1669,16 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
 
     mOperations.clear();
     renderer->getStandardViewportOperations(mOperations);
+
+    M3dView view;
+    if (M3dView::getM3dViewFromModelPanel(destination, view) &&
+        view.displayStyle() == M3dView::kWireFrame) {
+        // Editing wires belong to the source Maya meshes. Keep the complete
+        // standard operation list instead of filtering them out of this panel.
+        if (operation_) operation_->resetFrame();
+        clearFallback();
+        return MRenderOverride::setup(destination);
+    }
 
     std::vector<MDagPath> shapePaths;
     MSelectionList nonMmdSelection;

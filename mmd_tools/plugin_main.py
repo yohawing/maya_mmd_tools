@@ -620,6 +620,9 @@ def initializePlugin(mobject):
         _trace_initialize_step("initialize:start")
         install_mmd_menu()
         _trace_initialize_step("menu:done")
+        from mmd_tools.ui import render_settings
+
+        render_settings.install()
         try:
             install_drag_drop_importer()
         except ImportError as exc:
