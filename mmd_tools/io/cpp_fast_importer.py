@@ -397,14 +397,13 @@ def fast_import(
     transform_node = str(result[0])
     mesh_node = str(result[1]) if len(result) >= 2 else None
 
-    shared_native_kwargs = {}
-    if vp2_ownership and include_morphs:
-        try:
-            shared_native_pmx = parse_pmx_native(filepath)
-        except Exception as exc:
-            logger.debug("Fast shared native PMX parse unavailable: %s", exc)
-            shared_native_pmx = None
-        shared_native_kwargs = {"native_pmx": shared_native_pmx}
+    # Materials, hierarchy metadata and optional morphs share one parse.
+    try:
+        shared_native_pmx = parse_pmx_native(filepath)
+    except Exception as exc:
+        logger.debug("Fast shared native PMX parse unavailable: %s", exc)
+        shared_native_pmx = None
+    shared_native_kwargs = {"native_pmx": shared_native_pmx}
 
     metadata = (
         _apply_basic_materials(filepath, mesh_node, cmds, **shared_native_kwargs)
@@ -639,12 +638,37 @@ def _apply_basic_materials(
     try:
         materials = metadata.get("materials") or []
         used_names = _scene_name_set(cmds_module)
+        converter = None
+        if native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None:
+            from mmd_tools.converters.mesh_converter import MeshConverter
+            from mmd_tools.converters.material_morph_runtime import bind_standard_material
+
+            converter = MeshConverter(filepath)
+            converter._precompute_transparency_modes(
+                native_pmx.vertices, native_pmx.faces, native_pmx.materials, native_pmx.textures,
+            )
         for start_index, index_count, material_index in material_groups:
             if material_index >= len(materials) or index_count <= 0:
                 continue
 
             material = materials[material_index]
-            shader = _create_standard_material(material, material_index, cmds_module, used_names)
+            if converter is None:
+                shader = _create_standard_material(material, material_index, cmds_module, used_names)
+            else:
+                native_material = native_pmx.materials[material_index]
+                texture_index = native_material.texture_index
+                texture = native_pmx.textures[texture_index] if 0 <= texture_index < len(native_pmx.textures) else None
+                converter._material_name_by_index[material_index] = _allocate_fast_material_name(
+                    material.get("englishName") or material.get("name"), material_index, used_names,
+                )
+                shader = converter._create_material(
+                    native_material, texture_path=texture, all_textures=native_pmx.textures,
+                    material_index=material_index, original_texture_path=texture,
+                )
+                group = cmds_module.sets(renderable=True, noSurfaceShader=True, empty=True, name=f"{shader}SG")
+                cmds_module.connectAttr(f"{shader}.outColor", f"{group}.surfaceShader", force=True)
+                if not bind_standard_material(shader):
+                    raise RuntimeError(f"Could not bind fast material preview: {shader}")
             if not shader:
                 continue
 
