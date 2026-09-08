@@ -25,6 +25,9 @@ from mmd_tools.core import maya_material_utils  # noqa: E402
 
 
 class TestMeshConverterTextureIssues(unittest.TestCase):
+    def test_missing_model_path_has_empty_texture_directory(self):
+        self.assertEqual(MeshConverter(None).texture_dir, "")
+
     def test_native_metadata_inherits_cache_and_resolves_standard_sphere(self):
         converter = MeshConverter(str(self.model))
         material = self._material()
@@ -1230,23 +1233,12 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
                 material_index=0,
             )
 
-        mock_cmds.connectAttr.assert_any_call(
-            "Face_file.outAlpha",
-            "Face_opacityMultiply.input1X",
-            force=True,
-        )
         for channel in "RGB":
             mock_cmds.connectAttr.assert_any_call(
-                "Face_opacityMultiply.outputX",
-                f"Face_shader.opacity{channel}",
-                force=True,
+                "Face_file.outAlpha", f"Face_shader.opacity{channel}", force=True,
             )
         self.assertIn(
-            call("Face_opacityMultiply", "operation", 1, "long"),
-            mock_set_attribute.call_args_list,
-        )
-        self.assertIn(
-            call("Face_opacityMultiply", "input2X", 0.25, "float"),
+            call("Face_file", "alphaGain", 0.25, "float"),
             mock_set_attribute.call_args_list,
         )
         mock_cmds.connectAttr.assert_any_call(

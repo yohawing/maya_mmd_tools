@@ -35,7 +35,7 @@ def test_effective_backend_corrects_stale_preference_at_runtime_only():
     warning.assert_called_once()
 
 
-def test_material_creation_never_tries_glsl_on_directx11():
+def test_material_creation_uses_standard_even_with_loaded_hardware_backend():
     converter = object.__new__(mesh_converter.MeshConverter)
     material = SimpleNamespace(get_name=lambda: "backend_guard")
     settings = mock.Mock()
@@ -52,12 +52,13 @@ def test_material_creation_never_tries_glsl_on_directx11():
         mesh_converter.cmds, "attributeQuery", return_value=True
     ), mock.patch.object(converter, "_setup_dx11_shader") as setup_dx11, mock.patch.object(
         converter, "_setup_glsl_shader"
-    ) as setup_glsl:
+    ) as setup_glsl, mock.patch.object(converter, "_setup_standard_shader") as setup_standard:
         result = converter._create_material(material, material_index=0)
 
     assert result == "backend_guard"
-    shading_node.assert_called_once_with("dx11Shader", asShader=True, name="backend_guard")
-    setup_dx11.assert_called_once()
+    shading_node.assert_called_once_with("standardSurface", asShader=True, name="backend_guard")
+    setup_standard.assert_called_once()
+    setup_dx11.assert_not_called()
     setup_glsl.assert_not_called()
 
 

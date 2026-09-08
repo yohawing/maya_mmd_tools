@@ -1209,8 +1209,7 @@ class MeshConverter:
             "native_uv_weld_non_geometry_parse_count": 0,
             "native_uv_weld_meshes": [],
         }
-        if pmx_filepath:
-            self.texture_dir = os.path.dirname(pmx_filepath)
+        self.texture_dir = os.path.dirname(pmx_filepath or "")
 
     @staticmethod
     def _scene_name_set():
@@ -2429,121 +2428,6 @@ class MeshConverter:
         """
         sanitized_name = self._allocate_material_name(material, material_index)
 
-        # create_mmd_shaders設定を確認
-        create_mmd_shaders = settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS)
-
-        if create_mmd_shaders:
-            backend = effective_mmd_shader_backend()
-
-            if backend != "standard":
-                backend_order = [backend]
-
-                for target in backend_order:
-                    shader = None
-                    plugin_name = "dx11Shader" if target == "dx11" else "glslShader"
-                    node_type = "dx11Shader" if target == "dx11" else "GLSLShader"
-                    if not _ensure_shader_plugin(plugin_name):
-                        _warn_shader_backend_once(
-                            f"{target}-plugin-unavailable",
-                            f"{node_type} plugin '{plugin_name}' is unavailable. Trying next shader backend.",
-                        )
-                        if backend != "auto":
-                            break
-                        continue
-
-                    if target == "dx11":
-                        try:
-                            shader = cmds.shadingNode("dx11Shader", asShader=True, name=sanitized_name)
-                            ok, reason = _validate_shader_node(shader, "dx11Shader")
-                            if not ok:
-                                _warn_shader_backend_once(
-                                    "dx11-node-invalid",
-                                    f"Rejected dx11Shader node: {reason}. Trying next shader backend.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-
-                            self._setup_dx11_shader(
-                                shader,
-                                material,
-                                texture_path,
-                                all_textures,
-                                is_pmd,
-                                material_index,
-                                original_texture_path,
-                            )
-                            ok, reason = _validate_shader_node(shader, "dx11Shader")
-                            if not ok:
-                                _warn_shader_backend_once(
-                                    "dx11-node-invalid-after-setup",
-                                    f"Rejected configured dx11Shader node: {reason}. Trying next shader backend.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-                            return shader
-                        except Exception as e:
-                            _warn_shader_backend_once(
-                                "dx11-create-failed",
-                                f"Failed to create dx11Shader: {e}. Trying next shader backend.",
-                            )
-                            _delete_shader_node(shader)
-                            if backend != "auto":
-                                break
-
-                    if target == "glsl":
-                        try:
-                            shader = cmds.shadingNode("GLSLShader", asShader=True, name=sanitized_name)
-                            ok, reason = _validate_shader_node(shader, "GLSLShader")
-                            if not ok:
-                                _warn_shader_backend_once(
-                                    "glsl-node-invalid",
-                                    f"Rejected GLSLShader node: {reason}. Falling back.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-
-                            setup_ok = self._setup_glsl_shader(
-                                shader,
-                                material,
-                                texture_path,
-                                all_textures,
-                                is_pmd,
-                                material_index,
-                                original_texture_path,
-                            )
-                            ok, reason = _validate_shader_node(shader, "GLSLShader")
-                            if not setup_ok or not ok:
-                                reason = reason or "shader setup failed"
-                                _warn_shader_backend_once(
-                                    "glsl-setup-failed",
-                                    f"Rejected configured GLSLShader node: {reason}. Falling back.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-                            return shader
-                        except Exception as e:
-                            _warn_shader_backend_once(
-                                "glsl-create-failed",
-                                f"Failed to create GLSLShader: {e}. Falling back.",
-                            )
-                            _delete_shader_node(shader)
-                            if backend != "auto":
-                                break
-
-            if backend != "standard":
-                _warn_shader_backend_once(
-                    "standard-fallback",
-                    "Falling back to standardSurface for MMD material creation.",
-                )
-
         # 標準のstandardSurfaceを使用
         shader = cmds.shadingNode("standardSurface", asShader=True, name=sanitized_name)
         self._setup_standard_shader(
@@ -2592,8 +2476,11 @@ class MeshConverter:
         custom_attrs = {
             "mmd_resolved_texture_path": resolved_path(("MainTexture", "baseColor"), texture_path),
             "mmd_resolved_sphere_texture_path": resolved_path(("SphereTexture",), sphere_source),
-            "mmd_resolved_toon_texture_path": resolved_path(("ToonTexture",),
-                _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)),
+            "mmd_resolved_toon_texture_path": (
+                "" if getattr(material, "shared_toon_flag", 0) else resolved_path(
+                    ("ToonTexture",), _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+                )
+            ),
             ATTR_MMD_MATERIAL: 1,  # MMDマテリアルであることを示すフラグ
             ATTR_MMD_MATERIAL_INDEX: material.material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
@@ -2736,6 +2623,9 @@ class MeshConverter:
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
         maya_attribute_utils.set_attribute(shader, "metalness", 0.0, "float")
+        maya_attribute_utils.set_attribute(shader, "base", 1.0, "float")
+        maya_attribute_utils.set_attribute(shader, "specular", 0.2, "float")
+        maya_attribute_utils.set_attribute(shader, "specularRoughness", 0.6, "float")
 
         # テクスチャの設定
         raw_texture_path = original_texture_path or texture_path
@@ -2778,22 +2668,12 @@ class MeshConverter:
                     # Preserve PMX diffuse alpha while applying per-pixel
                     # texture alpha. Opaque materials deliberately have no
                     # opacity connection so VP2 keeps them in the opaque queue.
-                    opacity_multiply = cmds.shadingNode(
-                        "multiplyDivide",
-                        asUtility=True,
-                        name=sanitized_name + "_opacityMultiply",
-                    )
-                    maya_attribute_utils.set_attribute(opacity_multiply, "operation", 1, "long")
                     maya_attribute_utils.set_attribute(
-                        opacity_multiply,
-                        "input2X",
-                        material_opacity,
-                        "float",
+                        file_node, "alphaGain", material_opacity, "float"
                     )
-                    cmds.connectAttr(file_node + ".outAlpha", opacity_multiply + ".input1X", force=True)
                     for channel in "RGB":
                         cmds.connectAttr(
-                            opacity_multiply + ".outputX",
+                            file_node + ".outAlpha",
                             shader + f".opacity{channel}",
                             force=True,
                         )
@@ -2870,6 +2750,11 @@ class MeshConverter:
         # Resolve metadata only after file nodes (including repaired cache
         # paths) have been installed.
         self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
+        maya_attribute_utils.set_custom_attributes(shader, {
+            "mmdTransparencyMode": self._transparency_modes.get(
+                material_index, "blend" if material_opacity < 1.0 else "opaque"
+            ),
+        })
 
     def _setup_glsl_shader(
         self,

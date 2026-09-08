@@ -527,6 +527,15 @@ class MayaMaterialAuthoring:
             }
         return result
 
+    def _has_connected_standard_preview(self, shader: str) -> bool:
+        """Leave connected preview colors to their DG source; retain legacy writes."""
+        if str(self._call("node_type", shader)) != "standardSurface":
+            return False
+        return any(
+            self._call("list_connections", shader + "." + attr, source=True, destination=False)
+            for attr in ("baseColor", "baseColorR", "baseColorG", "baseColorB")
+        )
+
     def _material_value_updates(
         self,
         shader: str,
@@ -553,7 +562,7 @@ class MayaMaterialAuthoring:
                 str(self._call("node_type", shader)),
                 has_main_texture=bool(old.resolved_texture_path or old.texture_path),
             )
-            if route is not None:
+            if route is not None and not self._has_connected_standard_preview(shader):
                 add("viewport_diffuse", list(new.diffuse[:3]))
                 if route.diffuse_alpha_attribute is not None:
                     add("viewport_diffuse_alpha", new.diffuse[3])
@@ -678,7 +687,7 @@ class MayaMaterialAuthoring:
                 str(self._call("node_type", shader)),
                 has_main_texture=bool(old.resolved_texture_path or old.texture_path),
             )
-            if route is not None:
+            if route is not None and not self._has_connected_standard_preview(shader):
                 runtime_target = self._resolve_runtime_diffuse_target(shader, route)
                 if runtime_target is None:
                     self._set_attr(

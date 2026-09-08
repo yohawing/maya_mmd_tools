@@ -1244,6 +1244,8 @@ def _create_standard_material(
 
     try:
         shader = cmds_module.shadingNode("standardSurface", asShader=True, name=shader_name)
+        for attribute, value in (("base", 1.0), ("metalness", 0.0), ("specular", 0.2), ("specularRoughness", 0.6)):
+            cmds_module.setAttr(f"{shader}.{attribute}", value)
         shading_group = cmds_module.sets(
             renderable=True,
             noSurfaceShader=True,

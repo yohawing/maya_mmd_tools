@@ -31,9 +31,9 @@ def check_material_edits(cmds, root, shape, panel, output_dir):
     before = witness()
     before_image = capture("material_before.png")
     edits = [{"field": "diffuse_color", "value": [0.05, 0.8, 0.1]},
-             {"field": "viewport_diffuse", "value": [0.05, 0.8, 0.1]},
              {"field": "diffuse_alpha", "value": 0.35}]
     if cmds.nodeType(shader) in {"dx11Shader", "GLSLShader"}:
+        edits.append({"field": "viewport_diffuse", "value": [0.05, 0.8, 0.1]})
         edits.append({"field": "viewport_diffuse_alpha", "value": 0.35})
     applied = json.loads(cmds.mmdAuthoringSetMaterialValues(payload=json.dumps({
         "version": 1, "root": root, "shader": shader,

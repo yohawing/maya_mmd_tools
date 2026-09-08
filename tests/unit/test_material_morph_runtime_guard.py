@@ -823,12 +823,14 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         """A rebuild at a non-zero weight must restore the immutable base alpha."""
         cmds = mock.Mock()
         cmds.objExists.return_value = True
-        cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr not in {"materialValues", "materialSettings"}
+        cmds.attributeQuery.side_effect = lambda attr, **kwargs: (
+            [] if kwargs.get("listChildren") else attr not in {"materialValues", "materialSettings"}
+        )
         cmds.nodeType.side_effect = lambda node: (
             "mmdMaterialMorphEval" if node == "eval" else "standardSurface"
         )
         cmds.getAttr.side_effect = lambda plug, **_kwargs: (
-            0.25 if plug == "shader.mmd_diffuse_alpha" else 0.0
+            "double" if _kwargs.get("type") else (False if _kwargs.get("lock") else (0.25 if plug == "shader.mmd_diffuse_alpha" else 0.0))
         )
 
         with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
@@ -855,15 +857,17 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             call for call in cmds.setAttr.call_args_list
             if call.args and call.args[0] == "eval.baseDiffuseA"
         ]
-        self.assertEqual([call.args[1] for call in base_writes], [0.25, 0.25])
+        self.assertEqual(base_writes, [])
         self.assertEqual(
             connect_mock.call_args_list,
             [
+                mock.call("shader.mmd_diffuse_alpha", "eval.baseDiffuseA", force=True),
                 mock.call(
                     "eval.outputDiffuseAlpha",
                     "nativeShape.materialAlpha[1]",
                     force=True,
                 ),
+                mock.call("shader.mmd_diffuse_alpha", "eval.baseDiffuseA", force=True),
                 mock.call(
                     "eval.outputDiffuseAlpha",
                     "nativeShape.materialAlpha[1]",
@@ -888,6 +892,9 @@ class TestResolveShaderColorRoute(unittest.TestCase):
                 children[("eval", route.evaluator_base)] = [
                     f"{route.evaluator_base}{axis}" for axis in "RGBA"[:route.size]
                 ]
+
+        for attr in ("diffuse_color", "specular_color", "ambient_color", "mmd_edge_color"):
+            children[("shader", attr)] = [attr + axis for axis in "RGB"]
 
         def attribute_query(attr, node=None, **kwargs):
             if kwargs.get("listChildren"):
@@ -1040,11 +1047,12 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         self.assertEqual(bound["skipped"], [reason])
         self.assertEqual(restored["skipped"], [reason])
         self.assertEqual(
-            [call.args[0] for call in bound_set_attrs], ["eval.baseDiffuseA"]
+            [call.args[0] for call in bound_set_attrs], []
         )
         self.assertEqual(
             bound_connections,
             [
+                mock.call("shader.mmd_diffuse_alpha", "eval.baseDiffuseA", force=True),
                 mock.call(
                     "eval.outputDiffuseAlpha",
                     "nativeShape.materialAlpha[1]",
