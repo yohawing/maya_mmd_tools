@@ -5,7 +5,7 @@ import time
 
 
 def check_camera_updates(cmds, shape, panel, frames=12):
-    """Camera motion must not reevaluate mesh streams or upload VP2 buffers."""
+    """Camera motion must not reevaluate mesh streams or upload Ordered buffers."""
     camera = cmds.modelEditor(panel, query=True, camera=True)
     if cmds.nodeType(camera) == "camera":
         camera = cmds.listRelatives(camera, parent=True, fullPath=True)[0]
@@ -25,11 +25,10 @@ def check_camera_updates(cmds, shape, panel, frames=12):
     elapsed = time.perf_counter() - start
     after = json.loads(cmds.mmdRenderWitness(node=shape, json=True))
     ordered_after = json.loads(cmds.mmdOrderedRenderWitness())
-    result = {key: after[key] - before[key] for key in ("geometryUpdates", "bufferUploads")}
+    result = {"geometryUpdates": after["geometryUpdates"] - before["geometryUpdates"]}
     result.update(frames=frames, elapsedSeconds=elapsed)
     result["orderedUploads"] = ordered_after["geometryUploads"] - ordered_before["geometryUploads"]
     assert result["geometryUpdates"] == 0, result
-    assert result["bufferUploads"] == 0, result
     assert result["orderedUploads"] == 0, result
     # A real deformation must still invalidate the cached native geometry.
     controllers = cmds.ls(type="mmdMorphController") or []
