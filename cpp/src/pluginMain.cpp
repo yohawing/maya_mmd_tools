@@ -284,11 +284,12 @@ MStatus initializePlugin(MObject obj)
     // Keep the experimental caster out of Maya's viewport renderer menu unless
     // a dedicated E2E/developer process explicitly opts in before plug-in load.
     MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer(false);
+    const bool supportsMmdRender = renderer && renderer->drawAPI() == MHWRender::kDirectX11;
     const char* enableNativeCaster = std::getenv("MMD_TOOLS_CPP_ENABLE_NATIVE_CASTER");
     if (!enableNativeCaster || std::string(enableNativeCaster) != "1") {
         MGlobal::displayInfo(
             "mmdNativeCaster override disabled by default.");
-    } else if (renderer) {
+    } else if (supportsMmdRender) {
         status = plugin.registerCommand(
             "mmdNativeCasterWitness", MmdNativeCasterWitnessCommand::creator,
             MmdNativeCasterWitnessCommand::newSyntax);
@@ -311,7 +312,7 @@ MStatus initializePlugin(MObject obj)
         }
     } else {
         MGlobal::displayWarning(
-            "MHWRender::MRenderer unavailable; native caster override skipped.");
+            "Native caster requires an active DirectX 11 renderer; override skipped.");
     }
 
     // The ordered pass is available by default.  It borrows the
@@ -321,7 +322,7 @@ MStatus initializePlugin(MObject obj)
         std::getenv("MMD_TOOLS_CPP_ENABLE_ORDERED_RENDER");
     if (enableOrderedRender && std::string(enableOrderedRender) == "0") {
         MGlobal::displayInfo("mmdOrdered override disabled by explicit opt-out.");
-    } else if (renderer) {
+    } else if (supportsMmdRender) {
         status = plugin.registerCommand(
             "mmdOrderedRenderWitness",
             MmdOrderedRenderWitnessCommand::creator,
@@ -354,7 +355,7 @@ MStatus initializePlugin(MObject obj)
         }
     } else {
         MGlobal::displayWarning(
-            "MHWRender::MRenderer unavailable; mmdOrdered override skipped.");
+            "MMD Render requires an active DirectX 11 renderer; override skipped.");
     }
 
     status = plugin.registerCommand("mmdAuthoringSetAttrs",
