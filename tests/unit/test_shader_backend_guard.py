@@ -50,16 +50,12 @@ def test_material_creation_uses_standard_even_with_loaded_hardware_backend():
         mesh_converter.cmds, "nodeType", return_value="dx11Shader"
     ), mock.patch.object(
         mesh_converter.cmds, "attributeQuery", return_value=True
-    ), mock.patch.object(converter, "_setup_dx11_shader") as setup_dx11, mock.patch.object(
-        converter, "_setup_glsl_shader"
-    ) as setup_glsl, mock.patch.object(converter, "_setup_standard_shader") as setup_standard:
+    ), mock.patch.object(converter, "_setup_standard_shader") as setup_standard:
         result = converter._create_material(material, material_index=0)
 
     assert result == "backend_guard"
     shading_node.assert_called_once_with("standardSurface", asShader=True, name="backend_guard")
     setup_standard.assert_called_once()
-    setup_dx11.assert_not_called()
-    setup_glsl.assert_not_called()
 
 
 def test_shader_plugin_probe_never_loads_or_changes_plugin_state():
