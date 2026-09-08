@@ -6,6 +6,56 @@ from tools.render_override.common import capture_view, write_report
 from tools.render_override.render_override_visual_gate import read_png_rgb
 
 
+def check_edit_render_display(cmds, root, panels, capture, initial, changed):
+    """Return to Maya's event loop between 4/5/6 and AA changes in both panels."""
+    result = {}
+    for panel in panels:
+        cmds.modelEditor(panel, edit=True, displayTextures=False)
+    yield
+    plain = capture("texture_off")
+    result["texturePixels"] = changed(initial, plain)
+    for panel in panels:
+        cmds.modelEditor(panel, edit=True, displayTextures=True)
+    yield
+    assert capture("texture_on_restored") == initial
+    for panel in panels:
+        cmds.modelEditor(panel, edit=True, displayAppearance="wireframe")
+    yield
+    wire = capture("wireframe")
+    witness = json.loads(cmds.mmdOrderedRenderWitness())
+    assert witness["drawCount"] == 0 and witness["casterDrawCount"] == 0, witness
+    cmds.setAttr(root + ".visibility", False)
+    yield
+    result["wirePixels"] = changed(wire, capture("wireframe_hidden"))
+    cmds.undo()
+    for panel in panels:
+        cmds.modelEditor(panel, edit=True, displayAppearance="smoothShaded")
+    yield
+    assert capture("shaded_restored") == initial
+
+    aa_plug = "hardwareRenderingGlobals.multiSampleEnable"
+    original_aa = cmds.getAttr(aa_plug)
+    samples = {}
+    try:
+        for enabled in (False, True):
+            cmds.setAttr(aa_plug, enabled)
+            yield
+            samples[enabled] = capture("aa_on" if enabled else "aa_off")
+        for name in initial:
+            counts = []
+            for enabled in (False, True):
+                pixels = samples[enabled][name]
+                background = pixels[0]
+                counts.append(sum(max(abs(a - b) for a, b in zip(pixel, background)) > 8 for pixel in pixels))
+            assert min(counts) > 1000 and abs(counts[0] - counts[1]) / max(counts) < 0.02, (name, counts)
+            result[name + "AaCoverage"] = counts
+    finally:
+        cmds.setAttr(aa_plug, original_aa)
+    yield
+    assert capture("aa_restored") == initial
+    return result
+
+
 def check_display_modes(cmds, root, shape, panel, output_dir):
     """Require visible wire geometry, texture changes and reversible Hide."""
     source = cmds.listConnections(f"{shape}.inputMesh", source=True, destination=False, shapes=True)[0]

@@ -16,19 +16,19 @@ if str(ROOT) not in sys.path:
 
 from tests.viewport.maya_e2e_harness import run_maya_e2e  # noqa: E402
 from tools.render_override.common import capture_view, require_requested_plugin  # noqa: E402
-from tools.render_override.render_override_visual_gate import read_png_rgb  # noqa: E402
+from tools.render_override.render_override_visual_gate import read_png_rgb, write_png_rgb  # noqa: E402
 
 MARKER = "MMD RENDER SEPARATION FINISHED"
 
 
-def run_probe(output, plugin, split=False, migrate_legacy=False, caster_transition=False):
+def run_probe(output, plugin, split=False, migrate_legacy=False, caster_transition=False, textured=False):
     # Each user operation returns to Maya's event loop before the next capture.
     # A monolithic commandPort call suppresses deferred DG/VP2 notifications.
     try:
         from PySide6.QtCore import QTimer
     except ImportError:
         from PySide2.QtCore import QTimer
-    steps = _probe_steps(output, plugin, split, migrate_legacy, caster_transition)
+    steps = _probe_steps(output, plugin, split, migrate_legacy, caster_transition, textured)
 
     def advance():
         try:
@@ -37,10 +37,13 @@ def run_probe(output, plugin, split=False, migrate_legacy=False, caster_transiti
             return
         QTimer.singleShot(100, advance)
 
-    QTimer.singleShot(0, advance)
+    # commandPort can open before Maya finishes deferred startup plug-ins.
+    # Start after that queue, so startup commands cannot consume test Undo.
+    from maya import cmds
+    cmds.evalDeferred(advance, lowestPriority=True)
 
 
-def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_transition=False):
+def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_transition=False, textured=False):
     from maya import cmds
     from mmd_tools.converters import MorphConverter
     from mmd_tools.converters.export_scene_collector import _collect_mmd_material_dict
@@ -62,7 +65,24 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_trans
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
         panels = cmds.getPanel(type="modelPanel")
         original_panels = {p: cmds.modelEditor(p, q=True, rendererOverrideName=True) for p in panels}
-        root = import_mmd_file(str(ROOT / "tests/data/test_morph_model.pmx"), options={
+        model = ROOT / "tests/data/test_morph_model.pmx"
+        if textured:
+            # The legacy parser's writable data objects are used only to stage
+            # this fixture; the actual import still uses the native parser.
+            from mmd_tools.core.pmx_data import PmxData
+
+            fixture = PmxData().parse_file(str(model))
+            texture = out / "checker.png"
+            write_png_rgb(texture, 8, 8, [(230, 210, 160) if (x // 2 + y // 2) % 2 else (20, 80, 230)
+                                         for y in range(8) for x in range(8)])
+            fixture.textures = [str(texture)]
+            for material in fixture.materials:
+                material.texture_index = 0
+            model = out / "textured.pmx"
+            fixture.write_file(str(model))
+        report["model"] = str(model)
+        report["modelSha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
+        root = import_mmd_file(str(model), options={
             "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
             "import_morphs": True, "import_physics": False,
             "separate_meshes_by_material": split,
@@ -125,6 +145,12 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_trans
         # Green is Maya's unsupported stock shader-network marker, not this
         # fixture's authored color. Catch it independently of DG numeric tests.
         assert sum(g > 200 and r < 10 and b < 10 for r, g, b in initial["edit"]) == 0
+        if textured:
+            from tools.render_override.display_checks import check_edit_render_display
+
+            report["displayModes"] = yield from check_edit_render_display(
+                cmds, root, (edit, render), capture, initial, changed,
+            )
         if caster_transition:
             cmds.modelEditor(render, e=True, rendererOverrideName="mmdNativeCaster")
             yield
@@ -155,6 +181,27 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_trans
         report["sourceShapeHidePixels"] = changed(initial, capture("source_shape_hidden"))
         cmds.undo()
         assert capture("source_shape_hide_undo") == initial
+        shader = shaders[0]
+        authored_before = _collect_mmd_material_dict(shader)
+        report["materialAuthoring"] = json.loads(cmds.mmdAuthoringSetMaterialValues(payload=json.dumps({
+            "version": 1, "root": cmds.ls(root, long=True)[0], "shader": shader,
+            "material_index": 0, "updates": [
+                {"field": "diffuse_color", "value": [0.05, 0.8, 0.1]},
+                {"field": "diffuse_alpha", "value": 0.35},
+            ],
+        })))
+        assert report["materialAuthoring"]["ok"], report["materialAuthoring"]
+        yield
+        authored_preview = capture("authored_material")
+        report["materialAuthoringPixels"] = changed(initial, authored_preview)
+        cmds.undo()
+        yield
+        assert capture("authored_material_undo") == initial
+        assert _collect_mmd_material_dict(shader) == authored_before
+        cmds.redo()
+        yield
+        assert capture("authored_material_redo") == authored_preview
+        cmds.undo()
 
         morph = PmxMorph(1, 1, 1, 1, 1)
         morph.name = "PreviewMaterialMorph"
@@ -168,7 +215,10 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_trans
         material_nodes = MorphConverter().convert_pmx_morphs(
             SimpleNamespace(morphs=[morph], materials=[], faces=[]), sources[0],
         )["material_morph_nodes"]
+        from mmd_tools.core.pmx_data import PmxData
+        next_morph_index = len(PmxData().parse_file(str(model)).morphs)
         for node in material_nodes:
+            cmds.setAttr(node + ".mmd_morph_index", next_morph_index)
             if not cmds.attributeQuery("mmd_model_root", node=node, exists=True):
                 cmds.addAttr(node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(root + ".message", node + ".mmd_model_root", force=True)
@@ -206,6 +256,24 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, caster_trans
         reloaded = capture("reloaded")
         assert reloaded == material_changed, "both panels must survive scene reload"
         assert authored == {index: _collect_mmd_material_dict(shader) for index, shader in shaders.items()}
+        from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
+        from mmd_tools.core.pmx_data import PmxData
+
+        exported_path = out / "roundtrip.pmx"
+        export_result = ExportModelAction().execute(ExportModelRequest(
+            file_path=str(exported_path), options={"export_format": "pmx", "target_model": root},
+        ))
+        assert export_result.succeeded, export_result
+        exported = PmxData().parse_file(str(exported_path))
+        assert len(exported.materials) == len(authored)
+        for index, material in enumerate(exported.materials):
+            expected = authored[index]
+            assert all(abs(a - b) < 1e-6 for a, b in zip(material.diffuse, expected["diffuse"]))
+            assert material.draw_flag == expected["draw_flag"]
+            if textured:
+                assert material.texture_index >= 0 and exported.textures[material.texture_index]
+        report["pmxExport"] = {"path": str(exported_path), "materials": len(exported.materials),
+                               "authoredDiffusePreserved": True}
         report["ordered"] = json.loads(cmds.mmdOrderedRenderWitness(shadowDepth=True))
         assert report["ordered"]["state"] == "active", report["ordered"]
         control = cmds.polySphere(name="nonMmdControl", radius=1.5)[0]
@@ -258,6 +326,7 @@ def main():
     parser.add_argument("--split-materials", action="store_true")
     parser.add_argument("--migrate-legacy", action="store_true")
     parser.add_argument("--caster-transition", action="store_true")
+    parser.add_argument("--textured", action="store_true")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
     out = args.out_dir.resolve()
@@ -267,7 +336,7 @@ def main():
         log_path=out / "probe.log", report_path=out / "report.json",
         command=("from tools.render_override.separation_e2e import run_probe\n"
                  f"run_probe({str(out)!r}, {str(plugin)!r}, {args.split_materials!r}, "
-                 f"{args.migrate_legacy!r}, {args.caster_transition!r})"),
+                 f"{args.migrate_legacy!r}, {args.caster_transition!r}, {args.textured!r})"),
         marker=MARKER, send_label="mmd-render-separation",
         stale_paths=(out / "probe.log", out / "report.json"),
         env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11", "MMD_TOOLS_CPP_PLUGIN": str(plugin),

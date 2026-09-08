@@ -11,11 +11,11 @@ def check_legacy_migration(cmds, root, proxies, sources, shaders, output_dir):
     for shader in shaders.values():
         legacy = _create_backend_replacement(shader, "dx11")
         _copy_mmd_attributes(shader, legacy)
-        assert _collect_mmd_material_dict(legacy) == _collect_mmd_material_dict(shader)
         files = cmds.listConnections(shader + ".baseColor", s=True, d=False, type="file") or []
         if files:
             assert len(files) == 1
             cmds.connectAttr(files[0] + ".outColor", legacy + ".MainTexture", force=True)
+        assert _collect_mmd_material_dict(legacy) == _collect_mmd_material_dict(shader)
         for attr in ("outColor", "message"):
             for destination in cmds.listConnections(shader + "." + attr, s=False, d=True, plugs=True) or []:
                 cmds.connectAttr(legacy + "." + attr, destination, force=True)

@@ -473,6 +473,70 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertFalse(cmds.objExists(evaluator))
         self.assertEqual(cmds.connectionInfo(shader + ".opacityR", sourceFromDestination=True), shader + ".mmd_diffuse_alpha")
 
+    def test_textured_preview_rebinding_failure_preserves_expression(self):
+        """A failed stock replacement must keep the old evaluator recoverable."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+        plugs = [shader + ".baseColor" + c for c in "RGB"] + [shader + ".opacity" + c for c in "RGB"]
+        before = {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        expression_body = cmds.expression(expression, q=True, string=True)
+        expressions = set(cmds.ls(type="expression"))
+        cmds.delete(morphs)
+        connect = material_morph_runtime._connect_if_needed
+
+        def fail_last_alpha(source, destination, **kwargs):
+            if destination == shader + ".opacityB":
+                raise RuntimeError("injected preview connection failure")
+            return connect(source, destination, **kwargs)
+
+        with mock.patch.object(material_morph_runtime, "_connect_if_needed", side_effect=fail_last_alpha):
+            failed = build_material_morph_graph(root)
+        self.assertFalse(failed["success"], failed)
+        self.assertTrue(cmds.objExists(evaluator))
+        self.assertEqual({p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}, before)
+        self.assertEqual(cmds.expression(expression, q=True, string=True), expression_body)
+        self.assertEqual(set(cmds.ls(type="expression")), expressions)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        self.assertEqual(set(cmds.ls(type="expression")), expressions)
+        self.assertFalse(cmds.objExists(evaluator))
+        self.assertEqual(cmds.connectionInfo(shader + ".opacityR", sourceFromDestination=True), shader + ".mmd_diffuse_alpha")
+
+    def test_textured_preview_keeps_morph_on_late_native_bind_failure(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+        cmds.setAttr(morphs[0] + ".weight", 1.0)
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        before = {plug: cmds.connectionInfo(plug, sourceFromDestination=True)
+                  for plug in [expression + ".input[" + str(i) + "]"
+                               for i in cmds.getAttr(expression + ".input", multiIndices=True)]}
+        cmds.delete(morphs)
+        with mock.patch.object(material_morph_runtime, "_collect_native_render_shapes", return_value=["proxy"]), \
+                mock.patch.object(material_morph_runtime, "bind_native_material_alpha",
+                                  return_value={"success": False, "skipped": ["injected"]}):
+            self.assertFalse(build_material_morph_graph(root)["success"])
+        self.assertTrue(cmds.objExists(evaluator))
+        self.assertEqual({p: cmds.connectionInfo(p, sourceFromDestination=True) for p in before}, before)
+        self.assertEqual(cmds.listConnections(texture + ".colorGainR", s=True, d=False), [expression])
+
     def test_standard_texture_gain_uses_morph_without_replacing_file(self):
         """Stock VP2 keeps its direct texture connection while RGBA animates."""
         from mmd_tools.converters.mesh_converter import MeshConverter
@@ -497,6 +561,25 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         for channel in "RGB":
             self.assertTrue(cmds.isConnected(texture + ".outAlpha", shader + ".opacity" + channel))
         self.assertAlmostEqual(cmds.getAttr(shader + ".mmd_diffuse_alpha"), 0.8, places=6)
+
+    def test_textured_preview_rebuild_repairs_partial_expression_connections(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.diffuse = (.2, .3, .4, .8)
+        shader = MeshConverter("")._create_material(material, material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        self.assertTrue(material_morph_runtime.bind_standard_material(shader))
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        for index, attr in enumerate(("colorGainR", "colorGainG", "colorGainB", "alphaGain")):
+            self.assertTrue(cmds.isConnected(f"{expression}.output[{index}]", texture + "." + attr))
+        cmds.disconnectAttr(expression + ".output[1]", texture + ".colorGainG")
+        cmds.setAttr(texture + ".colorGainG", 0.0)
+        self.assertTrue(material_morph_runtime.bind_standard_material(shader))
+        self.assertTrue(cmds.isConnected(expression + ".output[1]", texture + ".colorGainG"))
+        self.assertAlmostEqual(cmds.getAttr(texture + ".colorGainG"), .3, places=6)
 
     def test_shared_toon_keeps_table_index_without_custom_path(self):
         from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter

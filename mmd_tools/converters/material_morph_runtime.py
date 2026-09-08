@@ -354,6 +354,8 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
     if (evaluator and authored is None) or not cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True):
         return False
     snapshots = {}
+    preview_expression = None
+    previous_expression_body = None
     try:
         files = list(dict.fromkeys(cmds.listConnections(
             f"{shader}.baseColor", source=True, destination=False, type="file",
@@ -389,7 +391,7 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
         if files:
             texture = files[0]
             color_destination = f"{texture}.colorGain"
-            _connect_if_needed(alpha_source, f"{texture}.alphaGain", force=True)
+            texture_alpha_source = alpha_source
             opaque = cmds.attributeQuery("mmdTransparencyMode", node=shader, exists=True) and (
                 cmds.getAttr(f"{shader}.mmdTransparencyMode") == "opaque"
             )
@@ -409,14 +411,49 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
         destination_children = _scalar_leaf_attrs(destination_node, destination_attr)
         if len(source_children) != 3 or len(destination_children) != 3:
             raise RuntimeError("standard preview requires three RGB components")
-        for source_child, destination_child in zip(source_children, destination_children):
-            _connect_if_needed(
-                f"{source_node}.{source_child}", f"{destination_node}.{destination_child}", force=True,
+        if files:
+            # VP2 traverses direct shader->file gain connections as a shading
+            # cycle. An expression supplies DG numbers without participating
+            # in shader compilation; it has no authored material state.
+            assignments = [(f"{texture}.{child}", f"{source_node}.{source}")
+                           for source, child in zip(source_children, destination_children)]
+            assignments.append((f"{texture}.alphaGain", texture_alpha_source))
+            body = "\n".join(f"{dst} = {src};" for dst, src in assignments)
+            incoming = cmds.connectionInfo(assignments[0][0], sourceFromDestination=True)
+            owner = incoming.split(".", 1)[0] if incoming else None
+            if owner and cmds.nodeType(owner) == "expression" and cmds.attributeQuery(
+                "mmdStandardPreview", node=owner, exists=True,
+            ):
+                preview_expression = owner
+                previous_expression_body = cmds.expression(owner, query=True, string=True)
+            connected = preview_expression and all(
+                cmds.isConnected(f"{preview_expression}.output[{index}]", destination)
+                for index, (destination, _) in enumerate(assignments)
             )
+            if previous_expression_body != body or not connected:
+                for destination, _ in assignments:
+                    incoming = cmds.connectionInfo(destination, sourceFromDestination=True)
+                    if incoming:
+                        cmds.disconnectAttr(incoming, destination)
+                if preview_expression is None:
+                    preview_expression = cmds.createNode("expression", name=texture + "_mmdPreview")
+                    cmds.addAttr(preview_expression, longName="mmdStandardPreview", attributeType="bool")
+                cmds.expression(preview_expression, edit=True, alwaysEvaluate=False, unitConversion="none",
+                                string=body)
+        else:
+            for source_child, destination_child in zip(source_children, destination_children):
+                _connect_if_needed(
+                    f"{source_node}.{source_child}", f"{destination_node}.{destination_child}", force=True,
+                )
         for channel in "RGB":
             _connect_if_needed(alpha_source, f"{shader}.opacity{channel}", force=True)
     except Exception:
         logger.warning("Failed to bind standard material %s", shader, exc_info=True)
+        if preview_expression and cmds.objExists(preview_expression):
+            if previous_expression_body is None:
+                cmds.delete(preview_expression)
+            else:
+                cmds.expression(preview_expression, edit=True, string=previous_expression_body)
         _restore_plug_snapshots(snapshots)
         return False
     return True
