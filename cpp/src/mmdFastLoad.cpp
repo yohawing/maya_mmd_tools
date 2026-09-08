@@ -994,26 +994,6 @@ MObject buildVp2Proxy(
         return MObject::kNullObj;
     }
 
-    MStatus visibilityStatus;
-    MPlug sourceVisibility =
-        sourceDependency.findPlug("visibility", true, &visibilityStatus);
-    MStatus proxyVisibilityStatus;
-    MPlug proxyVisibility = shapeDependency.findPlug(
-        MmdRenderShape::aSourceVisibility, true, &proxyVisibilityStatus);
-    if (!visibilityStatus || !proxyVisibilityStatus ||
-        sourceVisibility.isNull() || proxyVisibility.isNull()) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to resolve VP2 source visibility plugs.");
-        return MObject::kNullObj;
-    }
-    MDGModifier visibilityConnection;
-    if (!visibilityConnection.connect(proxyVisibility, sourceVisibility) ||
-        !visibilityConnection.doIt()) {
-        MGlobal::displayError(
-            "[mmdFastLoad] Failed to connect VP2 source visibility.");
-        return MObject::kNullObj;
-    }
-
     return shapeObject;
 }
 

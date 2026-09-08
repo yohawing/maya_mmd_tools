@@ -107,6 +107,9 @@ public:
      * Maya mesh.  Queue order, UVs, and indices remain owned by the static
      * material split.  No state is changed when validation fails.
      */
+    /** Pull DG inputs once per dirty revision, independently of VP2 draw items. */
+    void updateEvaluatedData();
+    bool restoreGeometryFromSource(const MObject& sourceMesh);
     bool updateEvaluatedMesh(const MObject& meshObject);
 
     bool consumeMeshInputDirty()

@@ -320,46 +320,7 @@ void MmdRenderGeometryOverride::updateDG()
         return;
     }
 
-    shape_->updateEvaluatedMaterialAlpha();
-    shape_->updateEvaluatedMaterialValues();
-    shape_->updateEvaluatedMaterialSettings();
-
-    if (!shape_->consumeMeshInputDirty()) {
-        return;
-    }
-
-    MPlug inputPlug(shape_->thisMObject(), MmdRenderShape::aInputMesh);
-    if (inputPlug.isNull()) {
-        // A shape created by an older scene/plugin version may not expose the
-        // optional input.  Preserve its static geometry in that case.
-        shape_->useStaticGeometry();
-        return;
-    }
-
-    MStatus connectionStatus;
-    const bool connected = inputPlug.isConnected(&connectionStatus);
-    if (!connectionStatus) {
-        shape_->updateEvaluatedMesh(MObject::kNullObj);
-        return;
-    }
-
-    MStatus meshStatus;
-    const MDataHandle inputHandle = inputPlug.asMDataHandle(&meshStatus);
-    if (meshStatus && inputHandle.type() == MFnData::kMesh) {
-        const MObject meshObject = inputHandle.asMesh();
-        if (!meshObject.isNull()) {
-            shape_->updateEvaluatedMesh(meshObject);
-            return;
-        }
-    }
-
-    if (connected || !meshStatus) {
-        // A connected but unevaluable mesh is an input failure, not a request
-        // to silently keep stale render data visible.
-        shape_->updateEvaluatedMesh(MObject::kNullObj);
-    } else {
-        shape_->useStaticGeometry();
-    }
+    shape_->updateEvaluatedData();
 }
 
 void MmdRenderGeometryOverride::updateRenderItems(
@@ -383,6 +344,12 @@ void MmdRenderGeometryOverride::updateRenderItems(
     const bool nativeCasterActive =
         renderer &&
         renderer->activeRenderOverride() == MmdNativeCasterRenderOverride::overrideName();
+    // The editable Maya mesh owns stock VP2. Ordered draws directly from the
+    // shape's evaluated cache; only the legacy caster diagnostic needs items.
+    if (!nativeCasterActive) {
+        shape_->clearRenderItemWitness();
+        return;
+    }
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     MTextureManager* textureManager =
@@ -709,6 +676,11 @@ void MmdRenderGeometryOverride::populateGeometry(
     MHWRender::MGeometry& data)
 {
     if (!shape_) {
+        return;
+    }
+    MHWRender::MRenderer* renderer = MHWRender::MRenderer::theRenderer();
+    if (!renderer || renderer->activeRenderOverride() != MmdNativeCasterRenderOverride::overrideName()) {
+        shape_->clearRenderItemWitness();
         return;
     }
 

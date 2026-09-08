@@ -16,6 +16,8 @@
 #include <maya/MFloatVectorArray.h>
 #include <maya/MGlobal.h>
 #include <maya/MItDependencyNodes.h>
+#include <maya/MIntArray.h>
+#include <maya/MObjectArray.h>
 #include <maya/MPointArray.h>
 #include <maya/MPoint.h>
 #include <maya/MPlug.h>
@@ -1009,6 +1011,125 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
+}
+
+void MmdRenderShape::updateEvaluatedData()
+{
+    if (geometry_.positions.empty()) {
+        const MPlug upstream = MPlug(thisMObject(), aInputMesh).source();
+        if (upstream.isNull() || !restoreGeometryFromSource(upstream.node())) {
+            return;
+        }
+    }
+    updateEvaluatedMaterialAlpha();
+    updateEvaluatedMaterialValues();
+    updateEvaluatedMaterialSettings();
+
+    if (!consumeMeshInputDirty()) {
+        return;
+    }
+
+    MPlug inputPlug(thisMObject(), MmdRenderShape::aInputMesh);
+    if (inputPlug.isNull()) {
+        // A shape created by an older scene/plugin version may not expose the
+        // optional input.  Preserve its static geometry in that case.
+        useStaticGeometry();
+        return;
+    }
+
+    MStatus connectionStatus;
+    const bool connected = inputPlug.isConnected(&connectionStatus);
+    if (!connectionStatus) {
+        updateEvaluatedMesh(MObject::kNullObj);
+        return;
+    }
+
+    MStatus meshStatus;
+    const MDataHandle inputHandle = inputPlug.asMDataHandle(&meshStatus);
+    if (meshStatus && inputHandle.type() == MFnData::kMesh) {
+        const MObject meshObject = inputHandle.asMesh();
+        if (!meshObject.isNull()) {
+            updateEvaluatedMesh(meshObject);
+            return;
+        }
+    }
+
+    if (connected || !meshStatus) {
+        // A connected but unevaluable mesh is an input failure, not a request
+        // to silently keep stale render data visible.
+        updateEvaluatedMesh(MObject::kNullObj);
+    } else {
+        useStaticGeometry();
+    }
+}
+
+bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
+{
+    // A saved scene owns the ordinary mesh and its shading assignments. Build
+    // the transient draw topology from those once, without rereading the PMX
+    // or serializing a second copy of its authored mesh/material data.
+    MStatus status;
+    MFnMesh mesh(sourceMesh, &status);
+    if (!status) return false;
+    MObjectArray sets;
+    MIntArray faceShaders, triangleCounts, triangleVertices;
+    MPointArray points;
+    if (!mesh.getConnectedShaders(0, sets, faceShaders) ||
+        !mesh.getTriangles(triangleCounts, triangleVertices) ||
+        !mesh.getPoints(points, MSpace::kObject)) return false;
+    if (faceShaders.length() != triangleCounts.length()) return false;
+
+    std::vector<std::vector<float>> positions(sets.length()), normals(sets.length()), uvs(sets.length());
+    std::vector<std::vector<uint32_t>> indices(sets.length()), sources(sets.length());
+    std::vector<mmd::MmdRenderQueueInput> inputs;
+    for (unsigned int i = 0; i < sets.length(); ++i) {
+        MFnDependencyNode set(sets[i]);
+        const MPlug shaderPlug = set.findPlug("surfaceShader", true, &status);
+        if (!status || shaderPlug.source().isNull()) return false;
+        MFnDependencyNode shader(shaderPlug.source().node());
+        const MPlug materialIndex = shader.findPlug("mmd_material_index", true, &status);
+        if (!status) return false;
+        const int index = materialIndex.asInt(&status);
+        if (!status || index < 0) return false;
+        mmd::MmdRenderQueueInput input;
+        input.materialIndex = static_cast<std::size_t>(index);
+        input.submeshIndex = i;
+        inputs.push_back(input);
+    }
+    unsigned int triangleOffset = 0;
+    for (unsigned int face = 0; face < triangleCounts.length(); ++face) {
+        const int group = faceShaders[face];
+        if (group < 0 || static_cast<unsigned int>(group) >= sets.length()) return false;
+        MIntArray faceVertices;
+        if (!mesh.getPolygonVertices(face, faceVertices)) return false;
+        for (int triangle = 0; triangle < triangleCounts[face]; ++triangle) {
+            if (triangleOffset + 3 > triangleVertices.length()) return false;
+            // The initializer converts PMX winding/coordinates to Maya space.
+            for (int corner = 2; corner >= 0; --corner) {
+                const int vertex = triangleVertices[triangleOffset + corner];
+                if (vertex < 0 || static_cast<unsigned int>(vertex) >= points.length()) return false;
+                MVector normal;
+                if (!mesh.getFaceVertexNormal(face, vertex, normal, MSpace::kObject)) return false;
+                float u = 0.0F, v = 0.0F;
+                for (unsigned int local = 0; local < faceVertices.length(); ++local) {
+                    if (faceVertices[local] == vertex) {
+                        mesh.getPolygonUV(face, local, u, v);
+                        break;
+                    }
+                }
+                const MPoint& point = points[vertex];
+                positions[group].insert(positions[group].end(),
+                    {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(-point.z)});
+                normals[group].insert(normals[group].end(),
+                    {static_cast<float>(normal.x), static_cast<float>(normal.y), static_cast<float>(-normal.z)});
+                uvs[group].insert(uvs[group].end(), {u, 1.0F - v});
+                indices[group].push_back(static_cast<uint32_t>(sources[group].size()));
+                sources[group].push_back(static_cast<uint32_t>(vertex));
+            }
+            triangleOffset += 3;
+        }
+    }
+    return setMaterialSplitGeometry(positions, normals, uvs, indices, inputs, 1.0, sources);
 }
 
 bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)

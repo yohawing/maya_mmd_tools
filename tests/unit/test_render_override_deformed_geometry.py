@@ -147,11 +147,13 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "static_cast<std::size_t>(points.length()) < expectedSourceVertexCount" in shape
 
     update_dg = override[override.index("void MmdRenderGeometryOverride::updateDG()") :]
-    assert "MmdRenderShape::aInputMesh" in update_dg
-    assert "inputPlug.asMDataHandle" in update_dg
-    assert "inputHandle.asMesh()" in update_dg
-    assert "shape_->updateEvaluatedMesh(meshObject);" in update_dg
-    assert "shape_->useStaticGeometry();" in update_dg
+    assert "shape_->updateEvaluatedData();" in update_dg
+    shared_update = shape[shape.index("void MmdRenderShape::updateEvaluatedData()") :]
+    assert "MmdRenderShape::aInputMesh" in shared_update
+    assert "inputPlug.asMDataHandle" in shared_update
+    assert "inputHandle.asMesh()" in shared_update
+    assert "updateEvaluatedMesh(meshObject);" in shared_update
+    assert "useStaticGeometry();" in shared_update
     assert "disableItems(list);" in override
     assert "if (!shape_->hasValidGeometry())" in override
 

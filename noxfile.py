@@ -1892,6 +1892,13 @@ def fast_import_authoring(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_override_separation(session: nox.Session) -> None:
+    """Verify standard VP2 and MMD Render editing in two real GUI panels."""
+    session.run(sys.executable, "tools/render_override/separation_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_override_authoring(session: nox.Session) -> None:
     """Verify native proxy authoring in an isolated Maya GUI."""
     session.run(

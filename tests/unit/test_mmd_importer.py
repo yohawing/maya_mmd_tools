@@ -437,7 +437,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
 
 
 class TestOrderedViewportAfterImport(unittest.TestCase):
-    def test_only_successful_vp2_import_selects_ordered(self):
+    def test_successful_import_preserves_panel_renderer_selection(self):
         for vp2 in (False, True):
             with self.subTest(vp2=vp2), patch(
                 "mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root"
@@ -452,11 +452,10 @@ class TestOrderedViewportAfterImport(unittest.TestCase):
                     "use_cpp_fast_load": True, "use_cpp_vp2_ownership": vp2,
                 })
                 self.assertEqual(result, "cpp_root")
+                setup.assert_not_called()
                 if vp2:
-                    setup.assert_called_once_with()
                     self.assertTrue(fast.call_args.kwargs["vp2_ownership"])
                 else:
-                    setup.assert_not_called()
                     self.assertNotIn("vp2_ownership", fast.call_args.kwargs)
 
     def test_failed_vp2_import_does_not_select_ordered_or_fallback(self):

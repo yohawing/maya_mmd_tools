@@ -24,6 +24,7 @@
 #include <maya/MItDag.h>
 #include <maya/MMatrix.h>
 #include <maya/MObjectHandle.h>
+#include <maya/MPlug.h>
 #include <maya/MSelectionList.h>
 #include <maya/MStateManager.h>
 #include <maya/MStatus.h>
@@ -86,6 +87,14 @@ bool isMmdShape(const MDagPath& path)
     MStatus status;
     MFnDependencyNode dependencyNode(path.node(), &status);
     return status && dependencyNode.typeName() == MString("mmdRenderShape");
+}
+
+bool sourceMeshPath(const MDagPath& proxy, MDagPath& source)
+{
+    MPlug input(proxy.node(), MmdRenderShape::aInputMesh);
+    const MPlug upstream = input.source();
+    return !upstream.isNull() && upstream.node().hasFn(MFn::kMesh) &&
+           MDagPath::getAPathTo(upstream.node(), source);
 }
 
 bool isolateContainsPath(const MSelectionList& members, const MDagPath& path)
@@ -187,12 +196,17 @@ bool buildPanelShapePaths(const MString& destination,
             error = "MItDag visibility lookup failed";
             return false;
         }
-        if (visible && !templated &&
-            (isolateState == 0 ||
-             isolateContainsPath(isolateMembers, path))) {
+        if (visible && !templated) {
+            const bool panelIncludesPath = isolateState == 0 ||
+                isolateContainsPath(isolateMembers, path);
             if (isMmdShape(path)) {
-                shapePaths.push_back(path);
-            } else if (!nonMmdSelection.add(path, MObject::kNullObj, true)) {
+                MDagPath source;
+                const bool hasSource = sourceMeshPath(path, source);
+                if ((!hasSource || (source.isVisible() && !source.isTemplated())) &&
+                    (panelIncludesPath || (hasSource && isolateContainsPath(isolateMembers, source)))) {
+                    shapePaths.push_back(path);
+                }
+            } else if (panelIncludesPath && !nonMmdSelection.add(path, MObject::kNullObj, true)) {
                 error = "could not build non-MMD scene selection";
                 return false;
             }
@@ -200,6 +214,20 @@ bool buildPanelShapePaths(const MString& destination,
         if (!iterator.next()) {
             error = "MItDag shape enumeration failed";
             return false;
+        }
+    }
+    // Remove sources only from this panel's shaded passes. Their native VP2
+    // selection/component UI is still drawn by the ordinary UI operations.
+    for (const MDagPath& proxy : shapePaths) {
+        MDagPath source;
+        if (sourceMeshPath(proxy, source)) {
+            for (unsigned int index = 0; index < nonMmdSelection.length(); ++index) {
+                MDagPath candidate;
+                if (nonMmdSelection.getDagPath(index, candidate) && candidate == source) {
+                    nonMmdSelection.remove(index);
+                    break;
+                }
+            }
         }
     }
     return true;
@@ -272,6 +300,7 @@ public:
         resetFrame();
     }
 
+
     void resetWitness()
     {
         drawCount_ = 0U;
@@ -305,6 +334,9 @@ public:
     MStatus executePass(const MHWRender::MDrawContext& drawContext,
                         bool opaquePhase)
     {
+        MString drawDestination;
+        drawContext.renderingDestination(drawDestination);
+        destination_ = drawDestination.asChar();
 #ifndef _WIN32
         return fail("MMD ordered render requires DirectX 11");
 #else
@@ -383,6 +415,8 @@ public:
                << "\",\"registered\":true,\"state\":\""
                << (lastError_.empty() ? "active" : "error")
                << "\",\"enabled\":true,\"drawCount\":" << drawCount_
+               << ",\"panel\":\"" << jsonEscape(destination_) << "\""
+               << ",\"shapeCount\":" << records_.size()
                << ",\"casterDrawCount\":" << casterDrawCount_
                << ",\"geometryUploads\":" << geometryUploadCount_
                << ",\"casterMaterialIndices\":[";
@@ -993,6 +1027,9 @@ private:
             MStatus status;
             MmdRenderShape* shape = record.handle.isValid() && record.handle.isAlive()
                 ? MmdRenderShape::fromMObject(record.handle.object(), &status) : nullptr;
+            if (shape && status) {
+                shape->updateEvaluatedData();
+            }
             if (!shape || !status || !shape->hasValidGeometry() || !record.path.isValid()) {
                 keyValid = false;
                 break;
@@ -1509,6 +1546,7 @@ private:
     MmdOrderedRenderOverride* owner_ = nullptr;
     std::vector<ShapeRecord> records_;
     std::string shaderPath_;
+    std::string destination_;
     unsigned int drawCount_ = 0U;
     unsigned int geometryUploadCount_ = 0U;
     std::vector<GeometryKey> cachedGeometryKey_;
