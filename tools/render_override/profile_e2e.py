@@ -185,15 +185,46 @@ def probe_steps(config):
             assert reference["deformedGeometry"]["positionNormalHash"] == report["deformedGeometry"]["positionNormalHash"]
         capture_view(cmds, out / "deformed.png", panel, 640, 480)
         cmds.setAttr(handle + ".translateX", 0)
+        material_plug = None
+        if config.get("materialEdits", False):
+            from mmd_tools.converters.material_morph_runtime import _collect_shaders_by_material_index
+
+            shaders = _collect_shaders_by_material_index(root)
+            assert shaders, "no indexed material to edit"
+            material_index = config.get("materialIndex", 0)
+            assert material_index in shaders, "requested material index is absent"
+            material_plug = shaders[material_index] + ".diffuse_color"
+            original_color = tuple(cmds.getAttr(material_plug)[0])
+            changed_color = tuple(0.1 if value > 0.5 else 0.9 for value in original_color)
+            report["materialEdit"] = {"materialIndex": material_index, "plug": material_plug,
+                                      "original": original_color, "changed": changed_color}
+            cmds.setAttr(material_plug, *changed_color, type="double3")
+            yield
+            edited = read_png_rgb(capture_view(cmds, out / "material.png", panel, 640, 480))
+            assert edited[:2] == baseline[:2]
+            changed_pixels = sum(max(abs(a - b) for a, b in zip(left, right)) > 8
+                                 for left, right in zip(baseline[2], edited[2]))
+            assert changed_pixels > 100, "chosen material has no visible color change"
+            report["materialEdit"]["changedPixels"] = changed_pixels
+            report["materialGeometry"] = geometry_summary(meshes)
+            assert report["materialGeometry"] == report["baselineGeometry"], "material edit changed geometry"
+            cmds.setAttr(material_plug, *original_color, type="double3")
+            yield
+            material_restored = read_png_rgb(capture_view(cmds, out / "material_restored.png", panel, 640, 480))
+            assert material_restored == baseline, "material restore changed pixels"
+            report["materialEdit"]["restoredPixelsEqual"] = True
         cmds.profiler(sampling=False)
         cmds.profiler(bufferSize=64)
         cmds.profiler(categoryName="MMD Render", categoryRecording=True)
         for repeat in range(config["repeats"]):
-            for scenario in ("static", "camera", "deform"):
+            for scenario in (("static", "camera", "deform", "material") if material_plug
+                             else ("static", "camera", "deform")):
                 # Alternate order to expose first-run and thermal bias.
                 for enabled in ((False, True) if repeat % 2 == 0 else (True, False)):
                     cmds.setAttr(camera + ".translateX", camera_x)
                     cmds.setAttr(handle + ".translateX", 0)
+                    if material_plug:
+                        cmds.setAttr(material_plug, *original_color, type="double3")
                     cmds.modelEditor(panel, edit=True,
                                      rendererOverrideName="mmdOrdered" if enabled else "")
                     yield
@@ -204,6 +235,9 @@ def probe_steps(config):
                             cmds.setAttr(camera + ".translateX", camera_x + offset)
                         elif scenario == "deform":
                             cmds.setAttr(handle + ".translateX", offset)
+                        elif scenario == "material":
+                            color = changed_color if frame % 2 == 0 else original_color
+                            cmds.setAttr(material_plug, *color, type="double3")
                         cmds.refresh(force=True)
 
                     for frame in range(config["warmup"]):
@@ -223,7 +257,8 @@ def probe_steps(config):
                     uploads = after["geometryUploads"] - before["geometryUploads"]
                     if enabled:
                         assert not after["error"] and after["drawCount"] > 0, after
-                        assert uploads == (config["frames"] if scenario == "deform" else 0), uploads
+                        if scenario != "material":
+                            assert uploads == (config["frames"] if scenario == "deform" else 0), uploads
                     assert [view.portWidth(), view.portHeight()] == report["viewportSize"]
                     label = f"{repeat}-{scenario}-{'on' if enabled else 'off'}"
                     cmds.profiler(output=str(out / (label + ".txt")))
@@ -243,6 +278,8 @@ def probe_steps(config):
                         "casterDrawCount": after["casterDrawCount"]})
         cmds.setAttr(camera + ".translateX", camera_x)
         cmds.setAttr(handle + ".translateX", 0)
+        if material_plug:
+            cmds.setAttr(material_plug, *original_color, type="double3")
         cmds.modelEditor(panel, edit=True, rendererOverrideName="mmdOrdered")
         yield
         restored = read_png_rgb(capture_view(cmds, out / "restored.png", panel, 640, 480))
@@ -271,12 +308,18 @@ def main():
     parser.add_argument("--warmup", type=int, default=4)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--split-materials", action="store_true")
+    parser.add_argument("--material-edits", action="store_true",
+                        help="Also measure color-only edits to a visible material")
+    parser.add_argument("--material-index", type=int,
+                        help="PMX material index for --material-edits (default: 0; must affect captured pixels)")
     parser.add_argument("--inspect-normals", action="store_true",
                         help="Inspect restored mesh normals after viewport timing (read-only)")
     parser.add_argument("--deformation", choices=("partial", "all"), default="partial")
     parser.add_argument("--reference-report", type=Path,
                         help="Match an earlier same-version run's camera, size and geometry")
     args = parser.parse_args()
+    if args.material_index is not None and not args.material_edits:
+        parser.error("--material-index requires --material-edits")
     out = args.out_dir.resolve()
     if not out.is_relative_to(ROOT / "build") or min(args.frames, args.warmup, args.repeats) < 1:
         parser.error("use an output directory inside build and positive sample counts")
@@ -297,7 +340,8 @@ def main():
         "output": str(out), "frames": args.frames, "warmup": args.warmup,
         "repeats": args.repeats, "splitMaterials": args.split_materials,
         "deformation": args.deformation, "reference": reference,
-        "inspectNormals": args.inspect_normals}), encoding="utf-8")
+        "inspectNormals": args.inspect_normals, "materialEdits": args.material_edits,
+        "materialIndex": args.material_index if args.material_index is not None else 0}), encoding="utf-8")
     report = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=out, port=args.port, timeout=360,
         log_path=out / "probe.log", report_path=out / "report.json",
