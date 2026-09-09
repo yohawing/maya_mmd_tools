@@ -751,10 +751,16 @@ private:
     bool collectFrame(std::vector<DrawPlan>& plans,
                       std::vector<NativeVertex>& vertices,
                       std::vector<unsigned int>& indices,
-                      MSelectionList& visibleSelection)
+                      MSelectionList& visibleSelection,
+                      std::size_t vertexCountHint,
+                      std::size_t indexCountHint)
     {
         MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
                                 "MMD.CollectFrame");
+        // Reserve the current visible streams once, avoiding repeated copies
+        // of earlier shapes as the aggregate CPU buffers grow.
+        vertices.reserve(vertexCountHint);
+        indices.reserve(indexCountHint);
         for (std::size_t shapeIndex = 0U; shapeIndex < records_.size();
              ++shapeIndex) {
             const ShapeRecord& record = records_[shapeIndex];
@@ -812,18 +818,22 @@ private:
                 fail("ordered vertex buffer is too large");
                 return false;
             }
-            for (std::size_t vertex = 0U; vertex < vertexCount; ++vertex) {
-                NativeVertex packet = {};
-                const std::size_t source = vertex * 3U;
-                packet.position[0] = geometry.positions[source];
-                packet.position[1] = geometry.positions[source + 1U];
-                packet.position[2] = geometry.positions[source + 2U];
-                packet.normal[0] = geometry.normals[source];
-                packet.normal[1] = geometry.normals[source + 1U];
-                packet.normal[2] = geometry.normals[source + 2U];
-                packet.texCoord0[0] = geometry.uvs[vertex * 2U];
-                packet.texCoord0[1] = geometry.uvs[vertex * 2U + 1U];
-                vertices.push_back(packet);
+            {
+                MProfilingScope packProfile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                            "MMD.PackVertices");
+                for (std::size_t vertex = 0U; vertex < vertexCount; ++vertex) {
+                    NativeVertex packet = {};
+                    const std::size_t source = vertex * 3U;
+                    packet.position[0] = geometry.positions[source];
+                    packet.position[1] = geometry.positions[source + 1U];
+                    packet.position[2] = geometry.positions[source + 2U];
+                    packet.normal[0] = geometry.normals[source];
+                    packet.normal[1] = geometry.normals[source + 1U];
+                    packet.normal[2] = geometry.normals[source + 2U];
+                    packet.texCoord0[0] = geometry.uvs[vertex * 2U];
+                    packet.texCoord0[1] = geometry.uvs[vertex * 2U + 1U];
+                    vertices.push_back(packet);
+                }
             }
 
             for (const MmdRenderShape::QueueGeometry& queueGeometry :
@@ -851,16 +861,20 @@ private:
                 }
                 plan.firstIndex = static_cast<UINT>(indices.size());
                 plan.indexCount = static_cast<UINT>(queueGeometry.indices.size());
-                for (const uint32_t localIndex : queueGeometry.indices) {
-                    const std::size_t sourceIndex =
-                        static_cast<std::size_t>(queueGeometry.vertexOffset) +
-                        static_cast<std::size_t>(localIndex);
-                    if (sourceIndex >= vertexCount) {
-                        fail("ordered queue index exceeds shape vertices");
-                        return false;
+                {
+                    MProfilingScope packProfile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                                "MMD.PackIndices");
+                    for (const uint32_t localIndex : queueGeometry.indices) {
+                        const std::size_t sourceIndex =
+                            static_cast<std::size_t>(queueGeometry.vertexOffset) +
+                            static_cast<std::size_t>(localIndex);
+                        if (sourceIndex >= vertexCount) {
+                            fail("ordered queue index exceeds shape vertices");
+                            return false;
+                        }
+                        indices.push_back(vertexBase +
+                                         static_cast<unsigned int>(sourceIndex));
                     }
-                    indices.push_back(vertexBase +
-                                     static_cast<unsigned int>(sourceIndex));
                 }
                 const bool outline = queueGeometry.material.edgeDrawing &&
                                      queueGeometry.material.edgeSize > 0.0F &&
@@ -1060,6 +1074,8 @@ private:
         }
         std::vector<GeometryKey> key;
         bool keyValid = true;
+        std::size_t vertexCount = 0U;
+        std::size_t indexCount = 0U;
         for (const ShapeRecord& record : records_) {
             MStatus status;
             MmdRenderShape* shape = record.handle.isValid() && record.handle.isAlive()
@@ -1074,6 +1090,23 @@ private:
             const bool visible = record.path.isVisible() && !record.path.isTemplated();
             key.push_back({record.handle, shape->renderDataRevision(),
                            record.path.inclusiveMatrix(), visible});
+            const auto& geometry = shape->geometry();
+            if (visible && !geometry.queueGeometry.empty()) {
+                const std::size_t count = geometry.positions.size() / 3U;
+                if (count > std::numeric_limits<UINT>::max() / sizeof(NativeVertex) - vertexCount) {
+                    framePreparationFailed_ = true;
+                    return fail("ordered frame exceeds DX11 buffer size") == MS::kSuccess;
+                }
+                vertexCount += count;
+                for (const auto& entry : geometry.queueGeometry) {
+                    if (entry.indices.size() >
+                        std::numeric_limits<UINT>::max() / sizeof(unsigned int) - indexCount) {
+                        framePreparationFailed_ = true;
+                        return fail("ordered frame exceeds DX11 buffer size") == MS::kSuccess;
+                    }
+                    indexCount += entry.indices.size();
+                }
+            }
         }
         const bool reuseGeometry = keyValid && key == cachedGeometryKey_ &&
                                    vertexBuffer_ && indexBuffer_;
@@ -1084,7 +1117,8 @@ private:
                     return fail("ordered cached selection could not be built") == MS::kSuccess;
                 }
             }
-        } else if (!collectFrame(plans, vertices, indices, visibleSelection)) {
+        } else if (!collectFrame(plans, vertices, indices, visibleSelection,
+                                 vertexCount, indexCount)) {
             framePreparationFailed_ = true;
             return false;
         }
