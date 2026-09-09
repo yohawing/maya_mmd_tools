@@ -1049,17 +1049,32 @@ void MmdRenderShape::updateEvaluatedData()
     }
 
     MStatus meshStatus;
-    const MDataHandle inputHandle = [&] {
+    MDataHandle inputHandle = [&] {
         MProfilingScope inputProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
                                      "MMD.DemandInputMesh");
         return inputPlug.asMDataHandle(&meshStatus);
     }();
-    if (meshStatus && inputHandle.type() == MFnData::kMesh) {
-        const MObject meshObject = inputHandle.asMesh();
-        if (!meshObject.isNull()) {
-            updateEvaluatedMesh(meshObject);
-            return;
+    // MPlug owns the returned handle's storage; keep it alive through mesh
+    // consumption and release it on every exit, including failed evaluation.
+    struct InputHandleRelease {
+        const MPlug& plug;
+        MDataHandle& handle;
+        ~InputHandleRelease()
+        {
+            MProfilingScope releaseProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                           "MMD.ReleaseInputMesh");
+            plug.destructHandle(handle);
         }
+    } release{inputPlug, inputHandle};
+    const MObject meshObject = [&] {
+        MProfilingScope extractProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                       "MMD.ExtractInputMesh");
+        return meshStatus && inputHandle.type() == MFnData::kMesh
+            ? inputHandle.asMesh() : MObject::kNullObj;
+    }();
+    if (!meshObject.isNull()) {
+        updateEvaluatedMesh(meshObject);
+        return;
     }
 
     if (connected || !meshStatus) {
