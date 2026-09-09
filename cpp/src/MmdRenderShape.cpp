@@ -4,6 +4,7 @@
  */
 
 #include "MmdRenderShape.h"
+#include "MmdRenderProfiler.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MFnAttribute.h>
@@ -1016,6 +1017,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
 
 void MmdRenderShape::updateEvaluatedData()
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateEvaluatedData");
     if (geometry_.positions.empty()) {
         const MPlug upstream = MPlug(thisMObject(), aInputMesh).source();
         if (upstream.isNull() || !restoreGeometryFromSource(upstream.node())) {
@@ -1046,7 +1049,11 @@ void MmdRenderShape::updateEvaluatedData()
     }
 
     MStatus meshStatus;
-    const MDataHandle inputHandle = inputPlug.asMDataHandle(&meshStatus);
+    const MDataHandle inputHandle = [&] {
+        MProfilingScope inputProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                     "MMD.DemandInputMesh");
+        return inputPlug.asMDataHandle(&meshStatus);
+    }();
     if (meshStatus && inputHandle.type() == MFnData::kMesh) {
         const MObject meshObject = inputHandle.asMesh();
         if (!meshObject.isNull()) {
@@ -1135,6 +1142,8 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
 
 bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateEvaluatedMesh");
     ++geometryUpdateCount_;
     ++renderDataRevision_;
     auto reject = [this](const std::string& reason) {
@@ -1185,11 +1194,19 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     }
 
     MPointArray points;
-    if (!meshFn.getPoints(points, MSpace::kObject)) {
+    if (![&] {
+            MProfilingScope fetchProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                         "MMD.GetPoints");
+            return meshFn.getPoints(points, MSpace::kObject);
+        }()) {
         return reject("could not read object-space positions");
     }
     MFloatVectorArray normals;
-    if (!meshFn.getVertexNormals(true, normals, MSpace::kObject)) {
+    if (![&] {
+            MProfilingScope fetchProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                         "MMD.GetVertexNormals");
+            return meshFn.getVertexNormals(true, normals, MSpace::kObject);
+        }()) {
         return reject("could not read object-space vertex normals");
     }
     if (static_cast<std::size_t>(points.length()) < expectedSourceVertexCount ||
@@ -1202,6 +1219,8 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     // usable.  Invalid slots use the immutable import-time stream instead of
     // triggering another normal calculation during every DG update.  The
     // repair list stays empty on the normal path.
+    MProfilingScope repackProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                  "MMD.ExpandEvaluatedStreams");
     std::vector<float> nextPositions;
     std::vector<float> nextNormals;
     nextPositions.reserve(renderVertexCount * 3U);
@@ -1371,6 +1390,8 @@ bool MmdRenderShape::hasValidGeometry() const
 
 void MmdRenderShape::updateEvaluatedMaterialAlpha()
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateMaterialAlpha");
     MPlug alphaPlug(thisMObject(), aMaterialAlpha);
     if (alphaPlug.isNull()) {
         return;
@@ -1419,6 +1440,8 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
 
 void MmdRenderShape::updateEvaluatedMaterialValues()
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateMaterialValues");
     MPlug valuesPlug(thisMObject(), aMaterialValues);
     if (valuesPlug.isNull()) {
         return;
@@ -1530,6 +1553,8 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
 
 void MmdRenderShape::updateEvaluatedMaterialSettings()
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateMaterialSettings");
     MPlug settings(thisMObject(), aMaterialSettings);
     MStatus status;
     const unsigned int count = settings.evaluateNumElements(&status);

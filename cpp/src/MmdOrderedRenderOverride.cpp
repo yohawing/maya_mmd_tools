@@ -12,6 +12,7 @@
 #include "MmdNativeMaterial.h"
 #include "MmdRenderOverride.h"
 #include "MmdRenderShape.h"
+#include "MmdRenderProfiler.h"
 
 #include <maya/MDagPath.h>
 #include <maya/M3dView.h>
@@ -358,6 +359,8 @@ public:
     MStatus executePass(const MHWRender::MDrawContext& drawContext,
                         bool opaquePhase)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.Execute");
         MString drawDestination;
         drawContext.renderingDestination(drawDestination);
         destination_ = drawDestination.asChar();
@@ -388,6 +391,8 @@ public:
             if (planOpaque != opaquePhase) {
                 continue;
             }
+            MProfilingScope drawProfile(mmdRenderProfileCategory(), MProfiler::kColorB_L1,
+                                        plan.outline ? "MMD.DrawOutline" : "MMD.DrawBody");
             MShaderInstance* shader =
                 shaderFor(plan.material, plan.order.pass, plan.outline);
             if (!shader || shader->bind(drawContext) != MStatus::kSuccess) {
@@ -748,6 +753,8 @@ private:
                       std::vector<unsigned int>& indices,
                       MSelectionList& visibleSelection)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.CollectFrame");
         for (std::size_t shapeIndex = 0U; shapeIndex < records_.size();
              ++shapeIndex) {
             const ShapeRecord& record = records_[shapeIndex];
@@ -941,6 +948,8 @@ private:
     bool preflightCasters(const std::vector<DrawPlan>& plans,
                           const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.PreflightCasters");
         for (const DrawPlan& plan : plans) {
             if (!isCasterPlan(plan)) {
                 continue;
@@ -971,6 +980,8 @@ private:
 
     bool renderCasters(const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.RenderCasters");
         RawTargetScope targetScope(context_);
         if (!targetScope.captured() ||
             !targetScope.bind(frameResources_.colorTarget,
@@ -1030,6 +1041,8 @@ private:
 
     bool prepareFrame(const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.PrepareFrame");
         if (framePrepared_) {
             return true;
         }
@@ -1200,6 +1213,8 @@ private:
     bool uploadFrame(const std::vector<NativeVertex>& vertices,
                      const std::vector<unsigned int>& indices)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.UploadFrame");
         if (vertices.size() > std::numeric_limits<UINT>::max() / sizeof(NativeVertex) ||
             indices.size() > std::numeric_limits<UINT>::max() / sizeof(unsigned int)) {
             return fail("ordered frame exceeds DX11 buffer size") == MStatus::kSuccess;
@@ -1408,6 +1423,8 @@ private:
     bool preflight(const std::vector<DrawPlan>& plans,
                    const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.Preflight");
         for (const DrawPlan& plan : plans) {
             MShaderInstance* shader =
                 shaderFor(plan.material, plan.order.pass, plan.outline);
