@@ -1590,6 +1590,14 @@ void MmdRenderShape::updateEvaluatedMaterialSettings()
         if (!status) return;
         const unsigned int materialIndex = element.logicalIndex(&status);
         if (!status) return;
+        // Split shapes retain model-wide bindings; evaluate only settings
+        // that can be applied to this shape's draw queue.
+        if (std::none_of(nextInputs.begin(), nextInputs.end(),
+                         [materialIndex](const mmd::MmdRenderQueueInput& input) {
+                             return input.materialIndex == materialIndex;
+                         })) {
+            continue;
+        }
         const int flags = element.child(0U).asInt(&status);
         if (!status) return;
         const int sphereMode = element.child(1U).asInt(&status);
