@@ -58,6 +58,39 @@ def profile_events(cmds):
             for name, values in events.items()}
 
 
+def geometry_summary(meshes):
+    """Fingerprint face corners so duplicated split-boundary vertices compare fairly."""
+    from maya.api import OpenMaya as om
+
+    corners = []
+    shaded_corners = []
+    vertices = 0
+    polygons = 0
+    for mesh in meshes:
+        selection = om.MSelectionList()
+        selection.add(mesh)
+        fn = om.MFnMesh(selection.getDagPath(0))
+        points = fn.getPoints(om.MSpace.kWorld)
+        normals = fn.getNormals(om.MSpace.kWorld)
+        _, normal_ids = fn.getNormalIds()
+        _, indices = fn.getVertices()
+        assert len(indices) == len(normal_ids)
+        vertices += len(points)
+        polygons += fn.numPolygons
+        for index, normal_id in zip(indices, normal_ids):
+            normal = normals[normal_id]
+            point = points[index]
+            corner = tuple(round(value, 6) for value in (point.x, point.y, point.z))
+            corners.append(corner)
+            shaded_corners.append(corner + tuple(round(value, 6) for value in normal))
+
+    def digest(values):
+        return hashlib.sha256(json.dumps(sorted(values)).encode("ascii")).hexdigest()
+
+    return {"vertices": vertices, "polygons": polygons, "faceCorners": len(corners),
+            "positionHash": digest(corners), "positionNormalHash": digest(shaded_corners)}
+
+
 def probe_steps(config):
     from maya import cmds
     from maya.api import OpenMayaUI as omui
@@ -79,7 +112,7 @@ def probe_steps(config):
         root = import_mmd_file(config["model"], options={
             "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
             "import_morphs": False, "import_physics": False,
-            "separate_meshes_by_material": False,
+            "separate_meshes_by_material": config.get("splitMaterials", False),
         })
         assert root
         shapes = cmds.listRelatives(root, ad=True, type="mmdRenderShape", fullPath=True) or []
@@ -87,10 +120,19 @@ def probe_steps(config):
         meshes = cmds.listRelatives(root, ad=True, type="mesh", fullPath=True) or []
         meshes = [mesh for mesh in meshes if not cmds.getAttr(mesh + ".intermediateObject")]
         assert meshes
-        # Limit the DG perturbation to one ordinary mesh, keeping the rest static.
-        mesh = max(meshes, key=lambda item: cmds.polyEvaluate(item, vertex=True))
-        count = cmds.polyEvaluate(mesh, vertex=True)
-        _, handle = cmds.cluster(mesh + f".vtx[0:{min(count, 1000) - 1}]", relative=True)
+        report["baselineGeometry"] = geometry_summary(meshes)
+        if config.get("deformation", "partial") == "all":
+            # One cluster translates all vertices in both import modes. This
+            # isolates mesh partitioning; it is deliberately not a skin/VMD test.
+            components = [mesh + ".vtx[*]" for mesh in meshes]
+            deformed_meshes = meshes
+            count = report["baselineGeometry"]["vertices"]
+        else:
+            mesh = max(meshes, key=lambda item: cmds.polyEvaluate(item, vertex=True))
+            count = min(cmds.polyEvaluate(mesh, vertex=True), 1000)
+            components = [mesh + f".vtx[0:{count - 1}]"]
+            deformed_meshes = [mesh]
+        _, handle = cmds.cluster(components, relative=True)
         extent = cmds.exactWorldBoundingBox(root)
         amplitude = max(extent[4] - extent[1], 0.01) * 0.01
         for old_panel in cmds.getPanel(type="modelPanel"):
@@ -106,22 +148,43 @@ def probe_steps(config):
                          rendererOverrideName="mmdOrdered")
         cmds.select(root)
         cmds.viewFit(camera, fitFactor=0.9, animate=False)
+        reference = config.get("reference")
+        if reference:
+            assert reference["pluginSha256"] == report["pluginSha256"]
+            assert reference["modelSha256"] == report["modelSha256"]
+            assert reference["mayaVersion"] == report["mayaVersion"]
+            assert reference["baselineGeometry"]["positionHash"] == report["baselineGeometry"]["positionHash"]
+            assert reference["baselineGeometry"]["positionNormalHash"] == report["baselineGeometry"]["positionNormalHash"]
+            cmds.xform(camera, matrix=reference["cameraMatrix"], worldSpace=True)
+            amplitude = reference["amplitude"]
         cmds.select(clear=True)
         cmds.setAttr("hardwareRenderingGlobals.multiSampleEnable", False)
         report["evaluationMode"] = cmds.evaluationManager(query=True, mode=True)
         report["meshCount"] = len(meshes)
         report["renderShapeCount"] = len(shapes)
-        report["deformedMesh"] = mesh
-        report["deformedSourceVertices"] = min(count, 1000)
+        report["deformedMeshes"] = deformed_meshes
+        report["deformedSourceVertices"] = count
+        report["geometryFilterCount"] = len(cmds.ls(type="geometryFilter") or [])
+        report["skinClusterCount"] = len(cmds.ls(type="skinCluster") or [])
         report["amplitude"] = amplitude
         yield
         cmds.refresh(force=True)
         view = omui.M3dView.getM3dViewFromModelPanel(panel)
         report["viewportSize"] = [view.portWidth(), view.portHeight()]
+        if reference:
+            assert reference["viewportSize"] == report["viewportSize"]
         assert len(cmds.getPanel(type="modelPanel")) == 1
         report["cameraMatrix"] = cmds.xform(camera, query=True, matrix=True, worldSpace=True)
         camera_x = cmds.getAttr(camera + ".translateX")
         baseline = read_png_rgb(capture_view(cmds, out / "baseline.png", panel, 640, 480))
+        cmds.setAttr(handle + ".translateX", amplitude)
+        cmds.refresh(force=True)
+        report["deformedGeometry"] = geometry_summary(meshes)
+        if reference:
+            assert reference["deformedGeometry"]["positionHash"] == report["deformedGeometry"]["positionHash"]
+            assert reference["deformedGeometry"]["positionNormalHash"] == report["deformedGeometry"]["positionNormalHash"]
+        capture_view(cmds, out / "deformed.png", panel, 640, 480)
+        cmds.setAttr(handle + ".translateX", 0)
         cmds.profiler(sampling=False)
         cmds.profiler(bufferSize=64)
         cmds.profiler(categoryName="MMD Render", categoryRecording=True)
@@ -170,10 +233,14 @@ def probe_steps(config):
                         # each per refresh. Reject skipped/truncated recordings.
                         assert events.get("MMD.Execute", {}).get("count") == 2 * config["frames"], events
                         assert events.get("Vp2ExecuteRenderOverride", {}).get("count") == config["frames"], events
+                    else:
+                        assert events.get("Vp2SceneRender", {}).get("count") == config["frames"], events
+                        assert not any(name.startswith("MMD.") for name in events), events
                     report["cases"].append({"repeat": repeat, "scenario": scenario,
                         "enabled": enabled, "frameMs": durations,
                         "medianMs": statistics.median(durations), "events": events,
-                        "geometryUploads": uploads})
+                        "geometryUploads": uploads, "drawCount": after["drawCount"],
+                        "casterDrawCount": after["casterDrawCount"]})
         cmds.setAttr(camera + ".translateX", camera_x)
         cmds.setAttr(handle + ".translateX", 0)
         cmds.modelEditor(panel, edit=True, rendererOverrideName="mmdOrdered")
@@ -199,6 +266,10 @@ def main():
     parser.add_argument("--frames", type=int, default=12)
     parser.add_argument("--warmup", type=int, default=4)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--split-materials", action="store_true")
+    parser.add_argument("--deformation", choices=("partial", "all"), default="partial")
+    parser.add_argument("--reference-report", type=Path,
+                        help="Match an earlier same-version run's camera, size and geometry")
     args = parser.parse_args()
     out = args.out_dir.resolve()
     if not out.is_relative_to(ROOT / "build") or min(args.frames, args.warmup, args.repeats) < 1:
@@ -206,9 +277,20 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     plugin = ROOT / f"plug-ins/{args.maya}/Release/mmd_tools_cpp.mll"
     config = out / "config.json"
+    reference = None
+    if args.reference_report:
+        if args.deformation != "all":
+            parser.error("--reference-report requires --deformation all; partial vertex IDs differ after splitting")
+        reference = json.loads(args.reference_report.read_text(encoding="utf-8"))
+        if reference.get("status") != "pass" or reference["conditions"].get("deformation") != args.deformation:
+            parser.error("reference must be a successful run with the same deformation")
+        reference = {key: reference[key] for key in (
+            "pluginSha256", "modelSha256", "mayaVersion", "baselineGeometry",
+            "deformedGeometry", "cameraMatrix", "viewportSize", "amplitude")}
     config.write_text(json.dumps({"model": str(args.model.resolve()), "plugin": str(plugin),
         "output": str(out), "frames": args.frames, "warmup": args.warmup,
-        "repeats": args.repeats}), encoding="utf-8")
+        "repeats": args.repeats, "splitMaterials": args.split_materials,
+        "deformation": args.deformation, "reference": reference}), encoding="utf-8")
     report = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=out, port=args.port, timeout=360,
         log_path=out / "probe.log", report_path=out / "report.json",
