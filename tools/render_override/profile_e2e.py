@@ -248,6 +248,10 @@ def probe_steps(config):
         restored = read_png_rgb(capture_view(cmds, out / "restored.png", panel, 640, 480))
         assert restored == baseline, "camera/deformation restore changed pixels"
         report["restoredPixelsEqual"] = True
+        if config.get("inspectNormals", False):
+            from tools.render_override.normal_analysis import inspect_normals
+
+            report["normalAnalysis"] = inspect_normals(meshes)
         report["status"] = "pass"
     except Exception:
         report["error"] = traceback.format_exc()
@@ -267,6 +271,8 @@ def main():
     parser.add_argument("--warmup", type=int, default=4)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--split-materials", action="store_true")
+    parser.add_argument("--inspect-normals", action="store_true",
+                        help="Inspect restored mesh normals after viewport timing (read-only)")
     parser.add_argument("--deformation", choices=("partial", "all"), default="partial")
     parser.add_argument("--reference-report", type=Path,
                         help="Match an earlier same-version run's camera, size and geometry")
@@ -290,7 +296,8 @@ def main():
     config.write_text(json.dumps({"model": str(args.model.resolve()), "plugin": str(plugin),
         "output": str(out), "frames": args.frames, "warmup": args.warmup,
         "repeats": args.repeats, "splitMaterials": args.split_materials,
-        "deformation": args.deformation, "reference": reference}), encoding="utf-8")
+        "deformation": args.deformation, "reference": reference,
+        "inspectNormals": args.inspect_normals}), encoding="utf-8")
     report = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=out, port=args.port, timeout=360,
         log_path=out / "probe.log", report_path=out / "report.json",
