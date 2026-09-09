@@ -564,12 +564,17 @@ private:
     struct GeometryKey {
         MObjectHandle handle;
         std::uint64_t revision;
+        std::uint64_t bufferRevision;
         MMatrix world;
         bool visible;
+        bool sameBuffers(const GeometryKey& other) const
+        {
+            return handle == other.handle && bufferRevision == other.bufferRevision &&
+                   world == other.world && visible == other.visible;
+        }
         bool operator==(const GeometryKey& other) const
         {
-            return handle == other.handle && revision == other.revision &&
-                   world == other.world && visible == other.visible;
+            return revision == other.revision && sameBuffers(other);
         }
     };
 
@@ -753,14 +758,19 @@ private:
                       std::vector<unsigned int>& indices,
                       MSelectionList& visibleSelection,
                       std::size_t vertexCountHint,
-                      std::size_t indexCountHint)
+                      std::size_t indexCountHint,
+                      bool rebuildBuffers)
     {
         MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
                                 "MMD.CollectFrame");
         // Reserve the current visible streams once, avoiding repeated copies
         // of earlier shapes as the aggregate CPU buffers grow.
-        vertices.reserve(vertexCountHint);
-        indices.reserve(indexCountHint);
+        if (rebuildBuffers) {
+            vertices.reserve(vertexCountHint);
+            indices.reserve(indexCountHint);
+        }
+        std::size_t packedVertexCount = 0U;
+        std::size_t packedIndexCount = 0U;
         for (std::size_t shapeIndex = 0U; shapeIndex < records_.size();
              ++shapeIndex) {
             const ShapeRecord& record = records_[shapeIndex];
@@ -812,13 +822,13 @@ private:
                 continue;
             }
             const unsigned int vertexBase =
-                static_cast<unsigned int>(vertices.size());
-            if (vertices.size() > std::numeric_limits<unsigned int>::max() -
+                static_cast<unsigned int>(packedVertexCount);
+            if (packedVertexCount > std::numeric_limits<unsigned int>::max() -
                                       vertexCount) {
                 fail("ordered vertex buffer is too large");
                 return false;
             }
-            {
+            if (rebuildBuffers) {
                 MProfilingScope packProfile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
                                             "MMD.PackVertices");
                 for (std::size_t vertex = 0U; vertex < vertexCount; ++vertex) {
@@ -835,6 +845,7 @@ private:
                     vertices.push_back(packet);
                 }
             }
+            packedVertexCount += vertexCount;
 
             for (const MmdRenderShape::QueueGeometry& queueGeometry :
                  geometry.queueGeometry) {
@@ -844,7 +855,7 @@ private:
                     fail("ordered queue entry has no valid indices");
                     return false;
                 }
-                if (indices.size() >
+                if (packedIndexCount >
                     std::numeric_limits<UINT>::max() -
                         queueGeometry.indices.size()) {
                     fail("ordered index buffer is too large");
@@ -859,9 +870,10 @@ private:
                     fail("ordered shape world matrix is unavailable");
                     return false;
                 }
-                plan.firstIndex = static_cast<UINT>(indices.size());
+                plan.firstIndex = static_cast<UINT>(packedIndexCount);
                 plan.indexCount = static_cast<UINT>(queueGeometry.indices.size());
-                {
+                // Unchanged streams retain the indices validated at upload.
+                if (rebuildBuffers) {
                     MProfilingScope packProfile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
                                                 "MMD.PackIndices");
                     for (const uint32_t localIndex : queueGeometry.indices) {
@@ -876,6 +888,7 @@ private:
                                          static_cast<unsigned int>(sourceIndex));
                     }
                 }
+                packedIndexCount += queueGeometry.indices.size();
                 const bool outline = queueGeometry.material.edgeDrawing &&
                                      queueGeometry.material.edgeSize > 0.0F &&
                                      queueGeometry.material.edgeAlpha > 0.0F;
@@ -1088,7 +1101,7 @@ private:
                 break;
             }
             const bool visible = record.path.isVisible() && !record.path.isTemplated();
-            key.push_back({record.handle, shape->renderDataRevision(),
+            key.push_back({record.handle, shape->renderDataRevision(), shape->geometryBufferRevision(),
                            record.path.inclusiveMatrix(), visible});
             const auto& geometry = shape->geometry();
             if (visible && !geometry.queueGeometry.empty()) {
@@ -1108,9 +1121,14 @@ private:
                 }
             }
         }
-        const bool reuseGeometry = keyValid && key == cachedGeometryKey_ &&
-                                   vertexBuffer_ && indexBuffer_;
-        if (reuseGeometry) {
+        const bool reuseBuffers = keyValid && vertexBuffer_ && indexBuffer_ &&
+            key.size() == cachedGeometryKey_.size() &&
+            std::equal(key.begin(), key.end(), cachedGeometryKey_.begin(),
+                       [](const GeometryKey& left, const GeometryKey& right) {
+                           return left.sameBuffers(right);
+                       });
+        const bool reusePlans = reuseBuffers && key == cachedGeometryKey_;
+        if (reusePlans) {
             plans = cachedGeometryPlans_;
             for (std::size_t i = 0; i < key.size(); ++i) {
                 if (key[i].visible && !visibleSelection.add(records_[i].path)) {
@@ -1118,7 +1136,7 @@ private:
                 }
             }
         } else if (!collectFrame(plans, vertices, indices, visibleSelection,
-                                 vertexCount, indexCount)) {
+                                 vertexCount, indexCount, !reuseBuffers)) {
             framePreparationFailed_ = true;
             return false;
         }
@@ -1127,7 +1145,7 @@ private:
             framePrepared_ = true;
             return true;
         }
-        if (!reuseGeometry && !uploadFrame(vertices, indices)) {
+        if (!reuseBuffers && !uploadFrame(vertices, indices)) {
             framePreparationFailed_ = true;
             return false;
         }

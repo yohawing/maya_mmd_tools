@@ -1000,6 +1000,7 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     std::vector<float> nextStaticNormals = next.normals;
     geometry_ = std::move(next);
     ++renderDataRevision_;
+    ++geometryBufferRevision_;
     meshInputDirty_ = true;
     staticPositions_ = std::move(nextStaticPositions);
     staticNormals_ = std::move(nextStaticNormals);
@@ -1161,6 +1162,7 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
                             "MMD.UpdateEvaluatedMesh");
     ++geometryUpdateCount_;
     ++renderDataRevision_;
+    ++geometryBufferRevision_;
     auto reject = [this](const std::string& reason) {
         const bool reasonChanged = recordRenderFallbackReason(reason);
         if (reasonChanged) {
@@ -1381,6 +1383,7 @@ void MmdRenderShape::useStaticGeometry()
 {
     if (!geometryValid_ || evaluatedGeometryActive_) {
         ++renderDataRevision_;
+        ++geometryBufferRevision_;
         // Build both replacements before swapping either stream so a failed
         // allocation cannot expose a half-restored geometry state.
         std::vector<float> restoredPositions = staticPositions_;
@@ -1722,6 +1725,7 @@ bool MmdRenderShape::resyncMaterialQueue(
         return true;
     }
 
+    ++geometryBufferRevision_;
     std::vector<QueueGeometry> reordered;
     reordered.reserve(nextQueue.size());
     for (const mmd::MmdRenderQueueEntry& entry : nextQueue) {
@@ -1872,6 +1876,7 @@ bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
     geometry_.renderQueue = std::move(nextQueue);
     geometry_.queueGeometry = std::move(reordered);
     ++renderDataRevision_;
+    ++geometryBufferRevision_;
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;

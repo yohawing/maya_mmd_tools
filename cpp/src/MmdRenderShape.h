@@ -119,6 +119,7 @@ public:
         return dirty;
     }
     std::uint64_t renderDataRevision() const { return renderDataRevision_; }
+    std::uint64_t geometryBufferRevision() const { return geometryBufferRevision_; }
 
     /** Mark the static geometry usable after an absent input mesh. */
     void useStaticGeometry();
@@ -282,6 +283,8 @@ private:
     bool geometryValid_ = true;
     bool meshInputDirty_ = true;
     std::uint64_t renderDataRevision_ = 1U;
+    // Changes when packed streams or queue index order change, not for color alone.
+    std::uint64_t geometryBufferRevision_ = 1U;
     std::uint64_t geometryUpdateCount_ = 0U;
     std::uint64_t bufferUploadCount_ = 0U;
     bool evaluatedGeometryActive_ = false;
