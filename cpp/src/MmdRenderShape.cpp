@@ -1469,6 +1469,15 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
             continue;
         }
 
+        // Split shapes can retain bindings for every material in the model.
+        // Only read values that can be applied to this shape's draw queue.
+        if (std::none_of(geometry_.queueInputs.begin(), geometry_.queueInputs.end(),
+                         [materialIndex](const mmd::MmdRenderQueueInput& input) {
+                             return input.materialIndex == materialIndex;
+                         })) {
+            continue;
+        }
+
         mmd::MmdRenderQueueInput materialValues;
         if (!readMaterialValuesRecord(element, materialValues)) {
             MGlobal::displayError(
