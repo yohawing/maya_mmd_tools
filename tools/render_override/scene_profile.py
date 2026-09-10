@@ -47,8 +47,9 @@ def probe_steps(config):
     from maya.api import OpenMayaUI as omui
 
     out = Path(config["output"])
+    profiling = config.get("profile", True)
     report = {"status": "fail", "conditions": config, "cases": [],
-              "scope": __doc__, "gpuTime": "not_run"}
+              "scope": __doc__, "gpuTime": "not_run", "profilerSampling": profiling}
     try:
         plugin = require_requested_plugin(cmds, config["plugin"], print)
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
@@ -60,6 +61,9 @@ def probe_steps(config):
         report["device"] = cmds.ogs(deviceInformation=True)
         cmds.evaluationManager(mode=config.get("evaluation", "off"))
         report["evaluation"] = cmds.evaluationManager(query=True, mode=True)
+        if config.get("disableCache", False):
+            cmds.evaluator(name="cache", enable=False)
+        report["cacheEvaluatorEnabled"] = cmds.evaluator(name="cache", query=True, enable=True)
         report["counts"] = {kind: len(cmds.ls(type=kind) or []) for kind in
                             ("mesh", "mmdRenderShape", "skinCluster", "joint", "animCurve")}
         assert report["counts"]["mmdRenderShape"] > 0, report["counts"]
@@ -103,7 +107,7 @@ def probe_steps(config):
                     for frame in range(4):
                         step(frame)
                     cmds.profiler(reset=True)
-                    cmds.profiler(sampling=True)
+                    cmds.profiler(sampling=profiling)
                     durations = []
                     try:
                         for frame in range(config["frames"]):
@@ -112,18 +116,19 @@ def probe_steps(config):
                             durations.append((time.perf_counter() - start) * 1000)
                     finally:
                         cmds.profiler(sampling=False)
-                    events = profile_events(cmds)
+                    events = profile_events(cmds) if profiling else None
                     witness = json.loads(cmds.mmdOrderedRenderWitness()) if enabled else None
                     if enabled:
                         assert not witness["error"] and witness["drawCount"] > 0, witness
-                    name = "Vp2ExecuteRenderOverride" if enabled else "Vp2SceneRender"
-                    assert events.get(name, {}).get("count") == config["frames"], events
+                    if profiling:
+                        name = "Vp2ExecuteRenderOverride" if enabled else "Vp2SceneRender"
+                        assert events.get(name, {}).get("count") == config["frames"], events
+                        cmds.profiler(output=str(out / f"{repeat}-{scenario}-{enabled}.txt"))
                     assert [view.portWidth(), view.portHeight()] == report["viewportSize"]
-                    cmds.profiler(output=str(out / f"{repeat}-{scenario}-{enabled}.txt"))
                     report["cases"].append({"repeat": repeat, "scenario": scenario,
                         "enabled": enabled, "frameMs": durations,
                         "medianMs": statistics.median(durations), "events": events,
-                        "witness": witness})
+                        "witness": witness, "drawEventsVerified": profiling})
         report["status"] = "pass"
     except Exception:
         report["error"] = traceback.format_exc()
@@ -141,6 +146,10 @@ def main():
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--frames", type=int, default=12)
     parser.add_argument("--evaluation", choices=("off", "serial", "parallel"), default="off")
+    parser.add_argument("--timing-only", action="store_true",
+                        help="Measure wall time without Profiler overhead; CPU events are not collected")
+    parser.add_argument("--disable-cache", action="store_true",
+                        help="Disable the cache evaluator in the isolated Maya process")
     args = parser.parse_args()
     out = args.out_dir.resolve()
     if not out.is_relative_to(ROOT / "build") or args.frames < 1:
@@ -153,7 +162,8 @@ def main():
     config = out / "config.json"
     config.write_text(json.dumps({"scene": str(args.scene.resolve()), "plugin": str(plugin),
         "output": str(out), "start": args.start, "frames": args.frames,
-        "evaluation": args.evaluation}), encoding="utf-8")
+        "evaluation": args.evaluation, "profile": not args.timing_only,
+        "disableCache": args.disable_cache}), encoding="utf-8")
     report = run_maya_e2e(
         project_root=ROOT, version="2026", out_dir=out, port=7757, timeout=600,
         log_path=out / "probe.log", report_path=out / "report.json",
