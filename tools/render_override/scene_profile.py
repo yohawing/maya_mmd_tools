@@ -58,7 +58,7 @@ def probe_steps(config):
         report["sceneSha256"] = hashlib.sha256(Path(config["scene"]).read_bytes()).hexdigest()
         report["probeSha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         report["device"] = cmds.ogs(deviceInformation=True)
-        cmds.evaluationManager(mode="off")
+        cmds.evaluationManager(mode=config.get("evaluation", "off"))
         report["evaluation"] = cmds.evaluationManager(query=True, mode=True)
         report["counts"] = {kind: len(cmds.ls(type=kind) or []) for kind in
                             ("mesh", "mmdRenderShape", "skinCluster", "joint", "animCurve")}
@@ -140,6 +140,7 @@ def main():
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--start", type=int, default=0)
     parser.add_argument("--frames", type=int, default=12)
+    parser.add_argument("--evaluation", choices=("off", "serial", "parallel"), default="off")
     args = parser.parse_args()
     out = args.out_dir.resolve()
     if not out.is_relative_to(ROOT / "build") or args.frames < 1:
@@ -151,7 +152,8 @@ def main():
     plugin = args.plugin.resolve()
     config = out / "config.json"
     config.write_text(json.dumps({"scene": str(args.scene.resolve()), "plugin": str(plugin),
-        "output": str(out), "start": args.start, "frames": args.frames}), encoding="utf-8")
+        "output": str(out), "start": args.start, "frames": args.frames,
+        "evaluation": args.evaluation}), encoding="utf-8")
     report = run_maya_e2e(
         project_root=ROOT, version="2026", out_dir=out, port=7757, timeout=600,
         log_path=out / "probe.log", report_path=out / "report.json",
