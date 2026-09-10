@@ -1416,8 +1416,11 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
     }
 
     MStatus alphaCountStatus;
+    MIntArray materialIndices;
+    // Enumerate connected/authored elements without evaluating every material
+    // on every split shape. Missing elements must remain missing.
     const unsigned int alphaCount =
-        alphaPlug.evaluateNumElements(&alphaCountStatus);
+        alphaPlug.getExistingArrayAttributeIndices(materialIndices, &alphaCountStatus);
     if (!alphaCountStatus) {
         return;
     }
@@ -1425,15 +1428,18 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
     updates.reserve(alphaCount);
     for (unsigned int physicalIndex = 0U; physicalIndex < alphaCount;
          ++physicalIndex) {
-        MStatus elementStatus;
-        MPlug alphaElement = alphaPlug.elementByPhysicalIndex(
-            physicalIndex, &elementStatus);
-        if (!elementStatus || alphaElement.isNull()) {
+        const unsigned int materialIndex =
+            static_cast<unsigned int>(materialIndices[physicalIndex]);
+        if (std::none_of(geometry_.queueInputs.begin(), geometry_.queueInputs.end(),
+                         [materialIndex](const mmd::MmdRenderQueueInput& input) {
+                             return input.materialIndex == materialIndex;
+                         })) {
             continue;
         }
-        const unsigned int materialIndex =
-            alphaElement.logicalIndex(&elementStatus);
-        if (!elementStatus) {
+        MStatus elementStatus;
+        MPlug alphaElement = alphaPlug.elementByLogicalIndex(
+            materialIndex, &elementStatus);
+        if (!elementStatus || alphaElement.isNull()) {
             continue;
         }
         const float diffuseAlpha = alphaElement.asFloat(&elementStatus);
@@ -1466,8 +1472,9 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
     }
 
     MStatus valuesCountStatus;
+    MIntArray materialIndices;
     const unsigned int valuesCount =
-        valuesPlug.evaluateNumElements(&valuesCountStatus);
+        valuesPlug.getExistingArrayAttributeIndices(materialIndices, &valuesCountStatus);
     if (!valuesCountStatus) {
         return;
     }
@@ -1476,26 +1483,24 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
     updates.reserve(valuesCount);
     for (unsigned int physicalIndex = 0U; physicalIndex < valuesCount;
          ++physicalIndex) {
-        MStatus elementStatus;
-        const MPlug element = valuesPlug.elementByPhysicalIndex(
-            physicalIndex, &elementStatus);
-        if (!elementStatus || element.isNull()) {
-            continue;
-        }
-        const unsigned int materialIndex = element.logicalIndex(&elementStatus);
-        if (!elementStatus) {
-            continue;
-        }
+        const unsigned int materialIndex =
+            static_cast<unsigned int>(materialIndices[physicalIndex]);
 
         // Split shapes can retain bindings for every material in the model.
         // Only read values that can be applied to this shape's draw queue.
         if (std::none_of(geometry_.queueInputs.begin(), geometry_.queueInputs.end(),
                          [materialIndex](const mmd::MmdRenderQueueInput& input) {
                              return input.materialIndex == materialIndex;
-                         })) {
+        })) {
             continue;
         }
 
+        MStatus elementStatus;
+        const MPlug element = valuesPlug.elementByLogicalIndex(
+            materialIndex, &elementStatus);
+        if (!elementStatus || element.isNull()) {
+            continue;
+        }
         mmd::MmdRenderQueueInput materialValues;
         if (!readMaterialValuesRecord(element, materialValues)) {
             MGlobal::displayError(
@@ -1584,15 +1589,13 @@ void MmdRenderShape::updateEvaluatedMaterialSettings()
                             "MMD.UpdateMaterialSettings");
     MPlug settings(thisMObject(), aMaterialSettings);
     MStatus status;
-    const unsigned int count = settings.evaluateNumElements(&status);
+    MIntArray materialIndices;
+    const unsigned int count = settings.getExistingArrayAttributeIndices(materialIndices, &status);
     if (!status || count == 0U) return;
     auto nextInputs = geometry_.queueInputs;
     bool changed = false;
     for (unsigned int physical = 0; physical < count; ++physical) {
-        const MPlug element = settings.elementByPhysicalIndex(physical, &status);
-        if (!status) return;
-        const unsigned int materialIndex = element.logicalIndex(&status);
-        if (!status) return;
+        const unsigned int materialIndex = static_cast<unsigned int>(materialIndices[physical]);
         // Split shapes retain model-wide bindings; evaluate only settings
         // that can be applied to this shape's draw queue.
         if (std::none_of(nextInputs.begin(), nextInputs.end(),
@@ -1601,6 +1604,8 @@ void MmdRenderShape::updateEvaluatedMaterialSettings()
                          })) {
             continue;
         }
+        const MPlug element = settings.elementByLogicalIndex(materialIndex, &status);
+        if (!status) return;
         const int flags = element.child(0U).asInt(&status);
         if (!status) return;
         const int sphereMode = element.child(1U).asInt(&status);
