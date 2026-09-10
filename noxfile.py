@@ -1902,6 +1902,13 @@ def render_profile(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_scene_profile(session: nox.Session) -> None:
+    """Measure an existing scene in an isolated Maya 2026 GUI."""
+    session.run(sys.executable, "tools/render_override/scene_profile.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_vp2_feasibility(session: nox.Session) -> None:
     """Probe native VP2 scene-pass capabilities in an isolated Maya GUI."""
     session.run(sys.executable, "tools/render_override/vp2_feasibility.py",
