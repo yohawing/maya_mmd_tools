@@ -1,7 +1,8 @@
 """Profile a saved scene in an isolated Maya GUI without modifying its source.
 
 Static samples force refresh; timeline samples use currentTime's evaluation/draw.
-Neither is native playback FPS or a GPU timestamp measurement.
+Those samples are not native playback FPS or GPU timestamps. Optional native
+playback records successive viewport post-render callbacks separately.
 """
 
 import argparse
@@ -23,6 +24,66 @@ from tools.render_override.common import capture_view, require_requested_plugin 
 from tools.render_override.profile_e2e import profile_events  # noqa: E402
 
 MARKER = "MMD SCENE PROFILE FINISHED"
+
+
+def playback_steps(cmds, panel, config, report):
+    """Observe playback in a disposable process; its settings need no restoration."""
+    from maya import OpenMaya as om
+    from maya import OpenMayaUI as omui
+
+    report["timeUnit"] = cmds.currentUnit(query=True, time=True)
+    if report["timeUnit"] in ("sec", "min", "hour", "millisec"):
+        raise ValueError("native playback requires a frame-based scene time unit")
+    cmds.profiler(sampling=False)
+    cmds.modelEditor(panel, edit=True, rendererOverrideName="mmdOrdered")
+    cmds.setFocus(panel)
+    first = config["start"]
+    last = first + config["playbackFrames"] + 10
+    cmds.playbackOptions(minTime=first, maxTime=last, loop="once", by=1,
+                         playbackSpeed=0, maxPlaybackSpeed=0, view="active")
+    report["nativePlaybackSettings"] = {
+        key: cmds.playbackOptions(query=True, **{key: True})
+        for key in ("minTime", "maxTime", "loop", "by", "playbackSpeed", "maxPlaybackSpeed", "view")}
+    report["nativePlayback"] = []
+    for repeat in range(3):
+        cmds.currentTime(first)
+        yield
+        samples = []
+        case = {"repeat": repeat, "samples": samples, "status": "collecting"}
+        report["nativePlayback"].append(case)
+
+        def rendered(*unused):
+            samples.append([time.perf_counter(), cmds.currentTime(query=True)])
+
+        callback = omui.MUiMessage.add3dViewPostRenderMsgCallback(panel, rendered)
+        started = time.perf_counter()
+        try:
+            cmds.play(forward=True)
+            while cmds.play(query=True, state=True):
+                if time.perf_counter() - started > 60:
+                    raise RuntimeError("native playback did not finish within 60 seconds")
+                yield
+        finally:
+            try:
+                cmds.play(state=False)
+            finally:
+                om.MMessage.removeCallback(callback)
+        # Retain duplicate refreshes in the raw evidence, but measure only
+        # successive animation frames after ten warmup frames.
+        frames = []
+        for stamp, frame in samples:
+            if not frames or frame != frames[-1][1]:
+                frames.append([stamp, frame])
+        measured = [item for item in frames if first + 10 <= item[1] <= last]
+        intervals = [(b[0] - a[0]) * 1000 for a, b in zip(measured, measured[1:])]
+        case["intervalMs"] = intervals
+        assert [item[1] for item in measured] == list(range(first + 10, last + 1)), frames
+        witness = json.loads(cmds.mmdOrderedRenderWitness())
+        assert not witness["error"] and witness["drawCount"] > 0, witness
+        case.update({"status": "pass", "medianMs": statistics.median(intervals),
+            "meanMs": statistics.mean(intervals), "maxMs": max(intervals),
+            "witness": witness, "profilerSampling": False,
+            "cacheEvaluatorEnabled": cmds.evaluator(name="cache", query=True, enable=True)})
 
 
 def run_probe(config_path):
@@ -129,6 +190,8 @@ def probe_steps(config):
                         "enabled": enabled, "frameMs": durations,
                         "medianMs": statistics.median(durations), "events": events,
                         "witness": witness, "drawEventsVerified": profiling})
+        if config.get("playbackFrames", 0):
+            yield from playback_steps(cmds, panel, config, report)
         report["status"] = "pass"
     except Exception:
         report["error"] = traceback.format_exc()
@@ -150,10 +213,14 @@ def main():
                         help="Measure wall time without Profiler overhead; CPU events are not collected")
     parser.add_argument("--disable-cache", action="store_true",
                         help="Disable the cache evaluator in the isolated Maya process")
+    parser.add_argument("--playback-frames", type=int, default=0,
+                        help="Also measure this many native playback intervals after ten warmup frames")
     args = parser.parse_args()
     out = args.out_dir.resolve()
     if not out.is_relative_to(ROOT / "build") or args.frames < 1:
         parser.error("use an output directory inside build and positive frames")
+    if args.playback_frames < 0:
+        parser.error("playback frames must be nonnegative")
     for path in (args.scene, args.plugin):
         if not path.is_file():
             parser.error(f"missing input: {path}")
@@ -163,7 +230,7 @@ def main():
     config.write_text(json.dumps({"scene": str(args.scene.resolve()), "plugin": str(plugin),
         "output": str(out), "start": args.start, "frames": args.frames,
         "evaluation": args.evaluation, "profile": not args.timing_only,
-        "disableCache": args.disable_cache}), encoding="utf-8")
+        "disableCache": args.disable_cache, "playbackFrames": args.playback_frames}), encoding="utf-8")
     report = run_maya_e2e(
         project_root=ROOT, version="2026", out_dir=out, port=7757, timeout=600,
         log_path=out / "probe.log", report_path=out / "report.json",
