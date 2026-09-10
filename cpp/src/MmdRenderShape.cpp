@@ -1105,6 +1105,9 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
 
     std::vector<std::vector<float>> positions(sets.length()), normals(sets.length()), uvs(sets.length());
     std::vector<std::vector<uint32_t>> indices(sets.length()), sources(sets.length());
+    // Share only identical corners of the same source vertex and material.
+    // UV seams and authored face normals must remain distinct after reload.
+    std::vector<std::unordered_map<uint32_t, std::vector<uint32_t>>> sharedVertices(sets.length());
     std::vector<mmd::MmdRenderQueueInput> inputs;
     for (unsigned int i = 0; i < sets.length(); ++i) {
         MFnDependencyNode set(sets[i]);
@@ -1142,11 +1145,28 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
                     }
                 }
                 const MPoint& point = points[vertex];
+                const float nx = static_cast<float>(normal.x);
+                const float ny = static_cast<float>(normal.y);
+                const float nz = static_cast<float>(-normal.z);
+                const float flippedV = 1.0F - v;
+                auto& candidates = sharedVertices[group][static_cast<uint32_t>(vertex)];
+                const auto existing = std::find_if(candidates.begin(), candidates.end(), [&](uint32_t index) {
+                    return normals[group][index * 3U] == nx &&
+                           normals[group][index * 3U + 1U] == ny &&
+                           normals[group][index * 3U + 2U] == nz &&
+                           uvs[group][index * 2U] == u &&
+                           uvs[group][index * 2U + 1U] == flippedV;
+                });
+                if (existing != candidates.end()) {
+                    indices[group].push_back(*existing);
+                    continue;
+                }
+                candidates.push_back(static_cast<uint32_t>(sources[group].size()));
                 positions[group].insert(positions[group].end(),
                     {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(-point.z)});
                 normals[group].insert(normals[group].end(),
-                    {static_cast<float>(normal.x), static_cast<float>(normal.y), static_cast<float>(-normal.z)});
-                uvs[group].insert(uvs[group].end(), {u, 1.0F - v});
+                    {nx, ny, nz});
+                uvs[group].insert(uvs[group].end(), {u, flippedV});
                 indices[group].push_back(static_cast<uint32_t>(sources[group].size()));
                 sources[group].push_back(static_cast<uint32_t>(vertex));
             }
