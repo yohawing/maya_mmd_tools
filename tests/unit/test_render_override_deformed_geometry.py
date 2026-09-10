@@ -211,7 +211,7 @@ def test_static_geometry_path_keeps_queue_streams_unchanged():
 
     geometry_start = source.index("bool MmdRenderShape::updateEvaluatedMesh")
     geometry_update = source[geometry_start : source.index(
-        "void MmdRenderShape::updateEvaluatedMaterialAlpha", geometry_start
+        "bool MmdRenderShape::updateEvaluatedMaterialAlpha", geometry_start
     )]
 
     assert "geometry_.queueInputs" not in geometry_update

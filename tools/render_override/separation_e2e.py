@@ -68,6 +68,7 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=Fal
         report["plugin"] = str(loaded)
         report["pluginSha256"] = hashlib.sha256(loaded.read_bytes()).hexdigest()
         report["mayaVersion"] = cmds.about(version=True)
+        report["evaluation"] = cmds.evaluationManager(query=True, mode=True)
         report["pythonExecutable"] = sys.executable
         report["importer"] = sys.modules[import_mmd_file.__module__].__file__
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
@@ -159,6 +160,9 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=Fal
             report["displayModes"] = yield from check_edit_render_display(
                 cmds, root, (edit, render), capture, initial, changed,
             )
+        from tools.render_override.material_cache_checks import check_material_cache
+
+        report["materialCache"] = yield from check_material_cache(cmds, proxies, capture, initial)
         controller = cmds.listConnections(root + ".mmd_morph_controller", s=True, d=False)[0]
         weight = controller + ".inputWeight[0]"
         cmds.setAttr(weight, 1.0)
@@ -322,6 +326,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--maya", default="2024")
     parser.add_argument("--port", type=int, default=7741)
+    parser.add_argument("--evaluation", choices=("off", "serial", "parallel"))
     parser.add_argument("--split-materials", action="store_true")
     parser.add_argument("--migrate-legacy", action="store_true")
     parser.add_argument("--textured", action="store_true")
@@ -332,7 +337,9 @@ def main():
     report = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=out, port=args.port, timeout=180,
         log_path=out / "probe.log", report_path=out / "report.json",
-        command=("from tools.render_override.separation_e2e import run_probe\n"
+        command=((f"from maya import cmds\ncmds.evaluationManager(mode={args.evaluation!r})\n"
+                  if args.evaluation else "") +
+                 "from tools.render_override.separation_e2e import run_probe\n"
                  f"run_probe({str(out)!r}, {str(plugin)!r}, {args.split_materials!r}, "
                  f"{args.migrate_legacy!r}, {args.textured!r})"),
         marker=MARKER, send_label="mmd-render-separation",

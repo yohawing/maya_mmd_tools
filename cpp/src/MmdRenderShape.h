@@ -138,11 +138,11 @@ public:
     bool updateMaterialAlpha(std::size_t materialIndex, float diffuseAlpha);
 
     /** Pull present DG alpha elements and apply only changed effective values. */
-    void updateEvaluatedMaterialAlpha();
+    bool updateEvaluatedMaterialAlpha();
 
     /** Pull present DG material-value records without rebuilding vertex buffers. */
-    void updateEvaluatedMaterialValues();
-    void updateEvaluatedMaterialSettings();
+    bool updateEvaluatedMaterialValues();
+    bool updateEvaluatedMaterialSettings();
 
     /** Synchronize transient main-texture availability in one queue rebuild. */
     bool updateMainTextureAvailability(
@@ -282,6 +282,7 @@ private:
     MBoundingBox staticBoundingBox_;
     bool geometryValid_ = true;
     bool meshInputDirty_ = true;
+    bool materialInputsDirty_ = true;
     std::uint64_t renderDataRevision_ = 1U;
     // Changes when packed streams or queue index order change, not for color alone.
     std::uint64_t geometryBufferRevision_ = 1U;

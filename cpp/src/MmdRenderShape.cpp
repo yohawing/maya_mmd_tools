@@ -589,8 +589,13 @@ MStatus MmdRenderShape::preEvaluation(
 {
     if (context.isNormal()) {
         MStatus status;
+        if (evaluationNode.dirtyPlugExists(aMaterialSettings, &status) && status) {
+            materialInputsDirty_ = true;
+            MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+        }
         for (const MObject& child : aMaterialSettingChildren) {
             if (evaluationNode.dirtyPlugExists(child, &status) && status) {
+                materialInputsDirty_ = true;
                 MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
                 break;
             }
@@ -601,9 +606,11 @@ MStatus MmdRenderShape::preEvaluation(
         }
         if (evaluationNode.dirtyPlugExists(aMaterialAlpha, &status) &&
             status) {
+            materialInputsDirty_ = true;
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
         } else if (evaluationNode.dirtyPlugExists(aMaterialValues, &status) &&
                    status) {
+            materialInputsDirty_ = true;
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
         } else {
             bool materialValuesDirty = false;
@@ -615,6 +622,7 @@ MStatus MmdRenderShape::preEvaluation(
                 }
             }
             if (materialValuesDirty) {
+                materialInputsDirty_ = true;
                 MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
             }
         }
@@ -631,6 +639,7 @@ MStatus MmdRenderShape::setDependentsDirty(const MPlug& plug,
     }
     if (!plug.isNull() &&
         (plug.attribute() == aMaterialAlpha || isMaterialValuesPlug(plug))) {
+        materialInputsDirty_ = true;
         MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
     }
     return MS::kSuccess;
@@ -1003,6 +1012,7 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     ++geometryBufferRevision_;
     meshInputDirty_ = true;
     staticPositions_ = std::move(nextStaticPositions);
+    materialInputsDirty_ = true;
     staticNormals_ = std::move(nextStaticNormals);
     boundingBox_ = nextBounds;
     staticBoundingBox_ = nextBounds;
@@ -1026,9 +1036,14 @@ void MmdRenderShape::updateEvaluatedData()
             return;
         }
     }
-    updateEvaluatedMaterialAlpha();
-    updateEvaluatedMaterialValues();
-    updateEvaluatedMaterialSettings();
+    if (materialInputsDirty_) {
+        // Clear before evaluation so callbacks raised by a read remain pending.
+        materialInputsDirty_ = false;
+        const bool alphaReady = updateEvaluatedMaterialAlpha();
+        const bool valuesReady = updateEvaluatedMaterialValues();
+        const bool settingsReady = updateEvaluatedMaterialSettings();
+        if (!alphaReady || !valuesReady || !settingsReady) materialInputsDirty_ = true;
+    }
 
     if (!consumeMeshInputDirty()) {
         return;
@@ -1426,13 +1441,14 @@ bool MmdRenderShape::hasValidGeometry() const
     return geometryValid_ && !geometry_.positions.empty();
 }
 
-void MmdRenderShape::updateEvaluatedMaterialAlpha()
+bool MmdRenderShape::updateEvaluatedMaterialAlpha()
 {
     MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
                             "MMD.UpdateMaterialAlpha");
+    bool valid = true;
     MPlug alphaPlug(thisMObject(), aMaterialAlpha);
     if (alphaPlug.isNull()) {
-        return;
+        return false;
     }
 
     MStatus alphaCountStatus;
@@ -1442,7 +1458,7 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
     const unsigned int alphaCount =
         alphaPlug.getExistingArrayAttributeIndices(materialIndices, &alphaCountStatus);
     if (!alphaCountStatus) {
-        return;
+        return false;
     }
     std::vector<std::pair<std::size_t, float>> updates;
     updates.reserve(alphaCount);
@@ -1460,10 +1476,12 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
         MPlug alphaElement = alphaPlug.elementByLogicalIndex(
             materialIndex, &elementStatus);
         if (!elementStatus || alphaElement.isNull()) {
+            valid = false;
             continue;
         }
         const float diffuseAlpha = alphaElement.asFloat(&elementStatus);
         if (!elementStatus || !std::isfinite(diffuseAlpha)) {
+            valid = false;
             continue;
         }
         const float effectiveAlpha =
@@ -1478,17 +1496,19 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
         }
     }
     if (!updates.empty()) {
-        applyMaterialAlphaUpdates(updates);
+        valid = applyMaterialAlphaUpdates(updates) && valid;
     }
+    return valid;
 }
 
-void MmdRenderShape::updateEvaluatedMaterialValues()
+bool MmdRenderShape::updateEvaluatedMaterialValues()
 {
     MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
                             "MMD.UpdateMaterialValues");
+    bool valid = true;
     MPlug valuesPlug(thisMObject(), aMaterialValues);
     if (valuesPlug.isNull()) {
-        return;
+        return false;
     }
 
     MStatus valuesCountStatus;
@@ -1496,7 +1516,7 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
     const unsigned int valuesCount =
         valuesPlug.getExistingArrayAttributeIndices(materialIndices, &valuesCountStatus);
     if (!valuesCountStatus) {
-        return;
+        return false;
     }
 
     std::vector<std::pair<std::size_t, mmd::MmdRenderQueueInput>> updates;
@@ -1519,10 +1539,12 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
         const MPlug element = valuesPlug.elementByLogicalIndex(
             materialIndex, &elementStatus);
         if (!elementStatus || element.isNull()) {
+            valid = false;
             continue;
         }
         mmd::MmdRenderQueueInput materialValues;
         if (!readMaterialValuesRecord(element, materialValues)) {
+            valid = false;
             MGlobal::displayError(
                 "[mmdRenderShape] Material value record rejected: "
                 "missing or non-finite numeric value.");
@@ -1531,7 +1553,7 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
         updates.emplace_back(materialIndex, std::move(materialValues));
     }
     if (updates.empty()) {
-        return;
+        return valid;
     }
 
     std::unordered_map<std::size_t, std::size_t> updateIndexByMaterial;
@@ -1597,13 +1619,14 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
         }
     }
     if (valuesChanged) {
-        resyncMaterialQueue(geometry_.queueInputs);
+        valid = resyncMaterialQueue(geometry_.queueInputs) && valid;
         clearRenderItemWitness();
         clearMaterialBindingDiagnostics();
     }
+    return valid;
 }
 
-void MmdRenderShape::updateEvaluatedMaterialSettings()
+bool MmdRenderShape::updateEvaluatedMaterialSettings()
 {
     MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
                             "MMD.UpdateMaterialSettings");
@@ -1611,7 +1634,8 @@ void MmdRenderShape::updateEvaluatedMaterialSettings()
     MStatus status;
     MIntArray materialIndices;
     const unsigned int count = settings.getExistingArrayAttributeIndices(materialIndices, &status);
-    if (!status || count == 0U) return;
+    if (!status) return false;
+    if (count == 0U) return true;
     auto nextInputs = geometry_.queueInputs;
     bool changed = false;
     for (unsigned int physical = 0; physical < count; ++physical) {
@@ -1625,21 +1649,21 @@ void MmdRenderShape::updateEvaluatedMaterialSettings()
             continue;
         }
         const MPlug element = settings.elementByLogicalIndex(materialIndex, &status);
-        if (!status) return;
+        if (!status) return false;
         const int flags = element.child(0U).asInt(&status);
-        if (!status) return;
+        if (!status) return false;
         const int sphereMode = element.child(1U).asInt(&status);
-        if (!status) return;
+        if (!status) return false;
         const bool sharedToon = element.child(2U).asInt(&status) != 0;
-        if (!status) return;
+        if (!status) return false;
         const int toonIndex = element.child(3U).asInt(&status);
-        if (!status) return;
+        if (!status) return false;
         const std::string mainPath = element.child(4U).asString(&status).asUTF8();
-        if (!status) return;
+        if (!status) return false;
         const std::string spherePath = element.child(5U).asString(&status).asUTF8();
-        if (!status) return;
+        if (!status) return false;
         const std::string toonPath = element.child(6U).asString(&status).asUTF8();
-        if (!status) return;
+        if (!status) return false;
         const int sharedIndex = sharedToon ? toonIndex : -1;
         for (auto& input : nextInputs) {
             if (input.materialIndex != materialIndex) continue;
@@ -1663,10 +1687,12 @@ void MmdRenderShape::updateEvaluatedMaterialSettings()
             changed = true;
         }
     }
-    if (changed && resyncMaterialQueue(nextInputs)) {
+    if (changed) {
+        if (!resyncMaterialQueue(nextInputs)) return false;
         clearRenderItemWitness();
         clearMaterialBindingDiagnostics();
     }
+    return true;
 }
 
 bool MmdRenderShape::updateMainTextureAvailability(
@@ -1817,6 +1843,7 @@ bool MmdRenderShape::applyMaterialAlphaUpdates(
 bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
                                          float diffuseAlpha)
 {
+    materialInputsDirty_ = true;
     return applyMaterialAlphaUpdates(
         {{materialIndex, diffuseAlpha}});
 }
@@ -1900,6 +1927,8 @@ bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
     geometry_.queueInputs = std::move(nextInputs);
     geometry_.renderQueue = std::move(nextQueue);
     geometry_.queueGeometry = std::move(reordered);
+    // Queue material indices now address different DG input records.
+    materialInputsDirty_ = true;
     ++renderDataRevision_;
     ++geometryBufferRevision_;
     clearRenderItemWitness();
