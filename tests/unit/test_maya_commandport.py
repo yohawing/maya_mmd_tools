@@ -151,9 +151,14 @@ class TestMayaCommandPort(unittest.TestCase):
                 startup_script,
                 'commandPort -name ":7788" -sourceType "python";\n',
             )
-            batch = (output / "launch_maya_2025_7788.bat").read_text(encoding="utf-8")
-            self.assertIn(f"MAYA_APP_DIR={root / 'isolated-maya-app'}", batch)
-            self.assertIn("MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceGLCore", batch)
+            config = json.loads((output / "launch_maya_2025_7788.json").read_text(encoding="utf-8"))
+            self.assertEqual(str(root / "isolated-maya-app"), config["env"]["MAYA_APP_DIR"])
+            self.assertEqual("VirtualDeviceGLCore", config["env"]["MAYA_VP2_DEVICE_OVERRIDE"])
+            self.assertEqual([str(executable), "-script", str((output / "commandport_7788.mel").resolve())],
+                             config["command"])
+            launcher = (output / "launch_maya_2025_7788.vbs").read_text(encoding="utf-16")
+            self.assertIn("background_launch.py", launcher)
+            self.assertTrue(launcher.endswith(', 0, False\n'))
             self.assertEqual("explorer.exe", run.call_args.args[0][0])
 
     def test_send_python_wraps_code_as_compiled_exec_payload(self):

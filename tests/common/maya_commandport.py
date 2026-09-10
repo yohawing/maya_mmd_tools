@@ -7,6 +7,7 @@ import os
 import platform
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional, Tuple
@@ -383,9 +384,10 @@ def launch_maya(
 ) -> Optional[subprocess.Popen]:
     """Launch Maya GUI with a Python commandPort and isolated preferences.
 
-    On Windows, ``explorer`` opens a temporary BAT that starts Maya with a MEL
-    commandPort script. This detaches Maya from the automation console and is
-    the stable local route for Autodesk license checkout. Unless explicitly
+    On Windows, ``explorer`` opens a hidden launcher that starts Maya with a MEL
+    commandPort script and a PID-scoped focus guard. Maya remains visible and
+    unminimized. Explorer detaches it from the automation console for Autodesk
+    license checkout. Unless explicitly
     overridden, ``MAYA_APP_DIR`` is kept under the test output directory so an
     automated shutdown cannot rewrite the user's Maya preferences.
     """
@@ -414,19 +416,26 @@ def launch_maya(
     command = [str(executable), "-command", command_port_mel]
     if platform.system() == "Windows" and launch_mode == "explorer":
         mel_path = (output_dir / f"commandport_{port}.mel").resolve()
-        bat_path = (output_dir / f"launch_maya_{version}_{port}.bat").resolve()
+        launcher_path = (output_dir / f"launch_maya_{version}_{port}.vbs").resolve()
+        config_path = (output_dir / f"launch_maya_{version}_{port}.json").resolve()
         mel_path.write_text(command_port_mel + "\n", encoding="utf-8")
-        env_lines = [f'set "{name}={env[name]}"' for name in ("PYTHONPATH", "MAYA_MODULE_PATH")]
-        env_lines.extend(f'set "{name}={value}"' for name, value in effective_overrides.items())
-        bat_lines = [
-            "@echo off",
-            *env_lines,
-            f'start "" /D "{project_root}" "{executable}" -script "{mel_path}"',
-        ]
-        bat_path.write_text("\r\n".join(bat_lines) + "\r\n", encoding="utf-8")
-        # Explorer may return 1 even after successfully opening the BAT (the
+        config_path.write_text(json.dumps({
+            "command": [str(executable), "-script", str(mel_path)],
+            "cwd": str(project_root), "output": str(output_dir.resolve()),
+            "env": {name: env[name] for name in
+                    {"PYTHONPATH", "MAYA_MODULE_PATH", *effective_overrides}},
+        }), encoding="utf-8")
+        helper = Path(__file__).resolve().parents[2] / "tools/maya_gui/background_launch.py"
+        helper_command = subprocess.list2cmdline([sys.executable, str(helper), str(config_path)])
+        # WSH hides only the Python helper's console. The helper gives Maya its
+        # own SW_SHOWNOACTIVATE startup state, leaving viewport drawing enabled.
+        launcher_path.write_text(
+            'CreateObject("WScript.Shell").Run "' + helper_command.replace('"', '""') + '", 0, False\n',
+            encoding="utf-16",
+        )
+        # Explorer may return 1 even after successfully opening the launcher (the
         # stable signal is the commandPort becoming reachable, not its status).
-        subprocess.run(["explorer.exe", str(bat_path)], cwd=str(project_root), check=False)
+        subprocess.run(["explorer.exe", str(launcher_path)], cwd=str(project_root), check=False)
         return None
     if platform.system() == "Windows" and launch_mode == "powershell":
         escaped_args = "@(" + ", ".join("'" + arg.replace("'", "''") + "'" for arg in command[1:]) + ")"
