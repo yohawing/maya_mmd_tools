@@ -29,13 +29,21 @@ def run_probe(output, plugin, split=False, migrate_legacy=False, textured=False)
     except ImportError:
         from PySide2.QtCore import QTimer
     steps = _probe_steps(output, plugin, split, migrate_legacy, textured)
+    initializing = True
 
     def advance():
+        nonlocal initializing
         try:
             next(steps)
         except StopIteration:
             return
-        QTimer.singleShot(100, advance)
+        if initializing:
+            initializing = False
+            # SceneOpened renderer setup can remain queued while Maya is in
+            # the background. Drain it before any tested edit/Undo operation.
+            cmds.evalDeferred(lambda: QTimer.singleShot(100, advance), lowestPriority=True)
+        else:
+            QTimer.singleShot(100, advance)
 
     # commandPort can open before Maya finishes deferred startup plug-ins.
     # Start after that queue, so startup commands cannot consume test Undo.
