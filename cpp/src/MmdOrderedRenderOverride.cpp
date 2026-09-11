@@ -579,6 +579,84 @@ private:
     };
 
 #ifdef _WIN32
+    static bool samePreflightMaterial(
+        const mmd::MmdRenderQueueInput& left,
+        const mmd::MmdRenderQueueInput& right)
+    {
+        return left.materialIndex == right.materialIndex &&
+               left.submeshIndex == right.submeshIndex &&
+               left.transparencyMode == right.transparencyMode &&
+               left.diffuseAlpha == right.diffuseAlpha &&
+               left.diffuseColor == right.diffuseColor &&
+               left.specularColor == right.specularColor &&
+               left.specularPower == right.specularPower &&
+               left.ambientColor == right.ambientColor &&
+               left.edgeColor == right.edgeColor &&
+               left.edgeAlpha == right.edgeAlpha &&
+               left.edgeSize == right.edgeSize &&
+               left.mainTextureMultiply == right.mainTextureMultiply &&
+               left.mainTextureAdd == right.mainTextureAdd &&
+               left.sphereTextureMultiply == right.sphereTextureMultiply &&
+               left.sphereTextureAdd == right.sphereTextureAdd &&
+               left.toonTextureMultiply == right.toonTextureMultiply &&
+               left.toonTextureAdd == right.toonTextureAdd &&
+               left.edgeDrawing == right.edgeDrawing &&
+               left.sphereMode == right.sphereMode &&
+               left.sharedToonIndex == right.sharedToonIndex &&
+               left.mainTexturePath == right.mainTexturePath &&
+               left.mainTextureAvailable == right.mainTextureAvailable &&
+               left.sphereTexturePath == right.sphereTexturePath &&
+               left.toonTexturePath == right.toonTexturePath &&
+               left.doubleSided == right.doubleSided &&
+               left.selfShadowMap == right.selfShadowMap &&
+               left.selfShadow == right.selfShadow;
+    }
+
+    static bool samePreflightPlan(const DrawPlan& left,
+                                  const DrawPlan& right)
+    {
+        return left.order.materialIndex == right.order.materialIndex &&
+               left.order.submeshIndex == right.order.submeshIndex &&
+               left.order.pass == right.order.pass &&
+               left.order.inputIndex == right.order.inputIndex &&
+               left.outline == right.outline &&
+               samePreflightMaterial(left.material, right.material);
+    }
+
+    bool samePreflightPlans(const std::vector<DrawPlan>& cached,
+                            const std::vector<DrawPlan>& current,
+                            bool castersOnly) const
+    {
+        auto cachedPlan = cached.begin();
+        auto currentPlan = current.begin();
+        while (true) {
+            if (castersOnly) {
+                while (cachedPlan != cached.end() && !isCasterPlan(*cachedPlan)) {
+                    ++cachedPlan;
+                }
+                while (currentPlan != current.end() && !isCasterPlan(*currentPlan)) {
+                    ++currentPlan;
+                }
+            }
+            if (cachedPlan == cached.end() || currentPlan == current.end()) {
+                return cachedPlan == cached.end() && currentPlan == current.end();
+            }
+            if (!samePreflightPlan(*cachedPlan, *currentPlan)) {
+                return false;
+            }
+            ++cachedPlan;
+            ++currentPlan;
+        }
+    }
+
+    void invalidatePreflightCache()
+    {
+        bodyPreflightValid_ = false;
+        casterPreflightValid_ = false;
+        bodyPreflightPlans_.clear();
+        casterPreflightPlans_.clear();
+    }
+
     struct NativeVertex {
         float position[3];
         float texCoord0[2];
@@ -746,6 +824,7 @@ private:
 
     MStatus fail(const std::string& message)
     {
+        invalidatePreflightCache();
         lastError_ = message;
         if (owner_) {
             owner_->requestFallback(message);
@@ -1167,11 +1246,36 @@ private:
         }
         frameResourcesReady_ = frameResources_.ready;
         updateTargetDiagnostics();
-        if (!preflight(plans, drawContext) ||
-            (frameResourcesReady_ && frameResources_.selfShadowMode > 0 &&
-             !preflightCasters(plans, drawContext))) {
+        const bool textured =
+            (drawContext.getDisplayStyle() & MHWRender::MFrameContext::kTextured) != 0U;
+        const bool bodyPreflightRequired =
+            !bodyPreflightValid_ || bodyPreflightTextured_ != textured ||
+            !samePreflightPlans(bodyPreflightPlans_, plans, false);
+        const bool castersActive =
+            frameResourcesReady_ && frameResources_.selfShadowMode > 0;
+        const bool casterPreflightRequired =
+            castersActive &&
+            (!casterPreflightValid_ ||
+             casterPreflightShadowMode_ != frameResources_.selfShadowMode ||
+             !samePreflightPlans(casterPreflightPlans_, plans, true));
+        if ((bodyPreflightRequired && !preflight(plans, drawContext)) ||
+            (casterPreflightRequired && !preflightCasters(plans, drawContext))) {
             framePreparationFailed_ = true;
             return false;
+        }
+        // Publish only after every required preflight succeeds. Dynamic
+        // camera, world and light values are still set and checked by the
+        // actual draw on every frame; this cache covers stable shader,
+        // technique, texture and material structure only.
+        if (bodyPreflightRequired) {
+            bodyPreflightPlans_ = plans;
+            bodyPreflightTextured_ = textured;
+            bodyPreflightValid_ = true;
+        }
+        if (casterPreflightRequired) {
+            casterPreflightPlans_ = plans;
+            casterPreflightShadowMode_ = frameResources_.selfShadowMode;
+            casterPreflightValid_ = true;
         }
         framePlans_ = std::move(plans);
         framePrepared_ = true;
@@ -1578,6 +1682,7 @@ private:
 
     bool releaseResourcesForUnload()
     {
+        invalidatePreflightCache();
         cachedGeometryKey_.clear();
         cachedGeometryPlans_.clear();
         if (!releaseShaderCache()) {
@@ -1644,6 +1749,12 @@ private:
     unsigned int geometryUploadCount_ = 0U;
     std::vector<GeometryKey> cachedGeometryKey_;
     std::vector<DrawPlan> cachedGeometryPlans_;
+    std::vector<DrawPlan> bodyPreflightPlans_;
+    std::vector<DrawPlan> casterPreflightPlans_;
+    bool bodyPreflightValid_ = false;
+    bool casterPreflightValid_ = false;
+    bool bodyPreflightTextured_ = false;
+    int casterPreflightShadowMode_ = 0;
     unsigned int casterDrawCount_ = 0U;
     unsigned int receiverDrawCount_ = 0U;
     std::string lastError_;

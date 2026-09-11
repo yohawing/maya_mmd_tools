@@ -222,3 +222,42 @@ def test_static_geometry_path_keeps_queue_streams_unchanged():
     assert "void MmdRenderShape::useStaticGeometry()" in source
     assert "geometry_.positions.swap(restoredPositions);" in source
     assert "geometry_.normals.swap(restoredNormals);" in source
+
+
+def test_preflight_cache_tracks_structure_without_skipping_draw_checks():
+    source = OVERRIDE_SOURCE.read_text(encoding="utf-8")
+
+    assert "samePreflightMaterial" in source
+    assert "samePreflightPlans" in source
+    assert "bodyPreflightRequired" in source
+    assert "casterPreflightRequired" in source
+    assert "bodyPreflightPlans_ = plans;" in source
+    assert "casterPreflightPlans_ = plans;" in source
+    assert source.index("!preflight(plans, drawContext)") < source.index(
+        "bodyPreflightPlans_ = plans;"
+    )
+    assert source.index("!preflightCasters(plans, drawContext)") < source.index(
+        "casterPreflightPlans_ = plans;"
+    )
+
+    reset = source[source.index("void resetFrame()") : source.index("MStatus execute(")]
+    assert "invalidatePreflightCache" not in reset
+    release = source[
+        source.index("bool releaseResourcesForUnload()") : source.index(
+            "void releaseResources()"
+        )
+    ]
+    assert "invalidatePreflightCache();" in release
+
+    actual_draw = source[source.index("MStatus executePass") : source.index(
+        "bool requiresResetDeviceStates"
+    )]
+    assert "setFrameParameters(shader, drawContext, plan.world)" in actual_draw
+    assert "shader->updateParameters(drawContext)" in actual_draw
+    assert "shader->activatePass(drawContext, 0U)" in actual_draw
+    caster_draw = source[source.index("bool renderCasters") : source.index(
+        "bool prepareFrame"
+    )]
+    assert "setCasterParameters(shader, plan)" in caster_draw
+    assert "shader->updateParameters(drawContext)" in caster_draw
+    assert "shader->activatePass(drawContext, 0U)" in caster_draw
