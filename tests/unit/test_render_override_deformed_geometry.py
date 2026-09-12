@@ -73,27 +73,51 @@ def test_render_shape_reports_transient_fallback_reason():
 
     clear = source[
         source.index("void MmdRenderShape::clearRenderItemWitness") : source.index(
-            "void MmdRenderShape::clearMaterialBindingDiagnostics"
+            "bool MmdRenderShape::recordRenderFallbackReason"
         )
     ]
     assert "renderFallbackReason_" not in clear
 
-    success = source[
-        source.index("void MmdRenderShape::recordRenderItemWitness") : source.index(
-            "bool MmdRenderShape::recordRenderFallbackReason"
-        )
-    ]
-    assert "renderFallbackReason_.clear();" in success
-
     failure = source[
         source.index("bool MmdRenderShape::recordRenderFallbackReason") : source.index(
-            "void MmdRenderShape::recordMaterialBindingDiagnostic"
+            "std::string MmdRenderShape::renderItemWitness"
         )
     ]
     assert "clearRenderItemWitness();" in failure
     assert "const bool changed = renderFallbackReason_ != reason;" in failure
     assert "renderFallbackReason_ = reason;" in failure
     assert "return changed;" in failure
+
+
+def test_unpublished_render_witness_state_is_removed_but_json_command_remains():
+    header = SHAPE_HEADER.read_text(encoding="utf-8")
+    source = SHAPE_SOURCE.read_text(encoding="utf-8")
+    retired = (
+        "hasPassGeometry",
+        "updateMainTextureAvailability",
+        "recordRenderItemWitness",
+        "recordGeometryWitness",
+        "recordMaterialBindingDiagnostic",
+        "MaterialBindingDiagnostic",
+        "renderItemWitnessValid_",
+        "renderItemWitnessEntries_",
+        "geometryWitnessValid_",
+        "geometryWitnessVertexCount_",
+        "geometryWitnessIndexCount_",
+        "geometryWitnessDescriptorSummary_",
+        "bufferUploadCount_",
+        "materialBindingDiagnostics_",
+    )
+    for token in retired:
+        assert token not in header
+        assert token not in source
+
+    assert "void clearRenderItemWitness();" in header
+    assert "void MmdRenderShape::clearRenderItemWitness()" in source
+    assert "setProxyReady(false);" in source
+    assert "std::string materialBindingDiagnosticsJson() const;" in header
+    assert '<< ",\\\"geometryUpdates\\\":" << geometryUpdateCount_' in source
+    assert '<< ",\\\"items\\\":[]}"' in source
 
 
 def test_update_dg_reads_evaluated_mesh_and_fails_closed():
@@ -139,8 +163,8 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
     assert "getVertexNormals(false" not in evaluated_update
     assert "getTriangles(" not in evaluated_update
     assert "input mesh contains a zero-length normal" not in evaluated_update
-    assert "repairedNormals=" in shape
-    assert "staticNormalFallbacks=" in shape
+    assert "repairedNormals" in shape
+    assert "staticNormalFallbacks" in shape
 
 
 def test_ordered_witness_distinguishes_registered_from_selected_panel():

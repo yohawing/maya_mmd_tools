@@ -23,7 +23,6 @@
 #include <maya/MString.h>
 #include <maya/MTypeId.h>
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -127,11 +126,7 @@ public:
     /** Return false after an invalid connected input has failed closed. */
     bool hasValidGeometry() const;
 
-    /**
-     * Publish transient proxy readiness and update the connected source
-     * visibility output.  The output remains source-visible whenever the
-     * proxy is not fully ready.
-     */
+    /** Keep transient proxy readiness false while no renderer publishes it. */
     bool setProxyReady(bool ready);
 
     /** Update one material's effective alpha and rebuild the ordered items. */
@@ -143,10 +138,6 @@ public:
     /** Pull present DG material-value records without rebuilding vertex buffers. */
     bool updateEvaluatedMaterialValues();
     bool updateEvaluatedMaterialSettings();
-
-    /** Synchronize transient main-texture availability in one queue rebuild. */
-    bool updateMainTextureAvailability(
-        const std::vector<bool>& availability);
 
     /** Swap two adjacent material indices without rebuilding geometry buffers. */
     bool reindexMaterialQueue(std::size_t firstIndex, std::size_t secondIndex);
@@ -165,76 +156,6 @@ public:
         std::vector<uint32_t> indices;
     };
 
-    /**
-     * Per-render-item native material binding evidence.
-     *
-     * This is intentionally diagnostic-only state.  It records requested
-     * material paths separately from handles/parameter calls that succeeded;
-     * it does not participate in queue ordering or shader math.
-     */
-    struct MaterialBindingDiagnostic {
-        std::size_t queueIndex = 0U;
-        std::size_t materialIndex = 0U;
-        std::size_t submeshIndex = 0U;
-        std::string renderItemName;
-        std::string pass;
-        bool outline = false;
-        std::string technique;
-        bool uvStreamAvailable = false;
-        float diffuseAlpha = 1.0F;
-        bool textureAlphaBlend = false;
-        bool effectiveTransparent = false;
-        bool selfShadowMap = false;
-        bool selfShadow = false;
-        bool casterEligible = false;
-        bool casterRenderFilterParticipation = false;
-        std::string renderItemType;
-        std::string casterExclusionReason;
-        std::string mainTexturePath;
-        std::string sphereTexturePath;
-        std::string toonTexturePath;
-        std::string toonTextureSource;
-        bool mainTextureRequested = false;
-        bool sphereTextureRequested = false;
-        bool toonTextureRequested = false;
-        bool mainTextureAcquired = false;
-        bool sphereTextureAcquired = false;
-        bool toonTextureAcquired = false;
-        bool scalarParameterBindingSuccess = false;
-        bool mainTextureBindingSuccess = false;
-        bool sphereTextureBindingSuccess = false;
-        bool toonTextureBindingSuccess = false;
-        bool switchParameterBindingSuccess = false;
-        bool shaderAvailable = false;
-        bool parameterBindingSuccess = false;
-        bool shaderAssignmentSuccess = false;
-        bool bindingSuccess = false;
-        int sphereMode = 0;
-        std::array<float, 3> materialValuesDiffuseColor =
-            {1.0F, 1.0F, 1.0F};
-        std::array<float, 3> materialValuesSpecularColor =
-            {0.0F, 0.0F, 0.0F};
-        float materialValuesShininess = 0.0F;
-        std::array<float, 3> materialValuesAmbientColor =
-            {0.3F, 0.3F, 0.3F};
-        std::array<float, 3> materialValuesEdgeColorRGB =
-            {0.0F, 0.0F, 0.0F};
-        float materialValuesEdgeColorA = 1.0F;
-        float materialValuesEdgeSize = 0.0F;
-        std::array<float, 4> materialValuesMainTextureMultiply =
-            {1.0F, 1.0F, 1.0F, 1.0F};
-        std::array<float, 4> materialValuesMainTextureAdd =
-            {0.0F, 0.0F, 0.0F, 0.0F};
-        std::array<float, 4> materialValuesSphereTextureMultiply =
-            {1.0F, 1.0F, 1.0F, 1.0F};
-        std::array<float, 4> materialValuesSphereTextureAdd =
-            {0.0F, 0.0F, 0.0F, 0.0F};
-        std::array<float, 4> materialValuesToonTextureMultiply =
-            {1.0F, 1.0F, 1.0F, 1.0F};
-        std::array<float, 4> materialValuesToonTextureAdd =
-            {0.0F, 0.0F, 0.0F, 0.0F};
-    };
-
     struct GeometryData {
         std::vector<float> positions;
         std::vector<float> normals;
@@ -248,21 +169,10 @@ public:
     };
 
     const GeometryData& geometry() const;
-    bool hasPassGeometry(mmd::MmdDrawPass pass) const;
 
-    // The override records this after it has created the native render items.
-    // This is intentionally transient diagnostic state, not a parity claim.
     void clearRenderItemWitness();
-    void clearMaterialBindingDiagnostics();
-    void recordRenderItemWitness(
-        const std::vector<mmd::MmdRenderQueueEntry>& entries);
     /** Record a fallback reason and return true only when it changed. */
     bool recordRenderFallbackReason(const std::string& reason);
-    void recordMaterialBindingDiagnostic(
-        const MaterialBindingDiagnostic& diagnostic);
-    void recordGeometryWitness(std::size_t vertexCount,
-                               std::size_t indexCount,
-                               const std::string& descriptorSummary);
     std::string renderItemWitness() const;
     std::string materialBindingDiagnosticsJson() const;
 
@@ -287,14 +197,7 @@ private:
     // Changes when packed streams or queue index order change, not for color alone.
     std::uint64_t geometryBufferRevision_ = 1U;
     std::uint64_t geometryUpdateCount_ = 0U;
-    std::uint64_t bufferUploadCount_ = 0U;
     bool evaluatedGeometryActive_ = false;
-    bool renderItemWitnessValid_ = false;
-    std::vector<mmd::MmdRenderQueueEntry> renderItemWitnessEntries_;
-    bool geometryWitnessValid_ = false;
-    std::size_t geometryWitnessVertexCount_ = 0U;
-    std::size_t geometryWitnessIndexCount_ = 0U;
-    std::string geometryWitnessDescriptorSummary_;
     // Number of transient render-vertex normal slots repaired for the current
     // DG update.  This is diagnostic-only state; the repair is applied to the
     // VP2 streams and never mutates the source Maya mesh.
@@ -305,7 +208,6 @@ private:
     // stalling playback with repeated UI logging.
     bool evaluatedNormalRepairWarningEmitted_ = false;
     std::string renderFallbackReason_;
-    std::vector<MaterialBindingDiagnostic> materialBindingDiagnostics_;
 };
 
 /**
