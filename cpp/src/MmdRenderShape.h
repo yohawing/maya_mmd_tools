@@ -126,9 +126,6 @@ public:
     /** Return false after an invalid connected input has failed closed. */
     bool hasValidGeometry() const;
 
-    /** Keep transient proxy readiness false while no renderer publishes it. */
-    bool setProxyReady(bool ready);
-
     /** Pull present DG alpha elements and apply only changed effective values. */
     bool updateEvaluatedMaterialAlpha();
 
@@ -167,7 +164,6 @@ public:
 
     const GeometryData& geometry() const;
 
-    void clearRenderItemWitness();
     /** Record a fallback reason and return true only when it changed. */
     bool recordRenderFallbackReason(const std::string& reason);
     std::string renderItemWitness() const;

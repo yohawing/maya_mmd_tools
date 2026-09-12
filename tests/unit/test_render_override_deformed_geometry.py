@@ -31,7 +31,7 @@ def test_render_shape_exposes_storable_mesh_input_and_source_mapping():
     assert "mismatched source-index data" in source
 
 
-def test_proxy_readiness_is_a_nonpersistent_dg_output():
+def test_legacy_proxy_visibility_is_a_nonpersistent_compatibility_output():
     header = SHAPE_HEADER.read_text(encoding="utf-8")
     source = SHAPE_SOURCE.read_text(encoding="utf-8")
     override = OVERRIDE_SOURCE.read_text(encoding="utf-8")
@@ -47,12 +47,9 @@ def test_proxy_readiness_is_a_nonpersistent_dg_output():
     assert "output.setBool(!proxyReady);" in source
     assert "must be deleted before plugin unload" in source
 
-    readiness_helper = source[source.index("bool MmdRenderShape::setProxyReady") :]
-    assert "MPlug readiness(thisMObject(), aProxyReady);" in readiness_helper
-    assert "readiness.setBool(nextReady)" in readiness_helper
-    assert "sourceVisibility.setBool" not in readiness_helper
-
-    assert "setProxyReady(true)" not in override
+    assert "setProxyReady(" not in header
+    assert "setProxyReady(" not in source
+    assert "setProxyReady(" not in override
 
     plugin_main = (ROOT / "cpp" / "src" / "pluginMain.cpp").read_text(encoding="utf-8")
     unload = plugin_main[plugin_main.index("MStatus uninitializePlugin") :]
@@ -71,19 +68,12 @@ def test_render_shape_reports_transient_fallback_reason():
     assert 'jsonEscape(status) << ",\\\"fallbackReason\\\":"' in source
     assert "renderFallbackReason_.clear();" in source
 
-    clear = source[
-        source.index("void MmdRenderShape::clearRenderItemWitness") : source.index(
-            "bool MmdRenderShape::recordRenderFallbackReason"
-        )
-    ]
-    assert "renderFallbackReason_" not in clear
-
     failure = source[
         source.index("bool MmdRenderShape::recordRenderFallbackReason") : source.index(
             "std::string MmdRenderShape::renderItemWitness"
         )
     ]
-    assert "clearRenderItemWitness();" in failure
+    assert "clearRenderItemWitness" not in failure
     assert "const bool changed = renderFallbackReason_ != reason;" in failure
     assert "renderFallbackReason_ = reason;" in failure
     assert "return changed;" in failure
@@ -112,9 +102,8 @@ def test_unpublished_render_witness_state_is_removed_but_json_command_remains():
         assert token not in header
         assert token not in source
 
-    assert "void clearRenderItemWitness();" in header
-    assert "void MmdRenderShape::clearRenderItemWitness()" in source
-    assert "setProxyReady(false);" in source
+    assert "clearRenderItemWitness" not in header
+    assert "clearRenderItemWitness" not in source
     assert "std::string materialBindingDiagnosticsJson() const;" in header
     assert '<< ",\\\"geometryUpdates\\\":" << geometryUpdateCount_' in source
     assert '<< ",\\\"bufferUploads\\\":0"' in source

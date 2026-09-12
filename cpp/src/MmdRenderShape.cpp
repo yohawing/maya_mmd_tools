@@ -461,9 +461,8 @@ MStatus MmdRenderShape::initialize()
     if (!status) {
         return status;
     }
-    // This input belongs exclusively to the shape lifecycle.  It is not
-    // serialized, keyed, or exposed to authoring UI; a reopened scene starts
-    // source-visible until VP2 commits current buffers again.
+    // Legacy scene-compatibility input. No current renderer writes it; keep it
+    // nonpersistent until saved-scene migration proves the attributes removable.
     numericAttribute.setWritable(true);
     numericAttribute.setReadable(true);
     numericAttribute.setStorable(false);
@@ -479,11 +478,9 @@ MStatus MmdRenderShape::initialize()
     if (!status) {
         return status;
     }
-    // This is a transient source-control output.  It is intentionally not
-    // storable, so a saved scene always reopens source-visible by default.
-    // This output is evaluated by Maya's normal DG path from aProxyReady.
-    // The lifecycle helper never writes the user-owned source visibility
-    // destination directly.
+    // Legacy source-visibility output retained for old saved connections. It
+    // remains nonstorable and evaluates from aProxyReady, whose current value
+    // is always false.
     numericAttribute.setWritable(false);
     numericAttribute.setReadable(true);
     numericAttribute.setStorable(false);
@@ -655,9 +652,9 @@ bool MmdRenderShape::prepareForPluginUnload()
                 return false;
             }
             MmdRenderShape* shape = fromMObject(node, &nodeStatus);
-            if (!nodeStatus || !shape || !shape->setProxyReady(false)) {
+            if (!nodeStatus || !shape) {
                 MGlobal::displayError(
-                    "[mmdRenderShape] Failed to restore source visibility before plugin unload.");
+                    "[mmdRenderShape] Failed to inspect source visibility before plugin unload.");
                 return false;
             }
             MPlug sourceVisibility(node, aSourceVisibility);
@@ -678,32 +675,8 @@ bool MmdRenderShape::prepareForPluginUnload()
     }
     if (foundLiveProxy) {
         MGlobal::displayError(
-            "[mmdRenderShape] Source visibility was restored, but live VP2 proxy nodes "
+            "[mmdRenderShape] Legacy source visibility is true, but live proxy nodes "
             "must be deleted before plugin unload.");
-        return false;
-    }
-    return true;
-}
-
-bool MmdRenderShape::setProxyReady(bool /*ready*/)
-{
-    constexpr bool nextReady = false;
-    if (aProxyReady.isNull() || aSourceVisibility.isNull()) {
-        return false;
-    }
-    // supportsEvaluationManagerParallelUpdate() is false, so this lifecycle
-    // transition is made on Maya's serial VP2/DG boundary.  Updating the
-    // hidden input dirties aSourceVisibility through attributeAffects.
-    MPlug readiness(thisMObject(), aProxyReady);
-    if (readiness.isNull()) {
-        return false;
-    }
-    MStatus status;
-    const bool currentReady = readiness.asBool(&status);
-    if (!status) {
-        return false;
-    }
-    if (currentReady != nextReady && !readiness.setBool(nextReady)) {
         return false;
     }
     return true;
@@ -941,7 +914,6 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     evaluatedNormalStaticFallbackCount_ = 0U;
     evaluatedNormalRepairWarningEmitted_ = false;
     renderFallbackReason_.clear();
-    clearRenderItemWitness();
     return true;
 }
 
@@ -1328,7 +1300,6 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     evaluatedNormalRepairCount_ = normalRepairCount;
     evaluatedNormalStaticFallbackCount_ = staticFallbackCount;
     renderFallbackReason_.clear();
-    clearRenderItemWitness();
     return true;
 }
 
@@ -1350,7 +1321,6 @@ void MmdRenderShape::useStaticGeometry()
         evaluatedNormalStaticFallbackCount_ = 0U;
         evaluatedNormalRepairWarningEmitted_ = false;
         renderFallbackReason_.clear();
-        clearRenderItemWitness();
     }
 }
 
@@ -1538,7 +1508,6 @@ bool MmdRenderShape::updateEvaluatedMaterialValues()
     }
     if (valuesChanged) {
         valid = resyncMaterialQueue(geometry_.queueInputs) && valid;
-        clearRenderItemWitness();
     }
     return valid;
 }
@@ -1606,7 +1575,6 @@ bool MmdRenderShape::updateEvaluatedMaterialSettings()
     }
     if (changed) {
         if (!resyncMaterialQueue(nextInputs)) return false;
-        clearRenderItemWitness();
     }
     return true;
 }
@@ -1720,7 +1688,6 @@ bool MmdRenderShape::applyMaterialAlphaUpdates(
     if (!resyncMaterialQueue(nextInputs)) {
         return false;
     }
-    clearRenderItemWitness();
     return true;
 }
 
@@ -1807,7 +1774,6 @@ bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
     materialInputsDirty_ = true;
     ++renderDataRevision_;
     ++geometryBufferRevision_;
-    clearRenderItemWitness();
     return true;
 }
 
@@ -1816,15 +1782,9 @@ const MmdRenderShape::GeometryData& MmdRenderShape::geometry() const
     return geometry_;
 }
 
-void MmdRenderShape::clearRenderItemWitness()
-{
-    setProxyReady(false);
-}
-
 bool MmdRenderShape::recordRenderFallbackReason(const std::string& reason)
 {
     const bool changed = renderFallbackReason_ != reason;
-    clearRenderItemWitness();
     renderFallbackReason_ = reason;
     return changed;
 }
