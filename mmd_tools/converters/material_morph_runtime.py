@@ -373,9 +373,9 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
 def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool:
     """Drive the stock preview from authored MMD values, never the reverse.
 
-    Textured evaluator routes use stock Maya multiply utilities so the file
-    node remains static during playback. Only diffuse RGB and alpha are
-    previewed; toon/sphere/edge remain Render inputs.
+    Textured evaluator routes keep the direct file-to-baseColor VP2 connection.
+    Only diffuse RGB and alpha are previewed; toon/sphere/edge remain Render
+    inputs.
     """
     alpha = _read_shader_base_alpha(shader, prefer_authored_metadata=True)
     authored = _native_authored_material_values(shader, alpha) if evaluator else None
@@ -384,7 +384,6 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
     snapshots = {}
     preview_expression = None
     previous_expression_body = None
-    created_preview_nodes = []
     stale_preview_nodes = []
     try:
         files = list(dict.fromkeys(cmds.listConnections(
@@ -395,14 +394,13 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
         )
         if not files and preview_rgb:
             files = _preview_utility_textures(preview_rgb)
-        if not files and preview_rgb:
+        if preview_rgb:
             stale_preview_nodes.append(preview_rgb)
             preview_alpha = _find_standard_preview_utility(
                 shader, _STANDARD_PREVIEW_ALPHA_MARKER, "multDoubleLinear",
             )
             if preview_alpha:
                 stale_preview_nodes.append(preview_alpha)
-            preview_rgb = None
         if len(files) > 1:
             raise RuntimeError(f"ambiguous main texture: {shader}")
         color_destination = f"{files[0]}.colorGain" if files else f"{shader}.baseColor"
@@ -450,49 +448,14 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
 
         if files:
             texture = files[0]
+            _connect_if_needed(f"{texture}.outColor", f"{shader}.baseColor", force=True)
+            color_destination = f"{texture}.colorGain"
             texture_alpha_source = alpha_source
             opaque = cmds.attributeQuery("mmdTransparencyMode", node=shader, exists=True) and (
                 cmds.getAttr(f"{shader}.mmdTransparencyMode") == "opaque"
             )
-            if evaluator or preview_rgb:
-                legacy_expression = _owned_standard_preview_expression(texture)
-                if legacy_expression:
-                    stale_preview_nodes.append(legacy_expression)
-                    for destination in (
-                        f"{texture}.colorGainR", f"{texture}.colorGainG",
-                        f"{texture}.colorGainB", f"{texture}.alphaGain",
-                    ):
-                        for incoming in _exact_incoming_sources(destination):
-                            if incoming.split(".", 1)[0] == legacy_expression:
-                                cmds.disconnectAttr(incoming, destination)
-                preview_rgb, was_created = _ensure_standard_preview_utility(
-                    shader, texture, _STANDARD_PREVIEW_RGB_MARKER, "multiplyDivide",
-                )
-                if was_created:
-                    created_preview_nodes.append(preview_rgb)
-                _connect_preview_rgb(texture, color_source, preview_rgb, shader)
-                cmds.setAttr(f"{texture}.colorGain", 1.0, 1.0, 1.0, type="double3")
-
-                preview_alpha = _find_standard_preview_utility(
-                    shader, _STANDARD_PREVIEW_ALPHA_MARKER, "multDoubleLinear",
-                )
-                if not opaque:
-                    preview_alpha, was_created = _ensure_standard_preview_utility(
-                        shader, texture, _STANDARD_PREVIEW_ALPHA_MARKER, "multDoubleLinear",
-                    )
-                    if was_created:
-                        created_preview_nodes.append(preview_alpha)
-                    _connect_if_needed(f"{texture}.outAlpha", f"{preview_alpha}.input1", force=True)
-                    _connect_if_needed(texture_alpha_source, f"{preview_alpha}.input2", force=True)
-                    alpha_source = f"{preview_alpha}.output"
-                elif preview_alpha:
-                    stale_preview_nodes.append(preview_alpha)
-                cmds.setAttr(f"{texture}.alphaGain", 1.0)
-                color_destination = None
-            else:
-                color_destination = f"{texture}.colorGain"
-                if not opaque:
-                    alpha_source = f"{texture}.outAlpha"
+            if not opaque:
+                alpha_source = f"{texture}.outAlpha"
         else:
             color_destination = f"{shader}.baseColor"
         # A compound RGB connection makes stock VP2 treat the custom output
@@ -500,15 +463,14 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
         # are evaluated as uniforms by both stock VP2 backends.
         source_node, source_attr = color_source.split(".", 1)
         source_children = _scalar_leaf_attrs(source_node, source_attr, require_writable=False)
-        if color_destination:
-            incoming = cmds.connectionInfo(color_destination, sourceFromDestination=True)
-            if incoming:
-                cmds.disconnectAttr(incoming, color_destination)
-            destination_node, destination_attr = color_destination.split(".", 1)
-            destination_children = _scalar_leaf_attrs(destination_node, destination_attr)
-            if len(source_children) != 3 or len(destination_children) != 3:
-                raise RuntimeError("standard preview requires three RGB components")
-        if files and color_destination:
+        incoming = cmds.connectionInfo(color_destination, sourceFromDestination=True)
+        if incoming:
+            cmds.disconnectAttr(incoming, color_destination)
+        destination_node, destination_attr = color_destination.split(".", 1)
+        destination_children = _scalar_leaf_attrs(destination_node, destination_attr)
+        if len(source_children) != 3 or len(destination_children) != 3:
+            raise RuntimeError("standard preview requires three RGB components")
+        if files:
             # VP2 traverses direct shader->file gain connections as a shading
             # cycle. An expression supplies DG numbers without participating
             # in shader compilation; it has no authored material state.
@@ -535,7 +497,7 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
                     cmds.addAttr(preview_expression, longName="mmdStandardPreview", attributeType="bool")
                 cmds.expression(preview_expression, edit=True, alwaysEvaluate=False, unitConversion="none",
                                 string=body)
-        elif color_destination:
+        else:
             for source_child, destination_child in zip(source_children, destination_children):
                 _connect_if_needed(
                     f"{source_node}.{source_child}", f"{destination_node}.{destination_child}", force=True,
@@ -550,9 +512,6 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
             else:
                 cmds.expression(preview_expression, edit=True, string=previous_expression_body)
         _restore_plug_snapshots(snapshots)
-        for node in created_preview_nodes:
-            if cmds.objExists(node):
-                cmds.delete(node)
         return False
     for node in dict.fromkeys(stale_preview_nodes):
         if cmds.objExists(node):

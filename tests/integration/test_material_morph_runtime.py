@@ -473,8 +473,8 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertFalse(cmds.objExists(evaluator))
         self.assertEqual(cmds.connectionInfo(shader + ".opacityR", sourceFromDestination=True), shader + ".mmd_diffuse_alpha")
 
-    def test_textured_preview_rebinding_failure_preserves_utilities(self):
-        """A failed stock replacement must keep the old evaluator recoverable."""
+    def test_textured_preview_rebinding_failure_preserves_expression(self):
+        """A failed stock replacement must keep the old expression recoverable."""
         from mmd_tools.converters.mesh_converter import MeshConverter
         from mmd_tools.core.pmx_data.material import PmxMaterial
 
@@ -488,11 +488,10 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         evaluator = graph["evaluator_nodes"][0]
         plugs = [shader + ".baseColor" + c for c in "RGB"] + [shader + ".opacity" + c for c in "RGB"]
         before = {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}
-        rgb = cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide")[0]
-        before_utility = {
-            plug: cmds.connectionInfo(plug, sourceFromDestination=True)
-            for plug in [rgb + ".input2" + axis for axis in "XYZ"]
-        }
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        before_body = cmds.expression(expression, query=True, string=True)
+        gain_plugs = [texture + ".colorGain" + c for c in "RGB"] + [texture + ".alphaGain"]
+        before_gains = {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in gain_plugs}
         cmds.delete(morphs)
         connect = material_morph_runtime._connect_if_needed
 
@@ -506,12 +505,15 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertFalse(failed["success"], failed)
         self.assertTrue(cmds.objExists(evaluator))
         self.assertEqual({p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}, before)
+        self.assertEqual(cmds.expression(expression, query=True, string=True), before_body)
         self.assertEqual(
-            {plug: cmds.connectionInfo(plug, sourceFromDestination=True) for plug in before_utility},
-            before_utility,
+            {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in gain_plugs},
+            before_gains,
         )
         self.assertTrue(build_material_morph_graph(root)["success"])
         self.assertFalse(cmds.objExists(evaluator))
+        self.assertTrue(cmds.objExists(expression))
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
         self.assertEqual(cmds.connectionInfo(shader + ".opacityR", sourceFromDestination=True), shader + ".mmd_diffuse_alpha")
 
     def test_textured_preview_failure_restores_reused_utility_message_tag(self):
@@ -525,8 +527,13 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         _, _, shader, _, graph = self._create_scene_with_shader(shader=shader)
         self.assertTrue(graph["success"], graph)
         evaluator = graph["evaluator_nodes"][0]
-        rgb = material_morph_runtime._find_standard_preview_utility(
-            shader, "mmdStandardPreviewMultiply", "multiplyDivide",
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        cmds.delete(expression)
+        rgb, _ = material_morph_runtime._ensure_standard_preview_utility(
+            shader, texture, "mmdStandardPreviewMultiply", "multiplyDivide",
+        )
+        material_morph_runtime._connect_preview_rgb(
+            texture, evaluator + ".outputDiffuse", rgb, shader,
         )
         stale = cmds.shadingNode("file", asTexture=True)
         tag = rgb + ".mmdStandardPreviewTexture"
@@ -552,6 +559,8 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.connectionInfo(tag, sourceFromDestination=True),
             stale + ".message",
         )
+        self.assertTrue(cmds.isConnected(rgb + ".outputX", shader + ".baseColorR"))
+        self.assertFalse(cmds.listConnections(texture + ".colorGainR", s=True, d=False))
 
     def test_textured_preview_keeps_morph_on_late_native_bind_failure(self):
         from mmd_tools.converters.mesh_converter import MeshConverter
@@ -566,10 +575,12 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertTrue(graph["success"], graph)
         evaluator = graph["evaluator_nodes"][0]
         cmds.setAttr(morphs[0] + ".weight", 1.0)
-        rgb = cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide")[0]
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        before_body = cmds.expression(expression, query=True, string=True)
         before = {
             plug: cmds.connectionInfo(plug, sourceFromDestination=True)
-            for plug in [rgb + ".input2" + axis for axis in "XYZ"] + [shader + ".opacityR"]
+            for plug in [texture + ".colorGain" + channel for channel in "RGB"]
+            + [texture + ".alphaGain", shader + ".opacityR"]
         }
         cmds.delete(morphs)
         with mock.patch.object(material_morph_runtime, "_collect_native_render_shapes", return_value=["proxy"]), \
@@ -578,7 +589,8 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             self.assertFalse(build_material_morph_graph(root)["success"])
         self.assertTrue(cmds.objExists(evaluator))
         self.assertEqual({p: cmds.connectionInfo(p, sourceFromDestination=True) for p in before}, before)
-        self.assertFalse(cmds.listConnections(texture + ".colorGainR", s=True, d=False))
+        self.assertEqual(cmds.expression(expression, query=True, string=True), before_body)
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
 
     def test_retired_legacy_expression_body_survives_late_native_failure(self):
         """Graph rollback restores an old preview expression as well as its wires."""
@@ -591,29 +603,8 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
         self.assertTrue(graph["success"], graph)
         evaluator = graph["evaluator_nodes"][0]
-        for marker, node_type in (
-            ("mmdStandardPreviewMultiply", "multiplyDivide"),
-            ("mmdStandardPreviewAlpha", "multDoubleLinear"),
-        ):
-            utility = material_morph_runtime._find_standard_preview_utility(
-                shader, marker, node_type,
-            )
-            if utility:
-                cmds.delete(utility)
-        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
-        old_body = "\n".join((
-            f"{texture}.colorGainR = {evaluator}.outputDiffuseR;",
-            f"{texture}.colorGainG = {evaluator}.outputDiffuseG;",
-            f"{texture}.colorGainB = {evaluator}.outputDiffuseB;",
-            f"{texture}.alphaGain = {evaluator}.outputDiffuseAlpha;",
-        ))
-        expression = cmds.expression(
-            name=texture + "_legacyPreview",
-            alwaysEvaluate=False,
-            unitConversion="none",
-            string=old_body,
-        )
-        cmds.addAttr(expression, longName="mmdStandardPreview", attributeType="bool")
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        old_body = cmds.expression(expression, query=True, string=True)
         cmds.delete(morphs)
         with mock.patch.object(
             material_morph_runtime,
@@ -628,8 +619,8 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertTrue(cmds.objExists(evaluator))
         self.assertEqual(cmds.expression(expression, query=True, string=True), old_body)
 
-    def test_standard_texture_uses_static_file_and_owned_multiply_utilities(self):
-        """Stock VP2 evaluates morphs without dirtying the file node's gains."""
+    def test_standard_texture_uses_direct_file_route_and_owned_expression(self):
+        """Stock VP2 keeps the file route direct and evaluates gains by expression."""
         from mmd_tools.converters.mesh_converter import MeshConverter
         from mmd_tools.core.pmx_data.material import PmxMaterial
 
@@ -641,34 +632,28 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         texture = cmds.shadingNode("file", asTexture=True)
         cmds.connectAttr(texture + ".outColor", shader + ".baseColor")
         self.assertTrue(material_morph_runtime.bind_standard_material(shader))
-        legacy_expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
         root, _, shader, morphs, graph = self._create_scene_with_shader(
             shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
         )
         self.assertTrue(graph["success"], graph)
-        self.assertFalse(cmds.objExists(legacy_expression))
+        self.assertTrue(cmds.objExists(expression))
         cmds.setAttr(morphs[0] + ".weight", 1.0)
         self.assertTrue(build_material_morph_graph(root)["success"])
-        for actual, expected in zip(cmds.getAttr(texture + ".colorGain")[0], (1.0, 1.0, 1.0)):
+        for actual, expected in zip(cmds.getAttr(texture + ".colorGain")[0], (0.5, 0.4, 0.4)):
             self.assertAlmostEqual(actual, expected, places=6)
-        self.assertAlmostEqual(cmds.getAttr(texture + ".alphaGain"), 1.0, places=6)
-        rgb = cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide")[0]
-        alpha = material_morph_runtime._find_standard_preview_utility(
-            shader, "mmdStandardPreviewAlpha", "multDoubleLinear",
-        )
-        self.assertTrue(cmds.getAttr(rgb + ".mmdStandardPreviewMultiply"))
-        self.assertTrue(cmds.getAttr(alpha + ".mmdStandardPreviewAlpha"))
-        for actual, expected in zip(cmds.getAttr(rgb + ".input2")[0], (0.5, 0.4, 0.4)):
-            self.assertAlmostEqual(actual, expected, places=6)
-        for channel in "RGB":
-            self.assertTrue(cmds.isConnected(rgb + ".output" + "XYZ"["RGB".index(channel)], shader + ".baseColor" + channel))
-            self.assertTrue(cmds.isConnected(alpha + ".output", shader + ".opacity" + channel))
-        self.assertTrue(cmds.isConnected(texture + ".outColorR", rgb + ".input1X"))
-        self.assertTrue(cmds.isConnected(graph["evaluator_nodes"][0] + ".outputDiffuseR", rgb + ".input2X"))
+        self.assertAlmostEqual(cmds.getAttr(texture + ".alphaGain"), 0.6, places=6)
+        self.assertTrue(cmds.attributeQuery("mmdStandardPreview", node=expression, exists=True))
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        for index, attr in enumerate(("colorGainR", "colorGainG", "colorGainB", "alphaGain")):
+            self.assertTrue(cmds.isConnected(f"{expression}.output[{index}]", texture + "." + attr))
+        body = cmds.expression(expression, query=True, string=True)
+        self.assertIn(graph["evaluator_nodes"][0] + ".outputDiffuseR", body)
+        self.assertFalse(cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide"))
         self.assertAlmostEqual(cmds.getAttr(shader + ".mmd_diffuse_alpha"), 0.8, places=6)
 
-    def test_textured_preview_rebuild_repairs_partial_utility_route(self):
-        """A rebuild reuses tagged utilities and repairs individual broken wires."""
+    def test_textured_preview_rebuild_migrates_owned_utilities_to_expression(self):
+        """A rebuild replaces the tagged utility route with the direct file contract."""
         from mmd_tools.converters.mesh_converter import MeshConverter
         from mmd_tools.core.pmx_data.material import PmxMaterial
 
@@ -676,30 +661,31 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         cmds.setAttr(shader + ".mmdTransparencyMode", "blend", type="string")
         texture = cmds.shadingNode("file", asTexture=True)
         cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
-        root, _, shader, _, graph = self._create_scene_with_shader(shader=shader)
-        self.assertTrue(graph["success"], graph)
-        rgb = cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide")[0]
-        alpha = material_morph_runtime._find_standard_preview_utility(
-            shader, "mmdStandardPreviewAlpha", "multDoubleLinear",
+        root, _, shader, _, _ = self._create_scene_with_shader(shader=shader, build_graph=False)
+        rgb, _ = material_morph_runtime._ensure_standard_preview_utility(
+            shader, texture, "mmdStandardPreviewMultiply", "multiplyDivide",
         )
-        cmds.disconnectAttr(texture + ".outColorG", rgb + ".input1Y")
-        cmds.disconnectAttr(rgb + ".outputZ", shader + ".baseColorB")
-        cmds.disconnectAttr(texture + ".outAlpha", alpha + ".input1")
+        alpha, _ = material_morph_runtime._ensure_standard_preview_utility(
+            shader, texture, "mmdStandardPreviewAlpha", "multDoubleLinear",
+        )
+        material_morph_runtime._connect_preview_rgb(
+            texture, shader + ".diffuse_color", rgb, shader,
+        )
+        cmds.connectAttr(texture + ".outAlpha", alpha + ".input1", force=True)
+        cmds.connectAttr(shader + ".mmd_diffuse_alpha", alpha + ".input2", force=True)
+        for channel in "RGB":
+            cmds.connectAttr(alpha + ".output", shader + ".opacity" + channel, force=True)
 
-        self.assertTrue(build_material_morph_graph(root)["success"])
-        self.assertEqual(
-            cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide"),
-            [rgb],
-        )
-        self.assertEqual(
-            material_morph_runtime._find_standard_preview_utility(
-                shader, "mmdStandardPreviewAlpha", "multDoubleLinear",
-            ),
-            alpha,
-        )
-        self.assertTrue(cmds.isConnected(texture + ".outColorG", rgb + ".input1Y"))
-        self.assertTrue(cmds.isConnected(rgb + ".outputZ", shader + ".baseColorB"))
-        self.assertTrue(cmds.isConnected(texture + ".outAlpha", alpha + ".input1"))
+        graph = build_material_morph_graph(root)
+        self.assertTrue(graph["success"], graph)
+        self.assertFalse(cmds.objExists(rgb))
+        self.assertFalse(cmds.objExists(alpha))
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        self.assertTrue(cmds.attributeQuery("mmdStandardPreview", node=expression, exists=True))
+        self.assertIn(graph["evaluator_nodes"][0] + ".outputDiffuseR", cmds.expression(
+            expression, query=True, string=True,
+        ))
 
     def test_textured_preview_first_bind_failure_removes_partial_utilities(self):
         """A failed first bind restores the direct file route without owned debris."""
@@ -798,10 +784,12 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         cmds.setAttr(morphs[0] + ".weight", 1.0)
         cmds.setAttr(shader + ".diffuse_color", .4, .5, .6, type="double3")
         cmds.setAttr(shader + ".mmd_diffuse_alpha", .9)
-        rgb = cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide")[0]
-        for actual, expected in zip(cmds.getAttr(rgb + ".input2")[0], (.7, .6, .6)):
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        for actual, expected in zip(cmds.getAttr(texture + ".colorGain")[0], (.7, .6, .6)):
             self.assertAlmostEqual(actual, expected, places=6)
-        self.assertEqual(cmds.getAttr(texture + ".colorGain")[0], (1.0, 1.0, 1.0))
+        self.assertAlmostEqual(cmds.getAttr(texture + ".alphaGain"), .7, places=6)
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        self.assertTrue(cmds.attributeQuery("mmdStandardPreview", node=expression, exists=True))
         self.assertAlmostEqual(cmds.getAttr(shader + ".opacityR"), .7, places=6)
         cmds.undo()
         self.assertAlmostEqual(cmds.getAttr(shader + ".opacityR"), .8, places=6)
