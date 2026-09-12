@@ -558,7 +558,7 @@ def main() -> int:
             )
         print(
             "OK: VP2 fast load created source/proxy siblings, kept source visible, "
-            "and preserved the transient visibility fallback across scene reopen"
+            "and preserved the legacy visibility compatibility output across scene reopen"
         )
 
         morph_result = cmds.mmdFastLoad(f=str(FAST_LOAD_MORPH_MODEL), n="mmd_fast_morph_smoke", s=1.0, mo=True)
