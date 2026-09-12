@@ -583,33 +583,7 @@ private:
         const mmd::MmdRenderQueueInput& left,
         const mmd::MmdRenderQueueInput& right)
     {
-        return left.materialIndex == right.materialIndex &&
-               left.submeshIndex == right.submeshIndex &&
-               left.transparencyMode == right.transparencyMode &&
-               left.diffuseAlpha == right.diffuseAlpha &&
-               left.diffuseColor == right.diffuseColor &&
-               left.specularColor == right.specularColor &&
-               left.specularPower == right.specularPower &&
-               left.ambientColor == right.ambientColor &&
-               left.edgeColor == right.edgeColor &&
-               left.edgeAlpha == right.edgeAlpha &&
-               left.edgeSize == right.edgeSize &&
-               left.mainTextureMultiply == right.mainTextureMultiply &&
-               left.mainTextureAdd == right.mainTextureAdd &&
-               left.sphereTextureMultiply == right.sphereTextureMultiply &&
-               left.sphereTextureAdd == right.sphereTextureAdd &&
-               left.toonTextureMultiply == right.toonTextureMultiply &&
-               left.toonTextureAdd == right.toonTextureAdd &&
-               left.edgeDrawing == right.edgeDrawing &&
-               left.sphereMode == right.sphereMode &&
-               left.sharedToonIndex == right.sharedToonIndex &&
-               left.mainTexturePath == right.mainTexturePath &&
-               left.mainTextureAvailable == right.mainTextureAvailable &&
-               left.sphereTexturePath == right.sphereTexturePath &&
-               left.toonTexturePath == right.toonTexturePath &&
-               left.doubleSided == right.doubleSided &&
-               left.selfShadowMap == right.selfShadowMap &&
-               left.selfShadow == right.selfShadow;
+        return mmd::sameMmdRenderQueueInput(left, right);
     }
 
     static bool samePreflightPlan(const DrawPlan& left,

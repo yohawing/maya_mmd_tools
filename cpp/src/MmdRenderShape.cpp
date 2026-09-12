@@ -1451,46 +1451,13 @@ bool MmdRenderShape::updateEvaluatedMaterialValues()
         updateIndexByMaterial.emplace(updates[updateIndex].first, updateIndex);
     }
 
-    const auto applyValues = [](mmd::MmdRenderQueueInput& destination,
-                                const mmd::MmdRenderQueueInput& source) {
-        destination.diffuseColor = source.diffuseColor;
-        destination.specularColor = source.specularColor;
-        destination.specularPower = source.specularPower;
-        destination.ambientColor = source.ambientColor;
-        destination.edgeColor = source.edgeColor;
-        destination.edgeAlpha = source.edgeAlpha;
-        destination.edgeSize = source.edgeSize;
-        destination.mainTextureMultiply = source.mainTextureMultiply;
-        destination.mainTextureAdd = source.mainTextureAdd;
-        destination.sphereTextureMultiply = source.sphereTextureMultiply;
-        destination.sphereTextureAdd = source.sphereTextureAdd;
-        destination.toonTextureMultiply = source.toonTextureMultiply;
-        destination.toonTextureAdd = source.toonTextureAdd;
-    };
-    const auto valuesEqual = [](const mmd::MmdRenderQueueInput& left,
-                                const mmd::MmdRenderQueueInput& right) {
-        return left.diffuseColor == right.diffuseColor &&
-               left.specularColor == right.specularColor &&
-               left.specularPower == right.specularPower &&
-               left.ambientColor == right.ambientColor &&
-               left.edgeColor == right.edgeColor &&
-               left.edgeAlpha == right.edgeAlpha &&
-               left.edgeSize == right.edgeSize &&
-               left.mainTextureMultiply == right.mainTextureMultiply &&
-               left.mainTextureAdd == right.mainTextureAdd &&
-               left.sphereTextureMultiply == right.sphereTextureMultiply &&
-               left.sphereTextureAdd == right.sphereTextureAdd &&
-               left.toonTextureMultiply == right.toonTextureMultiply &&
-               left.toonTextureAdd == right.toonTextureAdd;
-    };
-
     bool valuesChanged = false;
     for (mmd::MmdRenderQueueInput& input : geometry_.queueInputs) {
         const auto updateIt = updateIndexByMaterial.find(input.materialIndex);
         if (updateIt != updateIndexByMaterial.end()) {
             const auto& update = updates[updateIt->second].second;
-            if (!valuesEqual(input, update)) {
-                applyValues(input, update);
+            if (!mmd::sameMmdMaterialValues(input, update)) {
+                mmd::copyMmdMaterialValues(input, update);
                 valuesChanged = true;
             }
         }
@@ -1500,8 +1467,8 @@ bool MmdRenderShape::updateEvaluatedMaterialValues()
             queueGeometry.entry.materialIndex);
         if (updateIt != updateIndexByMaterial.end()) {
             const auto& update = updates[updateIt->second].second;
-            if (!valuesEqual(queueGeometry.material, update)) {
-                applyValues(queueGeometry.material, update);
+            if (!mmd::sameMmdMaterialValues(queueGeometry.material, update)) {
+                mmd::copyMmdMaterialValues(queueGeometry.material, update);
                 valuesChanged = true;
             }
         }
