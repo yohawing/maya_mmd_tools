@@ -23,3 +23,13 @@ def test_shadow_probe_releases_native_shadow_requests_and_names_control_honestly
     assert "setLightRequiresShadows(light, False)" in source
     assert '"native_on_control"' in source
     assert '"mode2"' not in source
+
+
+def test_shadow_probe_uses_shared_scene_override_after_feasibility_retirement():
+    source = Path("tools/render_override/vp2_shadow_checks.py").read_text(encoding="utf-8")
+    assert "from tools.render_override.vp2_scene_override import" in source
+    assert "vp2_feasibility" not in source
+
+    shared = Path("tools/render_override/vp2_scene_override.py").read_text(encoding="utf-8")
+    assert 'OVERRIDE_NAME = "vp2Feasibility"' in shared
+    assert "def make_override():" in shared

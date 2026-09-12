@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tools.render_override.common import capture_view
 from tools.render_override.render_override_visual_gate import read_png_rgb
-from tools.render_override.vp2_feasibility import make_override
+from tools.render_override.vp2_scene_override import OVERRIDE_NAME, make_override
 
 
 def image_difference(first, second):
@@ -90,7 +90,7 @@ def check_vp2_shadow(cmds, root, panel, output_dir, baseline):
                 # in every pass; otherwise an ambient-only image is no shadow test.
                 override.configure([None] if route == "whole"
                                    else [[source] + lights for source in members])
-                cmds.modelEditor(panel, edit=True, rendererOverrideName="vp2Feasibility")
+                cmds.modelEditor(panel, edit=True, rendererOverrideName=OVERRIDE_NAME)
                 cmds.refresh(force=True)
                 path = capture_view(cmds, output_dir / f"vp2_{route}_{label}.png", panel, 1024, 1024)
                 pixels[label] = read_png_rgb(path)

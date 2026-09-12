@@ -1920,13 +1920,6 @@ def render_vp2_native_geometry(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def render_vp2_feasibility(session: nox.Session) -> None:
-    """Probe native VP2 scene-pass capabilities in an isolated Maya GUI."""
-    session.run(sys.executable, "tools/render_override/vp2_feasibility.py",
-                *session.posargs, external=True)
-
-
-@nox.session(venv_backend="none")
 def render_vp2_transparency(session: nox.Session) -> None:
     """Probe VP2 transparent ordering, face filtering, and two-panel contracts."""
     session.run(
