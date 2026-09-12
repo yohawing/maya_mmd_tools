@@ -1724,14 +1724,6 @@ bool MmdRenderShape::applyMaterialAlphaUpdates(
     return true;
 }
 
-bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
-                                         float diffuseAlpha)
-{
-    materialInputsDirty_ = true;
-    return applyMaterialAlphaUpdates(
-        {{materialIndex, diffuseAlpha}});
-}
-
 bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
                                            std::size_t secondIndex)
 {
@@ -1924,72 +1916,6 @@ MStatus MmdRenderWitnessCommand::doIt(const MArgList& args)
 }
 
 bool MmdRenderWitnessCommand::isUndoable() const
-{
-    return false;
-}
-
-void* MmdRenderQueueUpdateCommand::creator()
-{
-    return new MmdRenderQueueUpdateCommand();
-}
-
-MSyntax MmdRenderQueueUpdateCommand::newSyntax()
-{
-    MSyntax syntax;
-    syntax.addFlag("-n", "-node", MSyntax::kString);
-    syntax.addFlag("-m", "-materialIndex", MSyntax::kLong);
-    syntax.addFlag("-a", "-alpha", MSyntax::kDouble);
-    syntax.enableEdit(false);
-    return syntax;
-}
-
-MStatus MmdRenderQueueUpdateCommand::doIt(const MArgList& args)
-{
-    MArgDatabase argData(newSyntax(), args);
-    if (!argData.isFlagSet("-node") || !argData.isFlagSet("-materialIndex") ||
-        !argData.isFlagSet("-alpha")) {
-        MGlobal::displayError(
-            "[mmdRenderQueueUpdate] Required flags: -node, -materialIndex, -alpha");
-        return MS::kFailure;
-    }
-
-    MSelectionList selection;
-    const MString nodeName = argData.flagArgumentString("-node", 0);
-    MStatus status = selection.add(nodeName);
-    if (!status || selection.length() == 0U) {
-        MGlobal::displayError(MString("[mmdRenderQueueUpdate] Node not found: ") +
-                              nodeName);
-        return MS::kFailure;
-    }
-
-    MObject node;
-    status = selection.getDependNode(0U, node);
-    if (!status) {
-        return status;
-    }
-    MmdRenderShape* shape = MmdRenderShape::fromMObject(node, &status);
-    if (!status || !shape) {
-        MGlobal::displayError(
-            "[mmdRenderQueueUpdate] Node is not an mmdRenderShape.");
-        return MS::kFailure;
-    }
-
-    const int materialIndex = argData.flagArgumentInt("-materialIndex", 0);
-    const double alpha = argData.flagArgumentDouble("-alpha", 0);
-    if (materialIndex < 0 || !shape->updateMaterialAlpha(
-                                  static_cast<std::size_t>(materialIndex),
-                                  static_cast<float>(alpha))) {
-        MGlobal::displayError(
-            "[mmdRenderQueueUpdate] Material alpha update was rejected.");
-        return MS::kFailure;
-    }
-
-    MHWRender::MRenderer::setGeometryDrawDirty(node, true);
-    setResult(mStringFromUtf8(shape->renderItemWitness()));
-    return MS::kSuccess;
-}
-
-bool MmdRenderQueueUpdateCommand::isUndoable() const
 {
     return false;
 }

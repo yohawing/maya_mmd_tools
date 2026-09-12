@@ -47,7 +47,6 @@ static bool sCppRegisteredCcdIk = false;
 static bool sCppRegisteredPhysicsBoneDriver = false;
 static bool sCppRegisteredMmdRenderShape = false;
 static bool sCppRegisteredMmdRenderWitnessCommand = false;
-static bool sCppRegisteredMmdRenderQueueUpdateCommand = false;
 static bool sCppRegisteredMmdRenderQueueReindexCommand = false;
 static bool sCppRegisteredMmdOrderedOverride = false;
 static bool sCppRegisteredMmdOrderedWitnessCommand = false;
@@ -123,16 +122,6 @@ MStatus initializePlugin(MObject obj)
                 sCppRegisteredMmdRenderQueueReindexCommand = false;
             }
         }
-        if (sCppRegisteredMmdRenderQueueUpdateCommand) {
-            cleanupStatus = plugin.deregisterCommand("mmdRenderQueueUpdate");
-            if (!cleanupStatus) {
-                MGlobal::displayWarning(
-                    "Failed to roll back mmdRenderQueueUpdate command.");
-                cleanupSucceeded = false;
-            } else {
-                sCppRegisteredMmdRenderQueueUpdateCommand = false;
-            }
-        }
         if (sCppRegisteredMmdRenderWitnessCommand) {
             cleanupStatus = plugin.deregisterCommand("mmdRenderWitness");
             if (!cleanupStatus) {
@@ -175,15 +164,6 @@ MStatus initializePlugin(MObject obj)
         return status;
     }
     sCppRegisteredMmdRenderWitnessCommand = true;
-
-    status = plugin.registerCommand("mmdRenderQueueUpdate",
-                                    MmdRenderQueueUpdateCommand::creator,
-                                    MmdRenderQueueUpdateCommand::newSyntax);
-    if (!status) {
-        cleanupMmdRenderWitness();
-        return status;
-    }
-    sCppRegisteredMmdRenderQueueUpdateCommand = true;
 
     status = plugin.registerCommand("mmdRenderQueueReindex",
                                     MmdRenderQueueReindexCommand::creator,
@@ -523,15 +503,6 @@ MStatus uninitializePlugin(MObject obj)
                 "Failed to deregister mmdRenderWitness command.");
         }
         sCppRegisteredMmdRenderWitnessCommand = false;
-    }
-
-    if (sCppRegisteredMmdRenderQueueUpdateCommand) {
-        status = plugin.deregisterCommand("mmdRenderQueueUpdate");
-        if (!status) {
-            MGlobal::displayWarning(
-                "Failed to deregister mmdRenderQueueUpdate command.");
-        }
-        sCppRegisteredMmdRenderQueueUpdateCommand = false;
     }
 
     if (sCppRegisteredMmdRenderQueueReindexCommand) {

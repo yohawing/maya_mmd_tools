@@ -129,9 +129,6 @@ public:
     /** Keep transient proxy readiness false while no renderer publishes it. */
     bool setProxyReady(bool ready);
 
-    /** Update one material's effective alpha and rebuild the ordered items. */
-    bool updateMaterialAlpha(std::size_t materialIndex, float diffuseAlpha);
-
     /** Pull present DG alpha elements and apply only changed effective values. */
     bool updateEvaluatedMaterialAlpha();
 
@@ -219,23 +216,6 @@ private:
  * empty array for compatibility.
  */
 class MmdRenderWitnessCommand : public MPxCommand {
-public:
-    static void* creator();
-    static MSyntax newSyntax();
-
-    MStatus doIt(const MArgList& args) override;
-    bool isUndoable() const override;
-};
-
-/**
- * Diagnostic/native queue update command.
- *
- * ``mmdRenderQueueUpdate -node <shape> -materialIndex <index> -alpha <value>``
- * applies a material alpha change to the opt-in shape and marks its VP2
- * geometry dirty.  This is the smallest live witness for morph-equivalent
- * queue changes; it does not alter the ordinary MFnMesh importer.
- */
-class MmdRenderQueueUpdateCommand : public MPxCommand {
 public:
     static void* creator();
     static MSyntax newSyntax();
