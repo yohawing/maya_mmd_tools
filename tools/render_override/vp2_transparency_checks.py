@@ -61,13 +61,15 @@ def capability_decision(report: dict[str, Any]) -> dict[str, Any]:
     split = report["split"]
     contract = report["productContract"]
     return {
-        "splitObjectOrdering": bool(split["orderChangedPixels"] > 100),
+        "splitObjectOrdering": bool(
+            split["positiveControl"]["valid"] and split["orderChangedPixels"] > 100
+        ),
         "unifiedFaceIsolation": bool(unified["faceIsolationChangedPixels"] > 100),
         "unifiedFaceOrdering": bool(unified["frontOrderChangedPixels"] > 100),
         "viewReverseControllable": bool(unified["reverseOrderChangedPixels"] > 100),
         "materialMorphValueConsumed": bool(report["materialMorph"]["imageChangedPixels"] > 100),
         "twoPanelSourceVisibilityPreserved": bool(contract["sourceVisibilityUnchanged"]),
-        "standardSurfaceCanonicalStatePreserved": bool(contract["canonicalStateUnchanged"]),
+        "syntheticCanonicalStatePreserved": bool(contract["syntheticCanonicalStateUnchanged"]),
         "rawDx11ComparisonEligible": bool(report["comparison"]["eligible"]),
     }
 
@@ -176,10 +178,20 @@ def probe_steps(out: Path, baseline_report: Path | None):
         "status": "fail",
         "scope": "synthetic VP2 transparency capability; not full MMD visual parity",
         "probeSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "dependencies": {
+            str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (
+                ROOT / "plug-ins" / "mmd_tools_plugin.py",
+                Path(__file__).with_name("vp2_probe_outline.fx"),
+            )
+        },
         "images": {},
         "notRun": {
             "pmxTextureParity": "not_run; synthetic colors only",
             "gpuTimestamp": "not_run",
+            "standardSurfaceCanonicalState": (
+                "not_run; probe-only mmdCanonicalDiffuse/mmdCanonicalAlpha attributes"
+            ),
         },
     }
     override = None
@@ -276,6 +288,16 @@ def probe_steps(out: Path, baseline_report: Path | None):
         report["split"] = {
             "orderChangedPixels": changed_pixels(split_ab, split_ba),
             "isolationChangedPixels": changed_pixels(split_red, split_blue),
+            "positiveControl": {
+                "redCenter": report["images"]["split_red"]["center"],
+                "blueCenter": report["images"]["split_blue"]["center"],
+                "valid": (
+                    report["images"]["split_red"]["center"][0]
+                    > report["images"]["split_red"]["center"][2]
+                    and report["images"]["split_blue"]["center"][2]
+                    > report["images"]["split_blue"]["center"][0]
+                ),
+            },
         }
 
         cmds.modelEditor(candidate_panel, edit=True, rendererOverrideName="")
@@ -332,7 +354,7 @@ def probe_steps(out: Path, baseline_report: Path | None):
             "weightZeroAlpha": 0.5,
             "weightOneAlpha": cmds.getAttr(evaluator + ".outputDiffuseAlpha"),
             "imageChangedPixels": changed_pixels(morph_zero, morph_one),
-            "canonicalStateUnchanged": canonical_before
+            "syntheticCanonicalStateUnchanged": canonical_before
             == _canonical_state(cmds, (red_shader, blue_shader)),
         }
 
@@ -416,7 +438,7 @@ def probe_steps(out: Path, baseline_report: Path | None):
             "sourceVisibilityUnchanged": (
                 bool(unified_visibility_before) == bool(unified_visibility_after)
             ),
-            "canonicalStateUnchanged": canonical_before == canonical_after,
+            "syntheticCanonicalStateUnchanged": canonical_before == canonical_after,
             "panelImageDifferencePixels": changed_pixels(stock, candidate),
             "centerPixelEqual": (
                 report["images"]["authoring_panel"]["center"]

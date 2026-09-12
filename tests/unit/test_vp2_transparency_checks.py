@@ -27,7 +27,7 @@ def test_timing_summary_uses_observed_nearest_rank_p95() -> None:
 
 def test_capability_decision_does_not_promote_split_success_to_unified() -> None:
     report = {
-        "split": {"orderChangedPixels": 500},
+        "split": {"orderChangedPixels": 500, "positiveControl": {"valid": True}},
         "unified": {
             "faceIsolationChangedPixels": 0,
             "frontOrderChangedPixels": 0,
@@ -36,7 +36,7 @@ def test_capability_decision_does_not_promote_split_success_to_unified() -> None
         "materialMorph": {"imageChangedPixels": 200},
         "productContract": {
             "sourceVisibilityUnchanged": True,
-            "canonicalStateUnchanged": True,
+            "syntheticCanonicalStateUnchanged": True,
         },
         "comparison": {"eligible": False},
     }
@@ -45,3 +45,22 @@ def test_capability_decision_does_not_promote_split_success_to_unified() -> None
     assert decision["unifiedFaceIsolation"] is False
     assert decision["unifiedFaceOrdering"] is False
     assert decision["rawDx11ComparisonEligible"] is False
+    assert decision["syntheticCanonicalStatePreserved"] is True
+
+
+def test_capability_decision_requires_split_positive_control() -> None:
+    report = {
+        "split": {"orderChangedPixels": 500, "positiveControl": {"valid": False}},
+        "unified": {
+            "faceIsolationChangedPixels": 0,
+            "frontOrderChangedPixels": 0,
+            "reverseOrderChangedPixels": 0,
+        },
+        "materialMorph": {"imageChangedPixels": 200},
+        "productContract": {
+            "sourceVisibilityUnchanged": True,
+            "syntheticCanonicalStateUnchanged": True,
+        },
+        "comparison": {"eligible": False},
+    }
+    assert capability_decision(report)["splitObjectOrdering"] is False
