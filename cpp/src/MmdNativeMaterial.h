@@ -11,7 +11,6 @@
 #include <string>
 
 #include "MmdRenderQueue.h"
-#include "MmdRenderShape.h"
 
 namespace mmd {
 
@@ -33,7 +32,6 @@ bool bindNativeMaterialParameters(
     MHWRender::MTexture* mainTexture,
     MHWRender::MTexture* sphereTexture,
     MHWRender::MTexture* toonTexture,
-    bool toonTextureRequested,
-    MmdRenderShape::MaterialBindingDiagnostic* diagnostic);
+    bool toonTextureRequested);
 
 }  // namespace mmd

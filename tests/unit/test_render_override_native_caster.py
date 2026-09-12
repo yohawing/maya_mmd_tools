@@ -28,6 +28,19 @@ def test_native_material_initializes_diagnostic_flags_off() -> None:
     assert '"NativeCasterShadowBias"' in source
 
 
+def test_native_material_binding_has_no_dead_shape_diagnostic_dependency() -> None:
+    header = (CPP / "MmdNativeMaterial.h").read_text(encoding="utf-8")
+    source = (CPP / "MmdNativeMaterial.cpp").read_text(encoding="utf-8")
+    ordered = (CPP / "MmdOrderedRenderOverride.cpp").read_text(encoding="utf-8")
+
+    assert '#include "MmdRenderShape.h"' not in header
+    assert "MaterialBindingDiagnostic" not in header
+    assert "MaterialBindingDiagnostic" not in source
+    call = ordered[ordered.index("mmd::bindNativeMaterialParameters(") :]
+    call = call[: call.index(");")]
+    assert "nullptr" not in call
+
+
 def test_shadow_targets_outlive_borrowing_shaders():
     source = (CPP / "MmdRenderOverride.cpp").read_text(encoding="utf-8")
     ordered = (CPP / "MmdOrderedRenderOverride.cpp").read_text(encoding="utf-8")

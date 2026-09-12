@@ -1486,7 +1486,7 @@ private:
         MTexture* toonTexture = textured ? acquireTexture(toonPath) : nullptr;
         return mmd::bindNativeMaterialParameters(
             shader, material, mainTexture, sphereTexture, toonTexture,
-            textured && !toonPath.empty(), nullptr);
+            textured && !toonPath.empty());
     }
 
     bool bindToonSampler(MShaderInstance* shader)
