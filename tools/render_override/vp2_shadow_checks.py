@@ -75,7 +75,7 @@ def check_vp2_shadow(cmds, root, panel, output_dir, baseline):
         override.request_shadows(lights)
         for route in ("whole", "filtered"):
             pixels = {}
-            for label in ("off", "on", "mode2", "alpha_casters_off", "casters_off", "receivers_off", "restored"):
+            for label in ("off", "on", "native_on_control", "alpha_casters_off", "casters_off", "receivers_off", "restored"):
                 cmds.modelEditor(panel, edit=True, rendererOverrideName="")
                 for source, shader in sources:
                     flags = cmds.getAttr(shader + ".mmd_draw_flags")
@@ -98,7 +98,7 @@ def check_vp2_shadow(cmds, root, panel, output_dir, baseline):
                     "requestedCasterSources": [source for source, _ in sources if cmds.getAttr(source + ".castsShadows")],
                     "nativeShadowEnabled": label != "off", "mmdModeMapping": "off" if label == "off" else "native-on"}
             deltas = {label: image_difference(pixels["on"], pixels[label])
-                      for label in ("off", "mode2", "alpha_casters_off", "casters_off", "receivers_off", "restored")}
+                      for label in ("off", "native_on_control", "alpha_casters_off", "casters_off", "receivers_off", "restored")}
             ordered_on = read_png_rgb(Path(baseline["stages"]["on"]["image"]))
             result[route] = {"changedPixelsFromOn": deltas,
                 "rawOrderedChangedPixels": image_difference(ordered_on, pixels["on"]),
@@ -117,6 +117,8 @@ def check_vp2_shadow(cmds, root, panel, output_dir, baseline):
         cmds.modelEditor(panel, edit=True, rendererOverrideName="")
         omr.MRenderer.deregisterOverride(override)
         override.operations = []
+        for light in lights:
+            omr.MRenderer.setLightRequiresShadows(light, False)
         for plug, value in saved.items():
             cmds.setAttr(plug, value)
         cmds.modelEditor(panel, edit=True, rendererOverrideName=original_override,
