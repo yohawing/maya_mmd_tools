@@ -28,7 +28,7 @@
 #include "MmdCcdIkNode.h"
 #include "MmdPhysicsBoneDriverNode.h"
 #include "MmdOrderedRenderOverride.h"
-#include "MmdRenderOverride.h"
+#include "MmdShadowResources.h"
 #include "MmdRenderShape.h"
 #include "MmdAuthoringCommandSupport.h"
 #include "MmdAuthoringMorphBindingQuery.h"

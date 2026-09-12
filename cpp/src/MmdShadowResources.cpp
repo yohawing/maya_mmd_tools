@@ -1,7 +1,7 @@
-/** @file MmdRenderOverride.cpp
+/** @file MmdShadowResources.cpp
  * @brief Private shadow targets and light projection for MMD Render.
  */
-#include "MmdRenderOverride.h"
+#include "MmdShadowResources.h"
 #include "MmdRenderShape.h"
 #include <maya/MBoundingBox.h>
 #include <maya/MDagPath.h>

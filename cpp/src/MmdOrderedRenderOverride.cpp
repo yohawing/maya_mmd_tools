@@ -10,7 +10,7 @@
 #include "MmdOrderedRenderOverride.h"
 
 #include "MmdNativeMaterial.h"
-#include "MmdRenderOverride.h"
+#include "MmdShadowResources.h"
 #include "MmdRenderShape.h"
 #include "MmdRenderProfiler.h"
 

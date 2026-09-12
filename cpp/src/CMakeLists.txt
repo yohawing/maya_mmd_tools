@@ -70,7 +70,7 @@ set(SOURCES
     MmdTextureAlphaClassifier.cpp
     MmdRenderShape.cpp
     MmdOrderedRenderOverride.cpp
-    MmdRenderOverride.cpp
+    MmdShadowResources.cpp
     MmdUvSeamWeldPlan.cpp
     MmdWeldUvSeamVertices.cpp
     MmdAppendNode.cpp
@@ -93,7 +93,7 @@ set(HEADERS
     MmdTextureAlphaClassifier.h
     MmdRenderShape.h
     MmdOrderedRenderOverride.h
-    MmdRenderOverride.h
+    MmdShadowResources.h
     MmdUvSeamWeldPlan.h
     MmdWeldUvSeamVertices.h
     MmdAppendNode.h

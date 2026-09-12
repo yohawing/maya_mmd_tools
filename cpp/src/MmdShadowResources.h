@@ -1,4 +1,4 @@
-/** @file MmdRenderOverride.h
+/** @file MmdShadowResources.h
  * @brief Private shadow resources owned by MMD Render.
  */
 #pragma once

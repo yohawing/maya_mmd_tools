@@ -5,7 +5,7 @@
 
 #include "MmdNativeMaterial.h"
 
-#include "MmdRenderOverride.h"
+#include "MmdShadowResources.h"
 
 #include <maya/MGlobal.h>
 

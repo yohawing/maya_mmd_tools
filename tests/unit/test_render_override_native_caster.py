@@ -42,7 +42,7 @@ def test_native_material_binding_has_no_dead_shape_diagnostic_dependency() -> No
 
 
 def test_shadow_targets_outlive_borrowing_shaders():
-    source = (CPP / "MmdRenderOverride.cpp").read_text(encoding="utf-8")
+    source = (CPP / "MmdShadowResources.cpp").read_text(encoding="utf-8")
     ordered = (CPP / "MmdOrderedRenderOverride.cpp").read_text(encoding="utf-8")
     release = ordered[ordered.index("beginReceiverShaderRetire(") :]
     assert release.index("releaseShader(") < release.index("finishReceiverShaderRetire(")
