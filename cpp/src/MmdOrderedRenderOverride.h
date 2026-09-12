@@ -12,6 +12,7 @@
 #include <maya/MViewport2Renderer.h>
 
 #include <memory>
+#include <map>
 #include <string>
 
 class MmdShadowResources;
@@ -36,14 +37,27 @@ private:
     class OrderedRenderOperation;
     class OpaqueRenderOperation;
 
-    void requestFallback(const std::string& reason);
+    struct FallbackState {
+        bool requested = false;
+        bool frameActive = false;
+        bool retryPending = false;
+        bool rawRetryActive = false;
+        bool latched = false;
+        std::string reason;
+    };
+
+    void requestFallback(const std::string& reason,
+                         bool currentFrameUsesStandard = false);
     void clearFallback();
+    FallbackState& activeFallbackState();
+    const FallbackState* activeFallbackState() const;
+    std::string fallbackDiagnosticReason() const;
 
     std::unique_ptr<MmdShadowResources> nativeCasterOwner_;
     OrderedRenderOperation* operation_ = nullptr;
     bool operationsInstalled_ = false;
-    bool fallbackRequested_ = false;
-    std::string fallbackReason_;
+    std::string activeDestination_;
+    std::map<std::string, FallbackState> fallbackStates_;
 };
 
 class MmdOrderedRenderWitnessCommand : public MPxCommand {

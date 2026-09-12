@@ -1832,14 +1832,16 @@ MString MmdOrderedRenderOverride::uiName() const
 
 MStatus MmdOrderedRenderOverride::setup(const MString& destination)
 {
-    if (operationsInstalled_ && !fallbackRequested_) {
+    activeDestination_ = destination.asChar();
+    FallbackState& fallback = activeFallbackState();
+    if (operationsInstalled_ && !fallback.requested) {
         if (operation_) {
             operation_->resetFrame();
         }
         return MRenderOverride::setup(destination);
     }
 
-    if (operationsInstalled_ && fallbackRequested_) {
+    if (operationsInstalled_ && fallback.requested) {
         MHWRender::MRenderOperation* detached =
             mOperations.take(MString(kOperationName));
         mOperations.clear();
@@ -1849,13 +1851,17 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         operationsInstalled_ = false;
     }
 
-    if (fallbackRequested_) {
+    if (fallback.requested) {
         MHWRender::MRenderer* fallbackRenderer =
             MHWRender::MRenderer::theRenderer(false);
         mOperations.clear();
         if (fallbackRenderer) {
             fallbackRenderer->getStandardViewportOperations(mOperations);
         }
+        // Render one complete standard VP2 frame, then allow the raw path to
+        // retry. Keep the reason until a later raw setup succeeds so a
+        // transient failure remains diagnosable without becoming permanent.
+        fallback.frameActive = true;
         return MRenderOverride::setup(destination);
     }
 
@@ -1874,7 +1880,6 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         // Editing wires belong to the source Maya meshes. Keep the complete
         // standard operation list instead of filtering them out of this panel.
         if (operation_) operation_->resetFrame();
-        clearFallback();
         return MRenderOverride::setup(destination);
     }
 
@@ -1882,14 +1887,13 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     MSelectionList nonMmdSelection;
     std::string error;
     if (!buildPanelShapePaths(destination, shapePaths, nonMmdSelection, error)) {
-        requestFallback(error);
+        requestFallback(error, true);
         return MRenderOverride::setup(destination);
     }
     if (shapePaths.empty()) {
         if (operation_) {
             operation_->resetFrame();
         }
-        clearFallback();
         return MRenderOverride::setup(destination);
     }
 
@@ -1938,7 +1942,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
             transparent.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert non-MMD transparent scene");
+        requestFallback("could not insert non-MMD transparent scene", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1949,7 +1953,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
                              opaque.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not replace standard opaque scene");
+        requestFallback("could not replace standard opaque scene", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1959,7 +1963,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     if (!mOperations.insertAfter(kOpaqueSceneName, opaqueOperation.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert MMD ordered opaque operation");
+        requestFallback("could not insert MMD ordered opaque operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1974,7 +1978,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     if (!mOperations.insertBefore(kOpaqueSceneName, preSceneUI.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert pre-scene UI operation");
+        requestFallback("could not insert pre-scene UI operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1985,7 +1989,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
                                  postSceneUI.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert post-scene UI operation");
+        requestFallback("could not insert post-scene UI operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1995,7 +1999,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     if (!mOperations.insertAfter(kNonMmdTransparentSceneName, orderedOperation)) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert MMD ordered operation");
+        requestFallback("could not insert MMD ordered operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -2005,7 +2009,14 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         newOperation.release();
     }
     operationsInstalled_ = true;
-    fallbackReason_.clear();
+    FallbackState& completed = activeFallbackState();
+    if (completed.retryPending) {
+        // Keep the retry marker through execute(). A successful cleanup clears
+        // it; another failure can still latch this panel to standard VP2.
+        completed.rawRetryActive = true;
+    } else {
+        clearFallback();
+    }
     return MRenderOverride::setup(destination);
 }
 
@@ -2022,7 +2033,18 @@ MStatus MmdOrderedRenderOverride::cleanup()
         mOperations.clear();
     }
     operationsInstalled_ = false;
-    return MRenderOverride::cleanup();
+    const MStatus status = MRenderOverride::cleanup();
+    FallbackState& fallback = activeFallbackState();
+    if (fallback.frameActive) {
+        fallback.frameActive = false;
+        if (!fallback.latched) {
+            fallback.requested = false;
+            fallback.retryPending = true;
+        }
+    } else if (fallback.rawRetryActive && !fallback.requested) {
+        clearFallback();
+    }
+    return status;
 }
 
 const MString& MmdOrderedRenderOverride::overrideName()
@@ -2052,16 +2074,45 @@ bool MmdOrderedRenderOverride::prepareForPluginUnload()
     return true;
 }
 
-void MmdOrderedRenderOverride::requestFallback(const std::string& reason)
+void MmdOrderedRenderOverride::requestFallback(
+    const std::string& reason,
+    bool currentFrameUsesStandard)
 {
-    fallbackRequested_ = true;
-    fallbackReason_ = reason;
+    FallbackState& fallback = activeFallbackState();
+    if (fallback.retryPending) {
+        // A raw retry failed again. Keep this panel on stable standard VP2
+        // instead of alternating failed raw and fallback frames forever.
+        fallback.latched = true;
+    }
+    fallback.requested = true;
+    fallback.retryPending = false;
+    fallback.rawRetryActive = false;
+    fallback.frameActive = currentFrameUsesStandard;
+    fallback.reason = reason;
 }
 
 void MmdOrderedRenderOverride::clearFallback()
 {
-    fallbackRequested_ = false;
-    fallbackReason_.clear();
+    fallbackStates_.erase(activeDestination_);
+}
+
+MmdOrderedRenderOverride::FallbackState&
+MmdOrderedRenderOverride::activeFallbackState()
+{
+    return fallbackStates_[activeDestination_];
+}
+
+const MmdOrderedRenderOverride::FallbackState*
+MmdOrderedRenderOverride::activeFallbackState() const
+{
+    const auto found = fallbackStates_.find(activeDestination_);
+    return found == fallbackStates_.end() ? nullptr : &found->second;
+}
+
+std::string MmdOrderedRenderOverride::fallbackDiagnosticReason() const
+{
+    const FallbackState* active = activeFallbackState();
+    return active ? active->reason : std::string();
 }
 
 std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
@@ -2090,8 +2141,9 @@ std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
         result << "}";
         return result.str();
     }
-    if (gOrderedOverride->fallbackReason_.empty() &&
-        gOrderedOverride->operation_) {
+    const std::string fallbackReason =
+        gOrderedOverride->fallbackDiagnosticReason();
+    if (fallbackReason.empty() && gOrderedOverride->operation_) {
         return gOrderedOverride->operation_->diagnosticsJson(captureShadowDepth);
     }
     std::ostringstream result;
@@ -2099,7 +2151,7 @@ std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
            << (gRegistered ? "true" : "false")
            << ",\"state\":\"fallback\",\"drawCount\":0"
            << ",\"error\":\""
-           << jsonEscape(gOrderedOverride->fallbackReason_)
+           << jsonEscape(fallbackReason)
            << "\",\"pmxOrder\":[]}";
     return result.str();
 }

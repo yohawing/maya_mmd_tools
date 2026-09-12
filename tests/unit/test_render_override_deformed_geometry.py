@@ -286,3 +286,35 @@ def test_preflight_cache_tracks_structure_without_skipping_draw_checks():
     assert "setCasterParameters(shader, plan)" in caster_draw
     assert "shader->updateParameters(drawContext)" in caster_draw
     assert "shader->activatePass(drawContext, 0U)" in caster_draw
+
+
+def test_ordered_fallback_is_panel_local_and_latches_after_failed_retry():
+    header = (ROOT / "cpp" / "src" / "MmdOrderedRenderOverride.h").read_text(
+        encoding="utf-8"
+    )
+    source = OVERRIDE_SOURCE.read_text(encoding="utf-8")
+
+    assert "std::map<std::string, FallbackState> fallbackStates_;" in header
+    assert "bool retryPending = false;" in header
+    assert "bool rawRetryActive = false;" in header
+    assert "bool latched = false;" in header
+    assert "activeDestination_ = destination.asChar();" in source
+    fallback_setup = source[source.index("if (fallback.requested) {") :]
+    fallback_setup = fallback_setup[: fallback_setup.index("MHWRender::MRenderer* renderer")]
+    assert "fallback.frameActive = true;" in fallback_setup
+    cleanup = source[source.index("MStatus MmdOrderedRenderOverride::cleanup()") :]
+    cleanup = cleanup[: cleanup.index("const MString& MmdOrderedRenderOverride::overrideName")]
+    assert "if (fallback.frameActive)" in cleanup
+    assert "if (!fallback.latched)" in cleanup
+    assert "fallback.retryPending = true;" in cleanup
+    assert "fallback.rawRetryActive && !fallback.requested" in cleanup
+    request = source[source.index("void MmdOrderedRenderOverride::requestFallback") :]
+    request = request[: request.index("void MmdOrderedRenderOverride::clearFallback")]
+    assert "if (fallback.retryPending)" in request
+    assert "fallback.latched = true;" in request
+    assert "fallback.frameActive = currentFrameUsesStandard;" in request
+    raw_success = source[source.index("FallbackState& completed = activeFallbackState();") :]
+    raw_success = raw_success[: raw_success.index("MStatus MmdOrderedRenderOverride::cleanup()")]
+    assert "if (completed.retryPending)" in raw_success
+    assert "completed.rawRetryActive = true;" in raw_success
+    assert "fallbackStates_.erase(activeDestination_);" in source
