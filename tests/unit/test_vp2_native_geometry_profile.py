@@ -30,6 +30,18 @@ def _config(tmp_path: Path) -> dict:
     }
 
 
+def _playback_case(mean_ms: float = 1.0, interval_count: int = 100) -> dict:
+    return {
+        "meanMs": mean_ms,
+        "intervalSampleCount": interval_count,
+        "expectedIntervalSampleCount": interval_count,
+        "intervalMs": [mean_ms] * interval_count,
+        "missingNotificationFrames": [],
+        "duplicateNotificationCount": 0,
+        "outOfOrderNotificationCount": 0,
+    }
+
+
 def test_validate_config_requires_split_pmx_and_positive_samples(tmp_path: Path) -> None:
     config = _config(tmp_path)
     assert profile.validate_config(config) == config
@@ -80,12 +92,21 @@ def test_p95_uses_observed_nearest_rank() -> None:
 
 
 def test_sixteen_ms_acceptance_exposes_each_sub_gate() -> None:
+    cases = [_playback_case(mean) for mean in (15.4, 16.0, 15.8)]
     accepted = profile.sixteen_ms_acceptance(
-        [{"meanMs": 15.4}, {"meanMs": 16.0}, {"meanMs": 15.8}],
-        {"p95Ms": 16.67, "missingNotificationCount": 0},
+        cases,
+        {
+            "repeatCount": 3,
+            "p95Ms": 16.67,
+            "missingNotificationCount": 0,
+            "duplicateNotificationCount": 0,
+            "outOfOrderNotificationCount": 0,
+        },
         eligible=True,
     )
     assert accepted == {
+        "atLeastThreeRepeats": True,
+        "atLeast100IntervalsPerRepeat": True,
         "repeatMeansAtMost16Ms": True,
         "pooledP95AtMost16_67Ms": True,
         "notificationCompleteness": True,
@@ -98,6 +119,58 @@ def test_sixteen_ms_acceptance_exposes_each_sub_gate() -> None:
     )
     assert rejected["sixteenMsPassed"] is False
     assert not any(rejected.values())
+
+
+@pytest.mark.parametrize("repeat_count", [1, 2])
+def test_sixteen_ms_acceptance_rejects_short_probe(repeat_count: int) -> None:
+    cases = [_playback_case(interval_count=1) for unused_repeat in range(repeat_count)]
+    result = profile.sixteen_ms_acceptance(
+        cases,
+        {
+            "repeatCount": repeat_count,
+            "p95Ms": 1.0,
+            "missingNotificationCount": 0,
+            "duplicateNotificationCount": 0,
+            "outOfOrderNotificationCount": 0,
+        },
+        eligible=True,
+    )
+    assert result["atLeastThreeRepeats"] is (repeat_count >= 3)
+    assert result["atLeast100IntervalsPerRepeat"] is False
+    assert result["sixteenMsPassed"] is False
+
+
+def test_sixteen_ms_acceptance_rejects_missing_evidence() -> None:
+    result = profile.sixteen_ms_acceptance(
+        [{"meanMs": 1.0}] * 3,
+        {"repeatCount": 3, "p95Ms": 1.0},
+        eligible=True,
+    )
+    assert result["atLeastThreeRepeats"] is True
+    assert result["atLeast100IntervalsPerRepeat"] is False
+    assert result["notificationCompleteness"] is False
+    assert result["sixteenMsPassed"] is False
+
+
+@pytest.mark.parametrize(
+    "notification_key",
+    ["missingNotificationCount", "duplicateNotificationCount", "outOfOrderNotificationCount"],
+)
+def test_sixteen_ms_acceptance_rejects_notification_anomalies(
+    notification_key: str,
+) -> None:
+    cases = [_playback_case() for unused_repeat in range(3)]
+    summary = {
+        "repeatCount": 3,
+        "p95Ms": 1.0,
+        "missingNotificationCount": 0,
+        "duplicateNotificationCount": 0,
+        "outOfOrderNotificationCount": 0,
+    }
+    summary[notification_key] = 1
+    result = profile.sixteen_ms_acceptance(cases, summary, eligible=True)
+    assert result["notificationCompleteness"] is False
+    assert result["sixteenMsPassed"] is False
 
 
 def test_configure_cache_evaluator_records_disabled_acceptance() -> None:
@@ -127,6 +200,18 @@ def test_normalize_playback_callbacks_requires_n_plus_one_after_warmup() -> None
     assert evidence["measuredFrameCallbackCount"] == 3
     assert evidence["intervalSampleCount"] == 2
     assert evidence["missingNotificationFrames"] == []
+    assert evidence["duplicateNotificationCount"] == 0
+    assert evidence["outOfOrderNotificationCount"] == 0
+
+
+def test_normalize_playback_callbacks_counts_measured_duplicates() -> None:
+    evidence = profile.normalize_playback_callbacks(
+        [[0.0, 10], [0.02, 11], [0.03, 11], [0.04, 12], [0.07, 13]],
+        first=10,
+        warmup=1,
+        interval_count=2,
+    )
+    assert evidence["duplicateNotificationCount"] == 1
 
 
 @pytest.mark.parametrize(

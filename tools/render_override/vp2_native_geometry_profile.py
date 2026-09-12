@@ -224,15 +224,64 @@ def sixteen_ms_acceptance(
 ) -> dict[str, bool]:
     """Evaluate the fixed 16 ms playback acceptance and expose each sub-gate."""
 
-    repeat_means_pass = bool(cases) and all(case["meanMs"] <= 16.0 for case in cases)
-    pooled_p95_pass = summary["p95Ms"] <= 16.67
-    notifications_pass = summary["missingNotificationCount"] == 0
+    def exact_count(value: Any, minimum: int = 0) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+    def number_at_most(value: Any, limit: float) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value <= limit
+        )
+
+    def case_has_enough_intervals(case: dict[str, Any]) -> bool:
+        observed = case.get("intervalSampleCount")
+        expected = case.get("expectedIntervalSampleCount")
+        intervals = case.get("intervalMs")
+        return bool(
+            exact_count(observed, 100)
+            and expected == observed
+            and isinstance(intervals, list)
+            and len(intervals) == observed
+        )
+
+    summary_repeat_count = summary.get("repeatCount")
+    repeat_count_pass = bool(
+        len(cases) >= 3
+        and exact_count(summary_repeat_count, 3)
+        and summary_repeat_count == len(cases)
+    )
+    interval_count_pass = bool(cases) and all(map(case_has_enough_intervals, cases))
+    repeat_means_pass = bool(cases) and all(
+        number_at_most(case.get("meanMs"), 16.0) for case in cases
+    )
+    pooled_p95_pass = number_at_most(summary.get("p95Ms"), 16.67)
+    notifications_pass = all(
+        exact_count(summary.get(key)) and summary.get(key) == 0
+        for key in (
+            "missingNotificationCount",
+            "duplicateNotificationCount",
+            "outOfOrderNotificationCount",
+        )
+    ) and all(
+        case.get("missingNotificationFrames") == []
+        and exact_count(case.get("duplicateNotificationCount"))
+        and case["duplicateNotificationCount"] == 0
+        and exact_count(case.get("outOfOrderNotificationCount"))
+        and case["outOfOrderNotificationCount"] == 0
+        for case in cases
+    )
     return {
+        "atLeastThreeRepeats": repeat_count_pass,
+        "atLeast100IntervalsPerRepeat": interval_count_pass,
         "repeatMeansAtMost16Ms": repeat_means_pass,
         "pooledP95AtMost16_67Ms": pooled_p95_pass,
         "notificationCompleteness": notifications_pass,
         "sixteenMsPassed": bool(
             eligible
+            and repeat_count_pass
+            and interval_count_pass
             and repeat_means_pass
             and pooled_p95_pass
             and notifications_pass
@@ -262,6 +311,9 @@ def normalize_playback_callbacks(
     last = first + warmup + interval_count
     expected_frames = list(range(first + warmup, last + 1))
     measured = [item for item in unique_frames if first + warmup <= item[1] <= last]
+    raw_measured_count = sum(
+        first + warmup <= frame <= last for unused_stamp, frame in callbacks
+    )
     observed_frames = [int(item[1]) for item in measured]
     missing_frames = [frame for frame in expected_frames if frame not in observed_frames]
     intervals = [(b[0] - a[0]) * 1000.0 for a, b in zip(measured, measured[1:])]
@@ -272,6 +324,8 @@ def normalize_playback_callbacks(
         "intervalSampleCount": len(intervals),
         "expectedIntervalSampleCount": interval_count,
         "missingNotificationFrames": missing_frames,
+        "duplicateNotificationCount": raw_measured_count - len(measured),
+        "outOfOrderNotificationCount": 0,
         "intervalMs": intervals,
     }
     if observed_frames != expected_frames or len(intervals) != interval_count:
@@ -357,6 +411,12 @@ def native_playback_steps(cmds: Any, panel: str, config: dict[str, Any], report:
         "expectedIntervalSampleCount": playback_frames * config["repeats"],
         "missingNotificationCount": sum(
             len(case["missingNotificationFrames"]) for case in cases
+        ),
+        "duplicateNotificationCount": sum(
+            case["duplicateNotificationCount"] for case in cases
+        ),
+        "outOfOrderNotificationCount": sum(
+            case["outOfOrderNotificationCount"] for case in cases
         ),
         "meanMs": statistics.mean(all_intervals),
         "medianMs": statistics.median(all_intervals),
