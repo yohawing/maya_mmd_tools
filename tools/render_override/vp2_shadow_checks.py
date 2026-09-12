@@ -117,7 +117,7 @@ def check_vp2_shadow(cmds, root, panel, output_dir, baseline):
         cmds.modelEditor(panel, edit=True, rendererOverrideName="")
         omr.MRenderer.deregisterOverride(override)
         override.operations = []
-        for light in lights:
+        for light in override.shadow_requests:
             omr.MRenderer.setLightRequiresShadows(light, False)
         for plug, value in saved.items():
             cmds.setAttr(plug, value)
