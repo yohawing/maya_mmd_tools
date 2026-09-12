@@ -213,11 +213,10 @@ private:
 /**
  * Diagnostic command for commandPort/GUI smoke.
  *
- * ``mmdRenderWitness -node <shape>`` returns ``pending`` until the custom
- * geometry override has created its render items, a transient ``failed``
- * reason when it falls back, then the pass order after recovery.
- * Add ``-json true`` for deterministic structured per-item material-binding
- * diagnostics while preserving the human-readable result by default.
+ * ``mmdRenderWitness -node <shape>`` reports whether source geometry is
+ * pending or has a transient fallback failure. Add ``-json true`` for the
+ * stable version-1 diagnostic schema; retired per-item details remain an
+ * empty array for compatibility.
  */
 class MmdRenderWitnessCommand : public MPxCommand {
 public:

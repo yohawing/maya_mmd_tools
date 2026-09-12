@@ -117,6 +117,7 @@ def test_unpublished_render_witness_state_is_removed_but_json_command_remains():
     assert "setProxyReady(false);" in source
     assert "std::string materialBindingDiagnosticsJson() const;" in header
     assert '<< ",\\\"geometryUpdates\\\":" << geometryUpdateCount_' in source
+    assert '<< ",\\\"bufferUploads\\\":0"' in source
     assert '<< ",\\\"items\\\":[]}"' in source
 
 

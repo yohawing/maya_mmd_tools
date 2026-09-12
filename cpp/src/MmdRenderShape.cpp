@@ -1853,6 +1853,10 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
            << jsonEscape(status) << ",\"fallbackReason\":"
            << jsonEscape(renderFallbackReason_)
            << ",\"geometryUpdates\":" << geometryUpdateCount_
+           // Version 1 exposed this top-level key. The retired geometry
+           // override no longer uploads buffers, so preserve the schema with
+           // its only valid value instead of retaining dead counter state.
+           << ",\"bufferUploads\":0"
            << ",\"repairedNormals\":" << evaluatedNormalRepairCount_
            << ",\"staticNormalFallbacks\":"
            << evaluatedNormalStaticFallbackCount_
