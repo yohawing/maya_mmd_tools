@@ -50,6 +50,11 @@ def run_probe(config_path):
                          displayAppearance="smoothShaded", displayTextures=True, grid=False)
         cmds.select(clear=True)
         report["shadow"] = check_self_shadow(cmds, root, shape, panel, out)
+        if config.get("vp2ShadowComparison"):
+            from tools.render_override.vp2_shadow_checks import check_vp2_shadow
+
+            report["vp2ShadowComparison"] = check_vp2_shadow(
+                cmds, root, panel, out, report["shadow"])
         shaders = _collect_shaders_by_material_index(root)
         flags = {shader: cmds.getAttr(shader + ".mmd_draw_flags") for shader in shaders.values()}
 
@@ -94,13 +99,15 @@ def main():
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--port", type=int, default=7745)
     parser.add_argument("--split-materials", action="store_true")
+    parser.add_argument("--vp2-shadow-comparison", action="store_true")
     args = parser.parse_args()
     out = args.out_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
     plugin = ROOT / f"plug-ins/{args.maya}/Release/mmd_tools_cpp.mll"
     config = out / "config.json"
     config.write_text(json.dumps({"model": str(args.model.resolve()), "output": str(out),
-                                 "plugin": str(plugin), "split": args.split_materials}), encoding="utf-8")
+                                 "plugin": str(plugin), "split": args.split_materials,
+                                 "vp2ShadowComparison": args.vp2_shadow_comparison}), encoding="utf-8")
     report = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=out, port=args.port, timeout=300,
         log_path=out / "probe.log", report_path=out / "report.json",

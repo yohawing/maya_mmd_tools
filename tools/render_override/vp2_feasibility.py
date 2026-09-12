@@ -59,6 +59,18 @@ def make_override():
             super().__init__("vp2Feasibility")
             self.operations = []
             self.index = 0
+            self.shadow_requests = []
+
+        def request_shadows(self, lights):
+            """Queue native maps before scene execution, as in Autodesk's sample."""
+            selection = om.MSelectionList()
+            for light in lights:
+                selection.add(light)
+            self.shadow_requests = [selection.getDependNode(i) for i in range(selection.length())]
+
+        def setup(self, destination):
+            for light in self.shadow_requests:
+                omr.MRenderer.setLightRequiresShadows(light, True)
 
         def configure(self, groups, shaders=None):
             shaders = shaders or [None] * len(groups)
