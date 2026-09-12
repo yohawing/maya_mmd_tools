@@ -1927,6 +1927,17 @@ def render_vp2_feasibility(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_vp2_transparency(session: nox.Session) -> None:
+    """Probe VP2 transparent ordering, face filtering, and two-panel contracts."""
+    session.run(
+        sys.executable,
+        "tools/render_override/vp2_transparency_checks.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def render_stock_preview(session: nox.Session) -> None:
     """Verify standardSurface texture/color/alpha on OpenGL Core in Maya GUI."""
     session.run(sys.executable, "tools/render_override/stock_preview_e2e.py",
