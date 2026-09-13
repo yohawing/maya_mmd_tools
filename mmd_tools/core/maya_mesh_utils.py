@@ -11,6 +11,30 @@ from mmd_tools.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def separate_render_proxy(mesh_transform, parent, cmds_module=cmds):
+    """Keep native draw shapes out of editable blendShape target hierarchies."""
+    proxies = cmds_module.listRelatives(
+        mesh_transform, shapes=True, type="mmdRenderShape", fullPath=True
+    ) or []
+    if len(proxies) != 1:
+        raise RuntimeError("FastLoad must have one render proxy before DAG organization")
+    name = mesh_transform.rsplit("|", 1)[-1]
+    render_transform = cmds_module.group(empty=True, name=f"{name}_render", parent=parent)
+    try:
+        cmds_module.parent(proxies[0], render_transform, shape=True, relative=True)
+        cmds_module.connectAttr(
+            f"{mesh_transform}.matrix", f"{render_transform}.offsetParentMatrix"
+        )
+        cmds_module.connectAttr(
+            f"{mesh_transform}.visibility", f"{render_transform}.visibility"
+        )
+        cmds_module.setAttr(f"{render_transform}.hiddenInOutliner", True)
+    except Exception:
+        cmds_module.delete(render_transform)
+        raise
+    return render_transform
+
+
 def resolve_mesh_shape(mesh_node):
     """Resolve the editable mesh, excluding render proxies and intermediate shapes."""
     if cmds.nodeType(mesh_node) == "mesh":

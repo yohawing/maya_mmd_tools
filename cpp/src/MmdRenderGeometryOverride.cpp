@@ -6,7 +6,6 @@
 #include "MmdRenderGeometryOverride.h"
 
 #include "MmdNativeMaterial.h"
-#include "MmdOrderedRenderOverride.h"
 #include "MmdRenderShape.h"
 #include "MmdRenderOverride.h"
 
@@ -306,7 +305,7 @@ bool MmdRenderGeometryOverride::supportsEvaluationManagerParallelUpdate() const
 
 bool MmdRenderGeometryOverride::requiresGeometryUpdate() const
 {
-    return shape_ != nullptr;
+    return shape_ && uploadedRevision_ != shape_->renderDataRevision();
 }
 
 bool MmdRenderGeometryOverride::requiresUpdateRenderItems(
@@ -323,6 +322,11 @@ void MmdRenderGeometryOverride::updateDG()
 
     shape_->updateEvaluatedMaterialAlpha();
     shape_->updateEvaluatedMaterialValues();
+    shape_->updateEvaluatedMaterialSettings();
+
+    if (!shape_->consumeMeshInputDirty()) {
+        return;
+    }
 
     MPlug inputPlug(shape_->thisMObject(), MmdRenderShape::aInputMesh);
     if (inputPlug.isNull()) {
@@ -368,17 +372,17 @@ void MmdRenderGeometryOverride::updateRenderItems(
     // Disable stale items before rebuilding the pass list.  They are enabled
     // by findOrCreateItem only after the current shape still owns geometry for
     // that pass; populateGeometry disables them again on any buffer failure.
-    shape_->clearRenderItemWitness();
     shape_->clearMaterialBindingDiagnostics();
     disableItems(list);
     if (!shape_->hasValidGeometry()) {
+        shape_->clearRenderItemWitness();
         return;
     }
 
     MRenderer* renderer = MRenderer::theRenderer();
-    const bool orderedActive =
+    const bool nativeCasterActive =
         renderer &&
-        renderer->activeRenderOverride() == MmdOrderedRenderOverride::overrideName();
+        renderer->activeRenderOverride() == MmdNativeCasterRenderOverride::overrideName();
     const MShaderManager* shaderManager =
         renderer ? renderer->getShaderManager() : nullptr;
     MTextureManager* textureManager =
@@ -523,16 +527,18 @@ void MmdRenderGeometryOverride::updateRenderItems(
         diagnostic.mainTextureAcquired = mainTexture != nullptr;
         diagnostic.sphereMode = queueGeometry.material.sphereMode;
         // kRenderOpaqueShadedItems draws MaterialSceneItem entries only.
-        // Opaque caster-off body/outline items can therefore remain normally
-        // viewport-visible as NonMaterialSceneItem without entering the
-        // caster scene.  Transparent items must remain MaterialSceneItem for
+        // Only the diagnostic native caster route needs caster-off body/hull
+        // items in the UI category. Default/Ordered preparation can run before
+        // activeRenderOverride is set; categorizing those hulls as UI would
+        // redraw them after Ordered and leak filled geometry into wireframe.
+        // Transparent items must remain MaterialSceneItem for
         // Maya's transparent pass, and are excluded by the opaque scene
         // filter instead.
         const bool casterEligible = !outline &&
                                     queueGeometry.material.selfShadowMap &&
                                     !effectiveTransparent;
         const MRenderItem::RenderItemType itemType =
-            (orderedActive || casterEligible || effectiveTransparent)
+            (!nativeCasterActive || casterEligible || effectiveTransparent)
                 ? MRenderItem::MaterialSceneItem
                 : MRenderItem::NonMaterialSceneItem;
         diagnostic.casterEligible = casterEligible;
@@ -593,6 +599,9 @@ void MmdRenderGeometryOverride::updateRenderItems(
             return false;
         }
         diagnostic.shaderAvailable = true;
+        if (!queueGeometry.material.selfShadow && receiverShaders_.count(materialShader)) {
+            MmdNativeCasterRenderOverride::deactivateReceiverShader(materialShader);
+        }
         const bool parameterBindingSuccess = setNativeMaterialParameters(
             materialShader, queueGeometry.material, textureManager, &diagnostic) &&
             (outline || !queueGeometry.material.selfShadow ||
@@ -936,6 +945,8 @@ void MmdRenderGeometryOverride::populateGeometry(
         }
         disableItems(renderItems);
         shape_->clearRenderItemWitness();
+    } else {
+        uploadedRevision_ = shape_->renderDataRevision();
     }
 }
 

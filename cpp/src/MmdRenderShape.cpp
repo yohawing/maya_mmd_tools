@@ -151,7 +151,8 @@ bool isMaterialValuesPlug(const MPlug& plug)
 {
     MPlug current = plug;
     while (!current.isNull()) {
-        if (current.attribute() == MmdRenderShape::aMaterialValues) {
+        if (current.attribute() == MmdRenderShape::aMaterialValues ||
+            current.attribute() == MmdRenderShape::aMaterialSettings) {
             return true;
         }
         MStatus status;
@@ -392,6 +393,8 @@ MObject MmdRenderShape::aInputMesh;
 MObject MmdRenderShape::aMaterialAlpha;
 MObject MmdRenderShape::aMaterialValues;
 MObject MmdRenderShape::aMaterialValueChildren[13];
+MObject MmdRenderShape::aMaterialSettings;
+MObject MmdRenderShape::aMaterialSettingChildren[7];
 MObject MmdRenderShape::aProxyReady;
 MObject MmdRenderShape::aSourceVisibility;
 
@@ -500,6 +503,36 @@ MStatus MmdRenderShape::initialize()
         return status;
     }
 
+    MFnCompoundAttribute settingsAttribute;
+    aMaterialSettings = settingsAttribute.create("materialSettings", "ms", &status);
+    if (!status) return status;
+    const char* settingNames[] = {"drawFlags", "sphereMode", "sharedToon",
+        "toonIndex", "mainTexturePath", "sphereTexturePath", "toonTexturePath"};
+    const char* settingShortNames[] = {"df", "sm", "st", "ti", "mtp", "stp", "ttp"};
+    for (unsigned int index = 0; index < 7U; ++index) {
+        if (index < 4U) {
+            aMaterialSettingChildren[index] = numericAttribute.create(
+                settingNames[index], settingShortNames[index], MFnNumericData::kInt,
+                index == 3U ? -1 : 0, &status);
+            if (!status) return status;
+            configureMaterialAttribute(numericAttribute);
+        } else {
+            aMaterialSettingChildren[index] = typedAttribute.create(
+                settingNames[index], settingShortNames[index], MFnData::kString,
+                MObject::kNullObj, &status);
+            if (!status) return status;
+            configureMaterialAttribute(typedAttribute);
+        }
+        status = settingsAttribute.addChild(aMaterialSettingChildren[index]);
+        if (!status) return status;
+    }
+    settingsAttribute.setArray(true);
+    settingsAttribute.setIndexMatters(true);
+    settingsAttribute.setUsesArrayDataBuilder(true);
+    configureMaterialAttribute(settingsAttribute);
+    status = addAttribute(aMaterialSettings);
+    if (!status) return status;
+
     aProxyReady = numericAttribute.create(
         "proxyReady", "pr", MFnNumericData::kBoolean, false, &status);
     if (!status) {
@@ -553,6 +586,16 @@ MStatus MmdRenderShape::preEvaluation(
 {
     if (context.isNormal()) {
         MStatus status;
+        for (const MObject& child : aMaterialSettingChildren) {
+            if (evaluationNode.dirtyPlugExists(child, &status) && status) {
+                MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+                break;
+            }
+        }
+        if (evaluationNode.dirtyPlugExists(aInputMesh, &status) && status) {
+            meshInputDirty_ = true;
+            MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+        }
         if (evaluationNode.dirtyPlugExists(aMaterialAlpha, &status) &&
             status) {
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
@@ -579,6 +622,10 @@ MStatus MmdRenderShape::preEvaluation(
 MStatus MmdRenderShape::setDependentsDirty(const MPlug& plug,
                                            MPlugArray& /*plugArray*/)
 {
+    if (!plug.isNull() && plug.attribute() == aInputMesh) {
+        meshInputDirty_ = true;
+        MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+    }
     if (!plug.isNull() &&
         (plug.attribute() == aMaterialAlpha || isMaterialValuesPlug(plug))) {
         MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
@@ -949,6 +996,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     std::vector<float> nextStaticPositions = next.positions;
     std::vector<float> nextStaticNormals = next.normals;
     geometry_ = std::move(next);
+    ++renderDataRevision_;
+    meshInputDirty_ = true;
     staticPositions_ = std::move(nextStaticPositions);
     staticNormals_ = std::move(nextStaticNormals);
     boundingBox_ = nextBounds;
@@ -964,6 +1013,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
 
 bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 {
+    ++geometryUpdateCount_;
+    ++renderDataRevision_;
     auto reject = [this](const std::string& reason) {
         const bool reasonChanged = recordRenderFallbackReason(reason);
         if (reasonChanged) {
@@ -975,6 +1026,8 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         // override until a later DG update supplies a valid mesh (or the
         // input is disconnected and static geometry is explicitly restored).
         geometryValid_ = false;
+        // A transient evaluation failure must remain eligible for retry.
+        meshInputDirty_ = true;
         evaluatedNormalRepairCount_ = 0U;
         evaluatedNormalStaticFallbackCount_ = 0U;
         clearMaterialBindingDiagnostics();
@@ -1169,6 +1222,7 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 void MmdRenderShape::useStaticGeometry()
 {
     if (!geometryValid_ || evaluatedGeometryActive_) {
+        ++renderDataRevision_;
         // Build both replacements before swapping either stream so a failed
         // allocation cannot expose a half-restored geometry state.
         std::vector<float> restoredPositions = staticPositions_;
@@ -1349,6 +1403,62 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
     }
 }
 
+void MmdRenderShape::updateEvaluatedMaterialSettings()
+{
+    MPlug settings(thisMObject(), aMaterialSettings);
+    MStatus status;
+    const unsigned int count = settings.evaluateNumElements(&status);
+    if (!status || count == 0U) return;
+    auto nextInputs = geometry_.queueInputs;
+    bool changed = false;
+    for (unsigned int physical = 0; physical < count; ++physical) {
+        const MPlug element = settings.elementByPhysicalIndex(physical, &status);
+        if (!status) return;
+        const unsigned int materialIndex = element.logicalIndex(&status);
+        if (!status) return;
+        const int flags = element.child(0U).asInt(&status);
+        if (!status) return;
+        const int sphereMode = element.child(1U).asInt(&status);
+        if (!status) return;
+        const bool sharedToon = element.child(2U).asInt(&status) != 0;
+        if (!status) return;
+        const int toonIndex = element.child(3U).asInt(&status);
+        if (!status) return;
+        const std::string mainPath = element.child(4U).asString(&status).asUTF8();
+        if (!status) return;
+        const std::string spherePath = element.child(5U).asString(&status).asUTF8();
+        if (!status) return;
+        const std::string toonPath = element.child(6U).asString(&status).asUTF8();
+        if (!status) return;
+        const int sharedIndex = sharedToon ? toonIndex : -1;
+        for (auto& input : nextInputs) {
+            if (input.materialIndex != materialIndex) continue;
+            if (input.doubleSided == bool(flags & 1) &&
+                input.selfShadowMap == bool(flags & 4) &&
+                input.selfShadow == bool(flags & 8) &&
+                input.edgeDrawing == bool(flags & 16) &&
+                input.sphereMode == sphereMode && input.sharedToonIndex == sharedIndex &&
+                input.mainTexturePath == mainPath && input.sphereTexturePath == spherePath &&
+                input.toonTexturePath == toonPath) continue;
+            if (input.mainTexturePath != mainPath) input.mainTextureAvailable = false;
+            input.doubleSided = bool(flags & 1);
+            input.selfShadowMap = bool(flags & 4);
+            input.selfShadow = bool(flags & 8);
+            input.edgeDrawing = bool(flags & 16);
+            input.sphereMode = sphereMode;
+            input.sharedToonIndex = sharedIndex;
+            input.mainTexturePath = mainPath;
+            input.sphereTexturePath = spherePath;
+            input.toonTexturePath = toonPath;
+            changed = true;
+        }
+    }
+    if (changed && resyncMaterialQueue(nextInputs)) {
+        clearRenderItemWitness();
+        clearMaterialBindingDiagnostics();
+    }
+}
+
 bool MmdRenderShape::updateMainTextureAvailability(
     const std::vector<bool>& availability)
 {
@@ -1406,6 +1516,7 @@ bool MmdRenderShape::resyncMaterialQueue(
         sourceIndexByInput[inputIndex] = candidateIndex;
     }
 
+    ++renderDataRevision_;
     bool orderChanged = geometry_.renderQueue.size() != nextQueue.size();
     if (!orderChanged) {
         for (std::size_t index = 0; index < nextQueue.size(); ++index) {
@@ -1578,6 +1689,7 @@ bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
     geometry_.queueInputs = std::move(nextInputs);
     geometry_.renderQueue = std::move(nextQueue);
     geometry_.queueGeometry = std::move(reordered);
+    ++renderDataRevision_;
     clearRenderItemWitness();
     clearMaterialBindingDiagnostics();
     return true;
@@ -1637,6 +1749,7 @@ void MmdRenderShape::recordGeometryWitness(std::size_t vertexCount,
                                            std::size_t indexCount,
                                            const std::string& descriptorSummary)
 {
+    ++bufferUploadCount_;
     geometryWitnessVertexCount_ = vertexCount;
     geometryWitnessIndexCount_ = indexCount;
     geometryWitnessDescriptorSummary_ = descriptorSummary;
@@ -1686,7 +1799,10 @@ std::string MmdRenderShape::materialBindingDiagnosticsJson() const
                                                               : "failed");
     stream << "{\"version\":1,\"status\":"
            << jsonEscape(status) << ",\"fallbackReason\":"
-           << jsonEscape(renderFallbackReason_) << ",\"items\":[";
+           << jsonEscape(renderFallbackReason_)
+           << ",\"geometryUpdates\":" << geometryUpdateCount_
+           << ",\"bufferUploads\":" << bufferUploadCount_
+           << ",\"items\":[";
     for (std::size_t index = 0; index < materialBindingDiagnostics_.size();
          ++index) {
         if (index != 0U) {

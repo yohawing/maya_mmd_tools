@@ -1892,6 +1892,31 @@ def fast_import_authoring(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_override_authoring(session: nox.Session) -> None:
+    """Verify native proxy authoring in an isolated Maya GUI."""
+    session.run(
+        sys.executable,
+        "tools/render_override/render_override_vp2_ownership_e2e.py",
+        "--model", "tests/data/test_morph_model.pmx",
+        "--capture-only", "--ui-import", "--authoring-checks",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def render_override_self_shadow(session: nox.Session) -> None:
+    """Verify Ordered shadow modes and flags using an explicit textured PMX."""
+    session.run(
+        sys.executable,
+        "tools/render_override/render_override_vp2_ownership_e2e.py",
+        "--capture-only", "--ui-import", "--shadow-checks",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def fast_import_parity(session: nox.Session) -> None:
     """Compare Python PMX import with the C++ FastLoad VP2 scene contract."""
     maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)

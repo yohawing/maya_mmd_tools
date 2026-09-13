@@ -65,10 +65,13 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
             shared_toon_flag=1,
         )
         converter = MeshConverter.__new__(MeshConverter)
+        converter.texture_dir = "C:/resolved"
 
         with patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
-        ) as set_custom_attributes:
+        ) as set_custom_attributes, patch(
+            "mmd_tools.converters.mesh_converter.cmds.attributeQuery", return_value=False
+        ):
             converter._apply_custom_attributes(
                 "shader1",
                 material,
@@ -125,10 +128,13 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
             shared_toon_flag=1,
         )
         converter = MeshConverter.__new__(MeshConverter)
+        converter.texture_dir = ""
 
         with patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
-        ) as set_custom_attributes:
+        ) as set_custom_attributes, patch(
+            "mmd_tools.converters.mesh_converter.cmds.attributeQuery", return_value=False
+        ):
             converter._apply_custom_attributes("shader1", material, [], is_pmd=False)
 
         attrs = set_custom_attributes.call_args[0][1]

@@ -1,0 +1,84 @@
+"""Acceptance checks for the existing Ordered self-shadow path."""
+
+import json
+
+from tools.render_override.common import capture_view
+from tools.render_override.render_override_visual_gate import read_png_rgb
+
+
+def check_self_shadow(cmds, root, shape, panel, output_dir):
+    """Check mode and PMX flag A/B/A on an imported, textured representative."""
+    from mmd_tools.converters.light_converter import find_mmd_light
+    from mmd_tools.converters.material_morph_runtime import _collect_shaders_by_material_index
+    from tools.render_override.render_override_vp2_ownership_e2e import _make_parity_camera
+
+    light = find_mmd_light()
+    assert light, "missing model light controller"
+    camera = _make_parity_camera(cmds, {"position": [0.04, 0.58, 3.4],
+        "target": [0.04, 0.58, 0.0], "fov": 28.0, "near": 0.1, "far": 10000.0})
+    cmds.lookThru(panel, camera)
+    cmds.select(root)
+    cmds.viewFit(camera, fitFactor=0.9, animate=False)
+    cmds.select(clear=True)
+    cmds.modelEditor(panel, edit=True, rendererOverrideName="mmdOrdered")
+    mode_plug = f"{light}.mmd_self_shadow_mode"
+    original_mode = cmds.getAttr(mode_plug)
+    stages = {}
+
+    def capture(label):
+        cmds.refresh(force=True)
+        path = capture_view(cmds, output_dir / f"shadow_{label}.png", panel, 1024, 1024)
+        witness = json.loads(cmds.mmdOrderedRenderWitness(shadowDepth=True))
+        assert not witness["error"], witness
+        stages[label] = {"image": str(path), "witness": witness}
+        return read_png_rgb(path)[2]
+
+    shaders = _collect_shaders_by_material_index(root)
+    flags = {shader: cmds.getAttr(f"{shader}.mmd_draw_flags") for shader in shaders.values()}
+    try:
+        cmds.setAttr(mode_plug, 0)
+        off = capture("off")
+        cmds.setAttr(mode_plug, 1)
+        on = capture("on")
+        witness = stages["on"]["witness"]
+        assert witness["casterDrawCount"] > 0 and witness["receiverDrawCount"] > 0
+        assert witness["sameFrameShadowReady"] and witness["shadowDepth"]["writtenSamples"] > 0
+        assert witness["shadowDepth"]["invalidSamples"] == 0
+        native = json.loads(cmds.mmdRenderWitness(node=shape, json=True))
+        alpha_casters = {item["materialIndex"] for item in native["items"]
+                         if not item["outline"] and item["selfShadowMap"]
+                         and item["effectiveTransparent"] and item["mainTextureAcquired"]}
+        assert alpha_casters, "fixture must contain textured transparent casters"
+        assert alpha_casters <= set(witness["casterMaterialIndices"])
+        cmds.setAttr(mode_plug, 2)
+        mode2 = capture("mode2")
+        mode2_witness = stages["mode2"]["witness"]
+        assert mode2_witness["selfShadowMode"] == 2 and mode2_witness["sameFrameShadowReady"]
+        assert mode2_witness["shadowDepth"]["writtenSamples"] > 0 and mode2_witness["shadowDepth"]["invalidSamples"] == 0
+        assert mode2 != off, "mode2 did not produce visible self-shadow"
+        cmds.setAttr(mode_plug, 1)
+        assert capture("restored") == on, "self-shadow mode round trip changed pixels"
+        changed = sum(a != b for a, b in zip(off, on))
+        assert changed > 100, "self-shadow ON produced no meaningful image change"
+
+        for shader, value in flags.items():
+            cmds.setAttr(f"{shader}.mmd_draw_flags", value & ~4)
+        capture("casters_off")
+        assert stages["casters_off"]["witness"]["casterDrawCount"] == 0
+        for shader, value in flags.items():
+            # `value` is the ORIGINAL PMX flag record, so this simultaneously
+            # restores the caster bit and disables only the receiver bit.
+            cmds.setAttr(f"{shader}.mmd_draw_flags", value & ~8)
+        capture("receivers_off")
+        assert stages["receivers_off"]["witness"]["receiverDrawCount"] == 0
+        assert stages["receivers_off"]["witness"]["casterDrawCount"] == witness["casterDrawCount"]
+        for shader, value in flags.items():
+            cmds.setAttr(f"{shader}.mmd_draw_flags", value)
+        assert capture("flags_restored") == on, "PMX flag round trip changed pixels"
+        return {"modeRoundTrip": True, "casterReceiverFlags": True,
+                "texturedTransparentCasters": sorted(alpha_casters),
+                "changedPixels": changed, "stages": stages}
+    finally:
+        for shader, value in flags.items():
+            cmds.setAttr(f"{shader}.mmd_draw_flags", value)
+        cmds.setAttr(mode_plug, original_mode)

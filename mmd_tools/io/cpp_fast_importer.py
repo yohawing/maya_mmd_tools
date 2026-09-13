@@ -289,6 +289,7 @@ def fast_import(
             "use_cpp_vp2_ownership": vp2_ownership,
         })
         native_identity = cmds.ls(native_mesh[0], uuid=True)
+        proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
         try:
             with _scoped_settings_override(import_options):
                 return import_pmx_file(
@@ -298,6 +299,10 @@ def fast_import(
             # Preflight may reject the model before the ordinary pipeline adopts
             # this geometry. UUIDs retain ownership even if authoring renamed it.
             remaining = cmds.ls(native_identity, long=True) if native_identity else []
+            # The shared converter may already have moved the proxy into its
+            # own sibling transform. It remains owned by this failed import.
+            for proxy in (cmds.ls(proxy_identity, long=True) if proxy_identity else []):
+                remaining.extend(cmds.listRelatives(proxy, parent=True, fullPath=True) or [])
             if remaining:
                 try:
                     cmds.delete(remaining)
@@ -400,6 +405,7 @@ def fast_import(
         base_name,
         cmds,
         filepath=filepath,
+        render_shape=render_shape_result if vp2_ownership else None,
         **shared_native_kwargs,
     )
     _apply_fast_root_metadata(
@@ -448,6 +454,7 @@ def _organize_fast_dag(
     cmds_module,
     *,
     filepath: Optional[str] = None,
+    render_shape: Optional[str] = None,
     native_pmx=_FAST_NATIVE_PMX_UNSET,
 ) -> tuple[str, Optional[str]]:
     """Place a FastLoad mesh below the ordinary model/Geometry boundary.
@@ -456,8 +463,8 @@ def _organize_fast_dag(
     native command can own construction and undo.  The Python import contract,
     however, exposes a model root with a direct ``Geometry`` child.  Add that
     lightweight authoring boundary here, before root metadata and skeleton
-    post-processing run.  The mesh and optional ``mmdRenderShape`` remain
-    together because the proxy is a child shape of the source transform.
+    post-processing run. The render-only proxy has a separate transform so
+    blendShape target duplication copies only the editable mesh hierarchy.
 
     The command wrapper is also used by headless callers with deliberately
     partial ``maya.cmds`` fakes.  If the returned transform cannot be resolved
@@ -486,6 +493,10 @@ def _organize_fast_dag(
 
     mesh_transform = cmds_module.rename(source_paths[0], f"{model_name}_mesh")
     cmds_module.parent(mesh_transform, geometry_group, absolute=True)
+    if render_shape:
+        from mmd_tools.core.maya_mesh_utils import separate_render_proxy
+
+        separate_render_proxy(mesh_transform, geometry_group, cmds_module)
     mesh_shapes = cmds_module.listRelatives(
         mesh_transform,
         shapes=True,

@@ -1080,6 +1080,7 @@ class MayaMaterialAuthoring:
             for node, payload in morph_updates:
                 self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
             self._update_native_render_queue(root, first_index, second_index)
+            self._rebuild_material_morph_graph(root)
         except Exception as exc:
             raise MayaMaterialAuthoringError(
                 f"failed to apply adjacent material reindex under root {root!r}: {exc}"
@@ -1139,6 +1140,7 @@ class MayaMaterialAuthoring:
             for node, payload in morph_updates:
                 self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
             self._update_native_render_queue(root, first_index, second_index)
+            self._rebuild_material_morph_graph(root)
         except Exception as exc:
             raise MayaMaterialAuthoringError(
                 f"failed to apply adjacent material reindex under root {root!r}: {exc}"

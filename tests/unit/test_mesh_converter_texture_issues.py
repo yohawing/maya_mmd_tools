@@ -25,6 +25,21 @@ from mmd_tools.core import maya_material_utils  # noqa: E402
 
 
 class TestMeshConverterTextureIssues(unittest.TestCase):
+    def test_native_metadata_inherits_cache_and_resolves_standard_sphere(self):
+        converter = MeshConverter(str(self.model))
+        material = self._material()
+        material.sphere_texture_index = 1
+        with patch("mmd_tools.converters.mesh_converter.cmds") as cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ) as write:
+            cmds.attributeQuery.return_value = True
+            cmds.listConnections.side_effect = lambda plug, **kwargs: ["cached_file"] if plug.endswith(".baseColor") else []
+            cmds.getAttr.return_value = "C:/ascii/repaired.png"
+            converter._apply_custom_attributes("shader", material, ["face.png", "sphere.sph"], False, 0, "face.png")
+        values = write.call_args.args[1]
+        self.assertEqual(values["mmd_resolved_texture_path"], "C:/ascii/repaired.png")
+        self.assertEqual(Path(values["mmd_resolved_sphere_texture_path"]), self.root / "sphere.sph")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
