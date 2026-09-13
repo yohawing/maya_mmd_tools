@@ -10,10 +10,12 @@
 #include "MmdOrderedRenderOverride.h"
 
 #include "MmdNativeMaterial.h"
-#include "MmdRenderOverride.h"
+#include "MmdShadowResources.h"
 #include "MmdRenderShape.h"
+#include "MmdRenderProfiler.h"
 
 #include <maya/MDagPath.h>
+#include <maya/M3dView.h>
 #include <maya/MArgDatabase.h>
 #include <maya/MDoubleArray.h>
 #include <maya/MDrawContext.h>
@@ -24,11 +26,13 @@
 #include <maya/MItDag.h>
 #include <maya/MMatrix.h>
 #include <maya/MObjectHandle.h>
+#include <maya/MPlug.h>
 #include <maya/MSelectionList.h>
 #include <maya/MStateManager.h>
 #include <maya/MStatus.h>
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
+#include <maya/MStringArray.h>
 #include <maya/MViewport2Renderer.h>
 
 #ifdef _WIN32
@@ -81,11 +85,41 @@ std::string jsonEscape(const std::string& value)
     return result;
 }
 
+bool isOrderedPanelSelected()
+{
+    MStringArray panels;
+    if (!MGlobal::executeCommand(
+            MString("getPanel -type \"modelPanel\""), panels, false, false)) {
+        return false;
+    }
+
+    for (unsigned int index = 0U; index < panels.length(); ++index) {
+        MStatus status;
+        MString command("modelEditor -q -rendererOverrideName \"");
+        command += panels[index];
+        command += "\"";
+        const MString selected = MGlobal::executeCommandStringResult(
+            command, false, false, &status);
+        if (status && selected == MString(kOverrideName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool isMmdShape(const MDagPath& path)
 {
     MStatus status;
     MFnDependencyNode dependencyNode(path.node(), &status);
     return status && dependencyNode.typeName() == MString("mmdRenderShape");
+}
+
+bool sourceMeshPath(const MDagPath& proxy, MDagPath& source)
+{
+    MPlug input(proxy.node(), MmdRenderShape::aInputMesh);
+    const MPlug upstream = input.source();
+    return !upstream.isNull() && upstream.node().hasFn(MFn::kMesh) &&
+           MDagPath::getAPathTo(upstream.node(), source);
 }
 
 bool isolateContainsPath(const MSelectionList& members, const MDagPath& path)
@@ -187,12 +221,17 @@ bool buildPanelShapePaths(const MString& destination,
             error = "MItDag visibility lookup failed";
             return false;
         }
-        if (visible && !templated &&
-            (isolateState == 0 ||
-             isolateContainsPath(isolateMembers, path))) {
+        if (visible && !templated) {
+            const bool panelIncludesPath = isolateState == 0 ||
+                isolateContainsPath(isolateMembers, path);
             if (isMmdShape(path)) {
-                shapePaths.push_back(path);
-            } else if (!nonMmdSelection.add(path, MObject::kNullObj, true)) {
+                MDagPath source;
+                const bool hasSource = sourceMeshPath(path, source);
+                if ((!hasSource || (source.isVisible() && !source.isTemplated())) &&
+                    (panelIncludesPath || (hasSource && isolateContainsPath(isolateMembers, source)))) {
+                    shapePaths.push_back(path);
+                }
+            } else if (panelIncludesPath && !nonMmdSelection.add(path, MObject::kNullObj, true)) {
                 error = "could not build non-MMD scene selection";
                 return false;
             }
@@ -200,6 +239,20 @@ bool buildPanelShapePaths(const MString& destination,
         if (!iterator.next()) {
             error = "MItDag shape enumeration failed";
             return false;
+        }
+    }
+    // Remove sources only from this panel's shaded passes. Their native VP2
+    // selection/component UI is still drawn by the ordinary UI operations.
+    for (const MDagPath& proxy : shapePaths) {
+        MDagPath source;
+        if (sourceMeshPath(proxy, source)) {
+            for (unsigned int index = 0; index < nonMmdSelection.length(); ++index) {
+                MDagPath candidate;
+                if (nonMmdSelection.getDagPath(index, candidate) && candidate == source) {
+                    nonMmdSelection.remove(index);
+                    break;
+                }
+            }
         }
     }
     return true;
@@ -272,6 +325,7 @@ public:
         resetFrame();
     }
 
+
     void resetWitness()
     {
         drawCount_ = 0U;
@@ -281,7 +335,7 @@ public:
         pmxOrder_.clear();
         outlineOrder_.clear();
         lastError_.clear();
-        frameResources_ = MmdNativeCasterRenderOverride::FrameResources();
+        frameResources_ = MmdShadowResources::FrameResources();
         frameResourcesReady_ = false;
         shadowReady_ = false;
         targetWidth_ = 0U;
@@ -305,6 +359,11 @@ public:
     MStatus executePass(const MHWRender::MDrawContext& drawContext,
                         bool opaquePhase)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.Execute");
+        MString drawDestination;
+        drawContext.renderingDestination(drawDestination);
+        destination_ = drawDestination.asChar();
 #ifndef _WIN32
         return fail("MMD ordered render requires DirectX 11");
 #else
@@ -332,6 +391,8 @@ public:
             if (planOpaque != opaquePhase) {
                 continue;
             }
+            MProfilingScope drawProfile(mmdRenderProfileCategory(), MProfiler::kColorB_L1,
+                                        plan.outline ? "MMD.DrawOutline" : "MMD.DrawBody");
             MShaderInstance* shader =
                 shaderFor(plan.material, plan.order.pass, plan.outline);
             if (!shader || shader->bind(drawContext) != MStatus::kSuccess) {
@@ -383,6 +444,8 @@ public:
                << "\",\"registered\":true,\"state\":\""
                << (lastError_.empty() ? "active" : "error")
                << "\",\"enabled\":true,\"drawCount\":" << drawCount_
+               << ",\"panel\":\"" << jsonEscape(destination_) << "\""
+               << ",\"shapeCount\":" << records_.size()
                << ",\"casterDrawCount\":" << casterDrawCount_
                << ",\"geometryUploads\":" << geometryUploadCount_
                << ",\"casterMaterialIndices\":[";
@@ -447,7 +510,7 @@ private:
         int rowPitch = 0;
         std::size_t slicePitch = 0U;
         void* raw = frameResources_.colorTarget->rawData(rowPitch, slicePitch);
-        const unsigned int size = MmdNativeCasterRenderOverride::kTargetSize;
+        const unsigned int size = MmdShadowResources::kTargetSize;
         if (!raw || rowPitch < static_cast<int>(size * sizeof(float)) ||
             slicePitch < static_cast<std::size_t>(rowPitch) * size) {
             if (raw) {
@@ -501,16 +564,73 @@ private:
     struct GeometryKey {
         MObjectHandle handle;
         std::uint64_t revision;
+        std::uint64_t bufferRevision;
         MMatrix world;
         bool visible;
+        bool sameBuffers(const GeometryKey& other) const
+        {
+            return handle == other.handle && bufferRevision == other.bufferRevision &&
+                   world == other.world && visible == other.visible;
+        }
         bool operator==(const GeometryKey& other) const
         {
-            return handle == other.handle && revision == other.revision &&
-                   world == other.world && visible == other.visible;
+            return revision == other.revision && sameBuffers(other);
         }
     };
 
 #ifdef _WIN32
+    static bool samePreflightMaterial(
+        const mmd::MmdRenderQueueInput& left,
+        const mmd::MmdRenderQueueInput& right)
+    {
+        return mmd::sameMmdRenderQueueInput(left, right);
+    }
+
+    static bool samePreflightPlan(const DrawPlan& left,
+                                  const DrawPlan& right)
+    {
+        return left.order.materialIndex == right.order.materialIndex &&
+               left.order.submeshIndex == right.order.submeshIndex &&
+               left.order.pass == right.order.pass &&
+               left.order.inputIndex == right.order.inputIndex &&
+               left.outline == right.outline &&
+               samePreflightMaterial(left.material, right.material);
+    }
+
+    bool samePreflightPlans(const std::vector<DrawPlan>& cached,
+                            const std::vector<DrawPlan>& current,
+                            bool castersOnly) const
+    {
+        auto cachedPlan = cached.begin();
+        auto currentPlan = current.begin();
+        while (true) {
+            if (castersOnly) {
+                while (cachedPlan != cached.end() && !isCasterPlan(*cachedPlan)) {
+                    ++cachedPlan;
+                }
+                while (currentPlan != current.end() && !isCasterPlan(*currentPlan)) {
+                    ++currentPlan;
+                }
+            }
+            if (cachedPlan == cached.end() || currentPlan == current.end()) {
+                return cachedPlan == cached.end() && currentPlan == current.end();
+            }
+            if (!samePreflightPlan(*cachedPlan, *currentPlan)) {
+                return false;
+            }
+            ++cachedPlan;
+            ++currentPlan;
+        }
+    }
+
+    void invalidatePreflightCache()
+    {
+        bodyPreflightValid_ = false;
+        casterPreflightValid_ = false;
+        bodyPreflightPlans_.clear();
+        casterPreflightPlans_.clear();
+    }
+
     struct NativeVertex {
         float position[3];
         float texCoord0[2];
@@ -678,6 +798,7 @@ private:
 
     MStatus fail(const std::string& message)
     {
+        invalidatePreflightCache();
         lastError_ = message;
         if (owner_) {
             owner_->requestFallback(message);
@@ -688,8 +809,21 @@ private:
     bool collectFrame(std::vector<DrawPlan>& plans,
                       std::vector<NativeVertex>& vertices,
                       std::vector<unsigned int>& indices,
-                      MSelectionList& visibleSelection)
+                      MSelectionList& visibleSelection,
+                      std::size_t vertexCountHint,
+                      std::size_t indexCountHint,
+                      bool rebuildBuffers)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.CollectFrame");
+        // Reserve the current visible streams once, avoiding repeated copies
+        // of earlier shapes as the aggregate CPU buffers grow.
+        if (rebuildBuffers) {
+            vertices.reserve(vertexCountHint);
+            indices.reserve(indexCountHint);
+        }
+        std::size_t packedVertexCount = 0U;
+        std::size_t packedIndexCount = 0U;
         for (std::size_t shapeIndex = 0U; shapeIndex < records_.size();
              ++shapeIndex) {
             const ShapeRecord& record = records_[shapeIndex];
@@ -741,25 +875,30 @@ private:
                 continue;
             }
             const unsigned int vertexBase =
-                static_cast<unsigned int>(vertices.size());
-            if (vertices.size() > std::numeric_limits<unsigned int>::max() -
+                static_cast<unsigned int>(packedVertexCount);
+            if (packedVertexCount > std::numeric_limits<unsigned int>::max() -
                                       vertexCount) {
                 fail("ordered vertex buffer is too large");
                 return false;
             }
-            for (std::size_t vertex = 0U; vertex < vertexCount; ++vertex) {
-                NativeVertex packet = {};
-                const std::size_t source = vertex * 3U;
-                packet.position[0] = geometry.positions[source];
-                packet.position[1] = geometry.positions[source + 1U];
-                packet.position[2] = geometry.positions[source + 2U];
-                packet.normal[0] = geometry.normals[source];
-                packet.normal[1] = geometry.normals[source + 1U];
-                packet.normal[2] = geometry.normals[source + 2U];
-                packet.texCoord0[0] = geometry.uvs[vertex * 2U];
-                packet.texCoord0[1] = geometry.uvs[vertex * 2U + 1U];
-                vertices.push_back(packet);
+            if (rebuildBuffers) {
+                MProfilingScope packProfile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                            "MMD.PackVertices");
+                for (std::size_t vertex = 0U; vertex < vertexCount; ++vertex) {
+                    NativeVertex packet = {};
+                    const std::size_t source = vertex * 3U;
+                    packet.position[0] = geometry.positions[source];
+                    packet.position[1] = geometry.positions[source + 1U];
+                    packet.position[2] = geometry.positions[source + 2U];
+                    packet.normal[0] = geometry.normals[source];
+                    packet.normal[1] = geometry.normals[source + 1U];
+                    packet.normal[2] = geometry.normals[source + 2U];
+                    packet.texCoord0[0] = geometry.uvs[vertex * 2U];
+                    packet.texCoord0[1] = geometry.uvs[vertex * 2U + 1U];
+                    vertices.push_back(packet);
+                }
             }
+            packedVertexCount += vertexCount;
 
             for (const MmdRenderShape::QueueGeometry& queueGeometry :
                  geometry.queueGeometry) {
@@ -769,7 +908,7 @@ private:
                     fail("ordered queue entry has no valid indices");
                     return false;
                 }
-                if (indices.size() >
+                if (packedIndexCount >
                     std::numeric_limits<UINT>::max() -
                         queueGeometry.indices.size()) {
                     fail("ordered index buffer is too large");
@@ -784,19 +923,25 @@ private:
                     fail("ordered shape world matrix is unavailable");
                     return false;
                 }
-                plan.firstIndex = static_cast<UINT>(indices.size());
+                plan.firstIndex = static_cast<UINT>(packedIndexCount);
                 plan.indexCount = static_cast<UINT>(queueGeometry.indices.size());
-                for (const uint32_t localIndex : queueGeometry.indices) {
-                    const std::size_t sourceIndex =
-                        static_cast<std::size_t>(queueGeometry.vertexOffset) +
-                        static_cast<std::size_t>(localIndex);
-                    if (sourceIndex >= vertexCount) {
-                        fail("ordered queue index exceeds shape vertices");
-                        return false;
+                // Unchanged streams retain the indices validated at upload.
+                if (rebuildBuffers) {
+                    MProfilingScope packProfile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                                "MMD.PackIndices");
+                    for (const uint32_t localIndex : queueGeometry.indices) {
+                        const std::size_t sourceIndex =
+                            static_cast<std::size_t>(queueGeometry.vertexOffset) +
+                            static_cast<std::size_t>(localIndex);
+                        if (sourceIndex >= vertexCount) {
+                            fail("ordered queue index exceeds shape vertices");
+                            return false;
+                        }
+                        indices.push_back(vertexBase +
+                                         static_cast<unsigned int>(sourceIndex));
                     }
-                    indices.push_back(vertexBase +
-                                     static_cast<unsigned int>(sourceIndex));
                 }
+                packedIndexCount += queueGeometry.indices.size();
                 const bool outline = queueGeometry.material.edgeDrawing &&
                                      queueGeometry.material.edgeSize > 0.0F &&
                                      queueGeometry.material.edgeAlpha > 0.0F;
@@ -858,7 +1003,7 @@ private:
                 MStatus::kSuccess) {
                 return false;
             }
-            MmdNativeCasterRenderOverride::registerReceiverShader(shader);
+            MmdShadowResources::registerReceiverShader(shader);
             receiverShaders_.insert(shader);
         }
         if (frameResourcesReady_ &&
@@ -883,6 +1028,8 @@ private:
     bool preflightCasters(const std::vector<DrawPlan>& plans,
                           const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.PreflightCasters");
         for (const DrawPlan& plan : plans) {
             if (!isCasterPlan(plan)) {
                 continue;
@@ -913,6 +1060,8 @@ private:
 
     bool renderCasters(const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.RenderCasters");
         RawTargetScope targetScope(context_);
         if (!targetScope.captured() ||
             !targetScope.bind(frameResources_.colorTarget,
@@ -972,6 +1121,8 @@ private:
 
     bool prepareFrame(const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.PrepareFrame");
         if (framePrepared_) {
             return true;
         }
@@ -989,28 +1140,56 @@ private:
         }
         std::vector<GeometryKey> key;
         bool keyValid = true;
+        std::size_t vertexCount = 0U;
+        std::size_t indexCount = 0U;
         for (const ShapeRecord& record : records_) {
             MStatus status;
             MmdRenderShape* shape = record.handle.isValid() && record.handle.isAlive()
                 ? MmdRenderShape::fromMObject(record.handle.object(), &status) : nullptr;
+            if (shape && status) {
+                shape->updateEvaluatedData();
+            }
             if (!shape || !status || !shape->hasValidGeometry() || !record.path.isValid()) {
                 keyValid = false;
                 break;
             }
             const bool visible = record.path.isVisible() && !record.path.isTemplated();
-            key.push_back({record.handle, shape->renderDataRevision(),
+            key.push_back({record.handle, shape->renderDataRevision(), shape->geometryBufferRevision(),
                            record.path.inclusiveMatrix(), visible});
+            const auto& geometry = shape->geometry();
+            if (visible && !geometry.queueGeometry.empty()) {
+                const std::size_t count = geometry.positions.size() / 3U;
+                if (count > std::numeric_limits<UINT>::max() / sizeof(NativeVertex) - vertexCount) {
+                    framePreparationFailed_ = true;
+                    return fail("ordered frame exceeds DX11 buffer size") == MS::kSuccess;
+                }
+                vertexCount += count;
+                for (const auto& entry : geometry.queueGeometry) {
+                    if (entry.indices.size() >
+                        std::numeric_limits<UINT>::max() / sizeof(unsigned int) - indexCount) {
+                        framePreparationFailed_ = true;
+                        return fail("ordered frame exceeds DX11 buffer size") == MS::kSuccess;
+                    }
+                    indexCount += entry.indices.size();
+                }
+            }
         }
-        const bool reuseGeometry = keyValid && key == cachedGeometryKey_ &&
-                                   vertexBuffer_ && indexBuffer_;
-        if (reuseGeometry) {
+        const bool reuseBuffers = keyValid && vertexBuffer_ && indexBuffer_ &&
+            key.size() == cachedGeometryKey_.size() &&
+            std::equal(key.begin(), key.end(), cachedGeometryKey_.begin(),
+                       [](const GeometryKey& left, const GeometryKey& right) {
+                           return left.sameBuffers(right);
+                       });
+        const bool reusePlans = reuseBuffers && key == cachedGeometryKey_;
+        if (reusePlans) {
             plans = cachedGeometryPlans_;
             for (std::size_t i = 0; i < key.size(); ++i) {
                 if (key[i].visible && !visibleSelection.add(records_[i].path)) {
                     return fail("ordered cached selection could not be built") == MS::kSuccess;
                 }
             }
-        } else if (!collectFrame(plans, vertices, indices, visibleSelection)) {
+        } else if (!collectFrame(plans, vertices, indices, visibleSelection,
+                                 vertexCount, indexCount, !reuseBuffers)) {
             framePreparationFailed_ = true;
             return false;
         }
@@ -1019,14 +1198,14 @@ private:
             framePrepared_ = true;
             return true;
         }
-        if (!reuseGeometry && !uploadFrame(vertices, indices)) {
+        if (!reuseBuffers && !uploadFrame(vertices, indices)) {
             framePreparationFailed_ = true;
             return false;
         }
         cachedGeometryKey_ = std::move(key);
         cachedGeometryPlans_ = plans;
-        MmdNativeCasterRenderOverride* nativeCasterOwner =
-            owner_ ? owner_->nativeCasterOwner_ : nullptr;
+        MmdShadowResources* nativeCasterOwner =
+            owner_ ? owner_->nativeCasterOwner_.get() : nullptr;
         if (!nativeCasterOwner) {
             fail("ordered native caster resource owner is unavailable");
             framePreparationFailed_ = true;
@@ -1041,11 +1220,36 @@ private:
         }
         frameResourcesReady_ = frameResources_.ready;
         updateTargetDiagnostics();
-        if (!preflight(plans, drawContext) ||
-            (frameResourcesReady_ && frameResources_.selfShadowMode > 0 &&
-             !preflightCasters(plans, drawContext))) {
+        const bool textured =
+            (drawContext.getDisplayStyle() & MHWRender::MFrameContext::kTextured) != 0U;
+        const bool bodyPreflightRequired =
+            !bodyPreflightValid_ || bodyPreflightTextured_ != textured ||
+            !samePreflightPlans(bodyPreflightPlans_, plans, false);
+        const bool castersActive =
+            frameResourcesReady_ && frameResources_.selfShadowMode > 0;
+        const bool casterPreflightRequired =
+            castersActive &&
+            (!casterPreflightValid_ ||
+             casterPreflightShadowMode_ != frameResources_.selfShadowMode ||
+             !samePreflightPlans(casterPreflightPlans_, plans, true));
+        if ((bodyPreflightRequired && !preflight(plans, drawContext)) ||
+            (casterPreflightRequired && !preflightCasters(plans, drawContext))) {
             framePreparationFailed_ = true;
             return false;
+        }
+        // Publish only after every required preflight succeeds. Dynamic
+        // camera, world and light values are still set and checked by the
+        // actual draw on every frame; this cache covers stable shader,
+        // technique, texture and material structure only.
+        if (bodyPreflightRequired) {
+            bodyPreflightPlans_ = plans;
+            bodyPreflightTextured_ = textured;
+            bodyPreflightValid_ = true;
+        }
+        if (casterPreflightRequired) {
+            casterPreflightPlans_ = plans;
+            casterPreflightShadowMode_ = frameResources_.selfShadowMode;
+            casterPreflightValid_ = true;
         }
         framePlans_ = std::move(plans);
         framePrepared_ = true;
@@ -1139,6 +1343,8 @@ private:
     bool uploadFrame(const std::vector<NativeVertex>& vertices,
                      const std::vector<unsigned int>& indices)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.UploadFrame");
         if (vertices.size() > std::numeric_limits<UINT>::max() / sizeof(NativeVertex) ||
             indices.size() > std::numeric_limits<UINT>::max() / sizeof(unsigned int)) {
             return fail("ordered frame exceeds DX11 buffer size") == MStatus::kSuccess;
@@ -1254,7 +1460,7 @@ private:
         MTexture* toonTexture = textured ? acquireTexture(toonPath) : nullptr;
         return mmd::bindNativeMaterialParameters(
             shader, material, mainTexture, sphereTexture, toonTexture,
-            textured && !toonPath.empty(), nullptr);
+            textured && !toonPath.empty());
     }
 
     bool bindToonSampler(MShaderInstance* shader)
@@ -1347,6 +1553,8 @@ private:
     bool preflight(const std::vector<DrawPlan>& plans,
                    const MHWRender::MDrawContext& drawContext)
     {
+        MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorC_L1,
+                                "MMD.Preflight");
         for (const DrawPlan& plan : plans) {
             MShaderInstance* shader =
                 shaderFor(plan.material, plan.order.pass, plan.outline);
@@ -1431,12 +1639,12 @@ private:
                 const bool receiver =
                     receiverShaders_.count(shader.second) != 0U;
                 if (receiver) {
-                    MmdNativeCasterRenderOverride::beginReceiverShaderRetire(
+                    MmdShadowResources::beginReceiverShaderRetire(
                         shader.second);
                 }
                 shaderManager->releaseShader(shader.second);
                 if (receiver) {
-                    MmdNativeCasterRenderOverride::finishReceiverShaderRetire(
+                    MmdShadowResources::finishReceiverShaderRetire(
                         shader.second);
                 }
             }
@@ -1448,6 +1656,7 @@ private:
 
     bool releaseResourcesForUnload()
     {
+        invalidatePreflightCache();
         cachedGeometryKey_.clear();
         cachedGeometryPlans_.clear();
         if (!releaseShaderCache()) {
@@ -1509,17 +1718,24 @@ private:
     MmdOrderedRenderOverride* owner_ = nullptr;
     std::vector<ShapeRecord> records_;
     std::string shaderPath_;
+    std::string destination_;
     unsigned int drawCount_ = 0U;
     unsigned int geometryUploadCount_ = 0U;
     std::vector<GeometryKey> cachedGeometryKey_;
     std::vector<DrawPlan> cachedGeometryPlans_;
+    std::vector<DrawPlan> bodyPreflightPlans_;
+    std::vector<DrawPlan> casterPreflightPlans_;
+    bool bodyPreflightValid_ = false;
+    bool casterPreflightValid_ = false;
+    bool bodyPreflightTextured_ = false;
+    int casterPreflightShadowMode_ = 0;
     unsigned int casterDrawCount_ = 0U;
     unsigned int receiverDrawCount_ = 0U;
     std::string lastError_;
     std::vector<DrawPlan> framePlans_;
     bool framePrepared_ = false;
     bool framePreparationFailed_ = false;
-    MmdNativeCasterRenderOverride::FrameResources frameResources_;
+    MmdShadowResources::FrameResources frameResources_;
     bool frameResourcesReady_ = false;
     bool shadowReady_ = false;
     unsigned int targetWidth_ = 0U;
@@ -1552,15 +1768,10 @@ private:
     OrderedRenderOperation* owner_ = nullptr;
 };
 
-MmdOrderedRenderOverride::MmdOrderedRenderOverride(
-    MmdNativeCasterRenderOverride* nativeCasterOwner)
+MmdOrderedRenderOverride::MmdOrderedRenderOverride()
     : MRenderOverride(overrideName())
-    , nativeCasterOwner_(nativeCasterOwner)
+    , nativeCasterOwner_(new MmdShadowResources())
 {
-    if (!nativeCasterOwner_) {
-        privateNativeCasterOwner_.reset(new MmdNativeCasterRenderOverride());
-        nativeCasterOwner_ = privateNativeCasterOwner_.get();
-    }
     gOrderedOverride = this;
 }
 
@@ -1590,19 +1801,21 @@ MHWRender::DrawAPI MmdOrderedRenderOverride::supportedDrawAPIs() const
 
 MString MmdOrderedRenderOverride::uiName() const
 {
-    return MString("MMD Ordered");
+    return MString("MMD Render");
 }
 
 MStatus MmdOrderedRenderOverride::setup(const MString& destination)
 {
-    if (operationsInstalled_ && !fallbackRequested_) {
+    activeDestination_ = destination.asChar();
+    FallbackState& fallback = activeFallbackState();
+    if (operationsInstalled_ && !fallback.requested) {
         if (operation_) {
             operation_->resetFrame();
         }
         return MRenderOverride::setup(destination);
     }
 
-    if (operationsInstalled_ && fallbackRequested_) {
+    if (operationsInstalled_ && fallback.requested) {
         MHWRender::MRenderOperation* detached =
             mOperations.take(MString(kOperationName));
         mOperations.clear();
@@ -1612,13 +1825,17 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         operationsInstalled_ = false;
     }
 
-    if (fallbackRequested_) {
+    if (fallback.requested) {
         MHWRender::MRenderer* fallbackRenderer =
             MHWRender::MRenderer::theRenderer(false);
         mOperations.clear();
         if (fallbackRenderer) {
             fallbackRenderer->getStandardViewportOperations(mOperations);
         }
+        // Render one complete standard VP2 frame, then allow the raw path to
+        // retry. Keep the reason until a later raw setup succeeds so a
+        // transient failure remains diagnosable without becoming permanent.
+        fallback.frameActive = true;
         return MRenderOverride::setup(destination);
     }
 
@@ -1631,18 +1848,26 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     mOperations.clear();
     renderer->getStandardViewportOperations(mOperations);
 
+    M3dView view;
+    if (M3dView::getM3dViewFromModelPanel(destination, view) &&
+        view.displayStyle() == M3dView::kWireFrame) {
+        // Editing wires belong to the source Maya meshes. Keep the complete
+        // standard operation list instead of filtering them out of this panel.
+        if (operation_) operation_->resetFrame();
+        return MRenderOverride::setup(destination);
+    }
+
     std::vector<MDagPath> shapePaths;
     MSelectionList nonMmdSelection;
     std::string error;
     if (!buildPanelShapePaths(destination, shapePaths, nonMmdSelection, error)) {
-        requestFallback(error);
+        requestFallback(error, true);
         return MRenderOverride::setup(destination);
     }
     if (shapePaths.empty()) {
         if (operation_) {
             operation_->resetFrame();
         }
-        clearFallback();
         return MRenderOverride::setup(destination);
     }
 
@@ -1691,7 +1916,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
             transparent.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert non-MMD transparent scene");
+        requestFallback("could not insert non-MMD transparent scene", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1702,7 +1927,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
                              opaque.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not replace standard opaque scene");
+        requestFallback("could not replace standard opaque scene", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1712,7 +1937,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     if (!mOperations.insertAfter(kOpaqueSceneName, opaqueOperation.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert MMD ordered opaque operation");
+        requestFallback("could not insert MMD ordered opaque operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1727,7 +1952,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     if (!mOperations.insertBefore(kOpaqueSceneName, preSceneUI.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert pre-scene UI operation");
+        requestFallback("could not insert pre-scene UI operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1738,7 +1963,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
                                  postSceneUI.get())) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert post-scene UI operation");
+        requestFallback("could not insert post-scene UI operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1748,7 +1973,7 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     if (!mOperations.insertAfter(kNonMmdTransparentSceneName, orderedOperation)) {
         mOperations.clear();
         renderer->getStandardViewportOperations(mOperations);
-        requestFallback("could not insert MMD ordered operation");
+        requestFallback("could not insert MMD ordered operation", true);
         if (newOperation) {
             operation_ = nullptr;
         }
@@ -1758,7 +1983,14 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
         newOperation.release();
     }
     operationsInstalled_ = true;
-    fallbackReason_.clear();
+    FallbackState& completed = activeFallbackState();
+    if (completed.retryPending) {
+        // Keep the retry marker through execute(). A successful cleanup clears
+        // it; another failure can still latch this panel to standard VP2.
+        completed.rawRetryActive = true;
+    } else {
+        clearFallback();
+    }
     return MRenderOverride::setup(destination);
 }
 
@@ -1775,7 +2007,18 @@ MStatus MmdOrderedRenderOverride::cleanup()
         mOperations.clear();
     }
     operationsInstalled_ = false;
-    return MRenderOverride::cleanup();
+    const MStatus status = MRenderOverride::cleanup();
+    FallbackState& fallback = activeFallbackState();
+    if (fallback.frameActive) {
+        fallback.frameActive = false;
+        if (!fallback.latched) {
+            fallback.requested = false;
+            fallback.retryPending = true;
+        }
+    } else if (fallback.rawRetryActive && !fallback.requested) {
+        clearFallback();
+    }
+    return status;
 }
 
 const MString& MmdOrderedRenderOverride::overrideName()
@@ -1805,16 +2048,45 @@ bool MmdOrderedRenderOverride::prepareForPluginUnload()
     return true;
 }
 
-void MmdOrderedRenderOverride::requestFallback(const std::string& reason)
+void MmdOrderedRenderOverride::requestFallback(
+    const std::string& reason,
+    bool currentFrameUsesStandard)
 {
-    fallbackRequested_ = true;
-    fallbackReason_ = reason;
+    FallbackState& fallback = activeFallbackState();
+    if (fallback.retryPending) {
+        // A raw retry failed again. Keep this panel on stable standard VP2
+        // instead of alternating failed raw and fallback frames forever.
+        fallback.latched = true;
+    }
+    fallback.requested = true;
+    fallback.retryPending = false;
+    fallback.rawRetryActive = false;
+    fallback.frameActive = currentFrameUsesStandard;
+    fallback.reason = reason;
 }
 
 void MmdOrderedRenderOverride::clearFallback()
 {
-    fallbackRequested_ = false;
-    fallbackReason_.clear();
+    fallbackStates_.erase(activeDestination_);
+}
+
+MmdOrderedRenderOverride::FallbackState&
+MmdOrderedRenderOverride::activeFallbackState()
+{
+    return fallbackStates_[activeDestination_];
+}
+
+const MmdOrderedRenderOverride::FallbackState*
+MmdOrderedRenderOverride::activeFallbackState() const
+{
+    const auto found = fallbackStates_.find(activeDestination_);
+    return found == fallbackStates_.end() ? nullptr : &found->second;
+}
+
+std::string MmdOrderedRenderOverride::fallbackDiagnosticReason() const
+{
+    const FallbackState* active = activeFallbackState();
+    return active ? active->reason : std::string();
 }
 
 std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
@@ -1824,8 +2096,28 @@ std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
                (gRegistered ? "true" : "false") +
                ",\"state\":\"unavailable\"}";
     }
-    if (gOrderedOverride->fallbackReason_.empty() &&
-        gOrderedOverride->operation_) {
+    if (!isOrderedPanelSelected()) {
+        std::ostringstream result;
+        result << "{\"override\":\"mmdOrdered\",\"registered\":"
+               << (gRegistered ? "true" : "false")
+               << ",\"state\":\"inactive\",\"enabled\":false"
+               << ",\"drawCount\":0,\"panel\":\"\",\"shapeCount\":0"
+               << ",\"casterDrawCount\":0,\"geometryUploads\":0"
+               << ",\"casterMaterialIndices\":[],\"receiverDrawCount\":0"
+               << ",\"frameResourcesReady\":false"
+               << ",\"sameFrameShadowReady\":false,\"selfShadowMode\":0"
+               << ",\"targetSize\":{\"width\":0,\"height\":0}"
+               << ",\"targetHandleReady\":false,\"error\":\"\""
+               << ",\"pmxOrder\":[]";
+        if (captureShadowDepth) {
+            result << ",\"shadowDepth\":{\"available\":false}";
+        }
+        result << "}";
+        return result.str();
+    }
+    const std::string fallbackReason =
+        gOrderedOverride->fallbackDiagnosticReason();
+    if (fallbackReason.empty() && gOrderedOverride->operation_) {
         return gOrderedOverride->operation_->diagnosticsJson(captureShadowDepth);
     }
     std::ostringstream result;
@@ -1833,7 +2125,7 @@ std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
            << (gRegistered ? "true" : "false")
            << ",\"state\":\"fallback\",\"drawCount\":0"
            << ",\"error\":\""
-           << jsonEscape(gOrderedOverride->fallbackReason_)
+           << jsonEscape(fallbackReason)
            << "\",\"pmxOrder\":[]}";
     return result.str();
 }

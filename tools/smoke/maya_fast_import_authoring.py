@@ -1137,8 +1137,7 @@ def _edit_roundtrip(cmds, om, root):
 
 
 def _viewport(cmds, root, out):
-    """Require every proxy to draw before accepting full-import VP2 ownership."""
-    from tools.smoke.maya_render_override_gui_smoke import _wait_ready
+    """Check MMD Render against the visible, editable source meshes."""
     from tools.render_override.common import capture_view
 
     shapes = cmds.listRelatives(root, allDescendents=True, type="mmdRenderShape", fullPath=True) or []
@@ -1146,21 +1145,25 @@ def _viewport(cmds, root, out):
         raise RuntimeError("Full VP2 import has no render proxies")
     panels = cmds.getPanel(type="modelPanel") or []
     panel = "modelPanel4" if "modelPanel4" in panels else panels[0]
-    cmds.modelEditor(panel, edit=True, rendererName="vp2Renderer", displayAppearance="smoothShaded",
-                     displayTextures=True, wireframeOnShaded=False, grid=False)
+    cmds.modelEditor(panel, edit=True, rendererName="vp2Renderer", rendererOverrideName="mmdOrdered",
+                     displayAppearance="smoothShaded", displayTextures=True,
+                     wireframeOnShaded=False, grid=False)
     cmds.lookThru(panel, "persp")
     cmds.select(shapes, replace=True)
     cmds.viewFit("persp", all=False, animate=False, fitFactor=0.8)
     cmds.select(clear=True)
+    capture = capture_view(cmds, out / "cpp-viewport.png", panel, 800, 600)
+    ordered = json.loads(cmds.mmdOrderedRenderWitness())
+    if ordered["error"] or ordered["drawCount"] <= 0:
+        raise RuntimeError(f"MMD Render did not draw: {ordered}")
     witnesses = {}
     for shape in shapes:
-        witness = _wait_ready(cmds, shape, print)
         sources = cmds.listConnections(shape + ".inputMesh", source=True, destination=False, shapes=True) or []
-        if not witness.startswith("ready") or len(sources) != 1 or cmds.getAttr(sources[0] + ".visibility"):
-            raise RuntimeError(f"VP2 ownership not ready: {shape}: {witness}, sources={sources}")
+        witness = json.loads(cmds.mmdRenderWitness(node=shape, json=True))
+        if len(sources) != 1 or not cmds.getAttr(sources[0] + ".visibility") or witness["geometryUpdates"] <= 0:
+            raise RuntimeError(f"Editable source or evaluated geometry unavailable: {shape}, {sources}")
         witnesses[shape] = witness
-    capture = capture_view(cmds, out / "cpp-viewport.png", panel, 800, 600)
-    return {"witnesses": witnesses, "capture": str(capture)}
+    return {"witnesses": witnesses, "ordered": ordered, "capture": str(capture)}
 
 
 def _call_native(command, calls, *args, **kwargs):

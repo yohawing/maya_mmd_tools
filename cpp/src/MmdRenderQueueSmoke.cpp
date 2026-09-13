@@ -160,6 +160,17 @@ int main()
         materialQueue[0].pass == mmd::MmdDrawPass::Transparent &&
         materialQueue[1].pass == mmd::MmdDrawPass::Transparent;
 
+    mmd::MmdRenderQueueInput copiedValues = secondMaterialInput;
+    copiedValues.materialIndex = 9;
+    copiedValues.mainTexturePath = "keep.png";
+    mmd::copyMmdMaterialValues(copiedValues, materialInput);
+    const bool materialHelperContract =
+        mmd::sameMmdMaterialValues(copiedValues, materialInput) &&
+        copiedValues.materialIndex == 9 &&
+        copiedValues.mainTexturePath == "keep.png" &&
+        !mmd::sameMmdRenderQueueInput(copiedValues, materialInput) &&
+        mmd::sameMmdRenderQueueInput(materialInput, materialInput);
+
     mmd::MmdRenderQueueInput textureFactorInput;
     textureFactorInput.materialIndex = 11;
     textureFactorInput.submeshIndex = 0;
@@ -219,8 +230,8 @@ int main()
                          expectEntry(queue[2], mmd::MmdDrawPass::Cutout, 2, 2, 1) &&
                          expectEntry(queue[3], mmd::MmdDrawPass::Transparent, 1, 3, 3) &&
                          expectEntry(queue[4], mmd::MmdDrawPass::Transparent, 5, 0, 0);
-    if (!correct || !materialContract || !alphaContract ||
-        !textureFactorContract) {
+    if (!correct || !materialContract || !materialHelperContract ||
+        !alphaContract || !textureFactorContract) {
         std::cerr << "mmd render queue/material contract failed"
                   << " (alpha left=" << mmd::mmdTextureAlphaModeName(leftAlpha)
                   << ", right=" << mmd::mmdTextureAlphaModeName(rightAlpha)

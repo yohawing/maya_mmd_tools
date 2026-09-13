@@ -437,14 +437,14 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
 
 
 class TestOrderedViewportAfterImport(unittest.TestCase):
-    def test_only_successful_vp2_import_selects_ordered(self):
+    def test_successful_import_preserves_panel_renderer_selection(self):
         for vp2 in (False, True):
             with self.subTest(vp2=vp2), patch(
                 "mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root"
             ) as fast, patch(
                 "mmd_tools.io.mmd_importer.ModelImportPipeline.create_light_controller", return_value=None
             ), patch(
-                "mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_ordered_viewport"
+                "mmd_tools.io.mmd_importer.maya_viewport_utils.cmds.modelEditor"
             ) as setup, patch(
                 "mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management"
             ):
@@ -452,11 +452,10 @@ class TestOrderedViewportAfterImport(unittest.TestCase):
                     "use_cpp_fast_load": True, "use_cpp_vp2_ownership": vp2,
                 })
                 self.assertEqual(result, "cpp_root")
+                setup.assert_not_called()
                 if vp2:
-                    setup.assert_called_once_with()
                     self.assertTrue(fast.call_args.kwargs["vp2_ownership"])
                 else:
-                    setup.assert_not_called()
                     self.assertNotIn("vp2_ownership", fast.call_args.kwargs)
 
     def test_failed_vp2_import_does_not_select_ordered_or_fallback(self):
@@ -464,7 +463,7 @@ class TestOrderedViewportAfterImport(unittest.TestCase):
             with self.subTest(error=error), patch(
                 "mmd_tools.io.mmd_importer.fast_import", return_value=None, side_effect=error
             ), patch(
-                "mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_ordered_viewport"
+                "mmd_tools.io.mmd_importer.maya_viewport_utils.cmds.modelEditor"
             ) as setup, patch("mmd_tools.io.mmd_importer.parse_mmd_file") as parse:
                 with self.assertRaises(MMDImportException):
                     import_mmd_file("model.pmx", options={
@@ -476,7 +475,7 @@ class TestOrderedViewportAfterImport(unittest.TestCase):
     def test_python_mesh_import_does_not_select_ordered(self):
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=object()), patch(
             "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="mesh_root"
-        ), patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_ordered_viewport") as setup:
+        ), patch("mmd_tools.io.mmd_importer.maya_viewport_utils.cmds.modelEditor") as setup:
             self.assertEqual(import_mmd_file("model.pmx", options={"use_cpp_fast_load": False}), "mesh_root")
         setup.assert_not_called()
 

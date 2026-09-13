@@ -36,6 +36,16 @@ from mmd_tools.converters.material_shader_parameters import (
 logger = get_logger(__name__)
 
 EVAL_NODE_TYPE = "mmdMaterialMorphEval"
+_AUTHORED_MATERIAL_ATTRIBUTES = {
+    "DiffuseColorRGB": ATTR_MMD_DIFFUSE_COLOR,
+    "DiffuseColorA": "mmd_diffuse_alpha",
+    "SpecularColor": ATTR_MMD_SPECULAR_COLOR,
+    "Shininess": ATTR_MMD_SHININESS,
+    "AmbientColor": ATTR_MMD_AMBIENT_COLOR,
+    "EdgeColorRGB": ATTR_MMD_EDGE_COLOR,
+    "EdgeColorA": ATTR_MMD_EDGE_ALPHA,
+    "EdgeSize": ATTR_MMD_EDGE_SIZE,
+}
 _REQUIRED_EVAL_ATTRS = (
     "contribution",
     "baseDiffuse",
@@ -86,6 +96,10 @@ _DX11_DIFFUSE_CANDIDATES: Tuple[str, ...] = ("DiffuseColorRGB",)
 _GLSL_DIFFUSE_CANDIDATES: Tuple[str, ...] = ("DiffuseColorRGB",)
 _RGB_TRIPLE_TYPES = frozenset({"double3", "float3"})
 _GL_VP2_APIS = frozenset({VP2_API_OPENGL, VP2_API_OPENGL_CORE})
+_STANDARD_PREVIEW_RGB_MARKER = "mmdStandardPreviewMultiply"
+_STANDARD_PREVIEW_ALPHA_MARKER = "mmdStandardPreviewAlpha"
+_STANDARD_PREVIEW_SHADER_LINK = "mmdStandardPreviewShader"
+_STANDARD_PREVIEW_TEXTURE_LINK = "mmdStandardPreviewTexture"
 
 
 @dataclass(frozen=True)
@@ -239,8 +253,32 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
         for shader, node in _collect_existing_evaluators().items()
         if shader in set(shaders_by_index.values())
     }
-    for shader in sorted(set(existing_by_shader) - set(contributions_by_shader)):
-        _remove_evaluator(shader, existing_by_shader[shader])
+    removed_shaders = set(existing_by_shader) - set(contributions_by_shader)
+    retired_standard = {}
+    retired_snapshots = {}
+    retired_expression_bodies = {}
+    for shader in sorted(removed_shaders):
+        node = existing_by_shader[shader]
+        if cmds.nodeType(shader) == "standardSurface":
+            # Keep the old preview/native drivers until every replacement binds.
+            retired_standard[shader] = node
+            for destination in cmds.listConnections(node, s=False, d=True, p=True) or []:
+                owner = destination.split(".", 1)[0]
+                try:
+                    if (
+                        cmds.nodeType(owner) == "expression"
+                        and cmds.attributeQuery("mmdStandardPreview", node=owner, exists=True)
+                        and owner not in retired_expression_bodies
+                    ):
+                        retired_expression_bodies[owner] = cmds.expression(
+                            owner, query=True, string=True,
+                        )
+                except Exception:
+                    pass
+                for plug in _expanded_plugs(destination, 4):
+                    retired_snapshots[plug] = _snapshot_plug(plug)
+        else:
+            _remove_evaluator(shader, node)
     if not contributions_by_shader:
         result["skipped"].append("no_material_morph_contributions")
 
@@ -262,6 +300,14 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
 
         _mark_evaluator(node, shader)
         _refresh_contributions(node, contributions)
+        if cmds.nodeType(shader) == "standardSurface":
+            if not bind_standard_material(shader, node):
+                result["success"] = False
+                result["skipped"].append(f"standard_route_failed:{shader}")
+            result["evaluator_nodes"].append(node)
+            evaluator_nodes_by_shader[shader] = node
+            result["contributions"] += len(contributions)
+            continue
         route = resolve_shader_color_route(shader, vp2_api=vp2_api)
         if route.is_usable:
             route = _complete_hardware_route(shader, route)
@@ -283,6 +329,12 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
         evaluator_nodes_by_shader[shader] = node
         result["contributions"] += len(contributions)
 
+    for shader in shaders_by_index.values():
+        if cmds.nodeType(shader) == "standardSurface" and shader not in evaluator_nodes_by_shader:
+            if not bind_standard_material(shader):
+                result["success"] = False
+                result["skipped"].append(f"standard_route_failed:{shader}")
+
     native_shapes = _collect_native_render_shapes(root_group)
     if native_shapes:
         native_results = []
@@ -300,7 +352,275 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
             result["success"] = result["success"] and native_result["success"]
             result["skipped"].extend(native_result.get("skipped", []))
 
+    if result["success"]:
+        for node in retired_standard.values():
+            cmds.delete(node)
+    else:
+        _restore_plug_snapshots(retired_snapshots)
+        for expression, body in retired_expression_bodies.items():
+            if cmds.objExists(expression):
+                try:
+                    cmds.expression(expression, edit=True, string=body)
+                except Exception:
+                    logger.error(
+                        "Failed to restore standard preview expression %s",
+                        expression,
+                        exc_info=True,
+                    )
     return result
+
+
+def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool:
+    """Drive the stock preview from authored MMD values, never the reverse.
+
+    Textured evaluator routes keep the direct file-to-baseColor VP2 connection.
+    Only diffuse RGB and alpha are previewed; toon/sphere/edge remain Render
+    inputs.
+    """
+    alpha = _read_shader_base_alpha(shader, prefer_authored_metadata=True)
+    authored = _native_authored_material_values(shader, alpha) if evaluator else None
+    if (evaluator and authored is None) or not cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True):
+        return False
+    snapshots = {}
+    preview_expression = None
+    previous_expression_body = None
+    stale_preview_nodes = []
+    try:
+        files = list(dict.fromkeys(cmds.listConnections(
+            f"{shader}.baseColor", source=True, destination=False, type="file",
+        ) or []))
+        preview_rgb = _find_standard_preview_utility(
+            shader, _STANDARD_PREVIEW_RGB_MARKER, "multiplyDivide",
+        )
+        if not files and preview_rgb:
+            files = _preview_utility_textures(preview_rgb)
+        if preview_rgb:
+            stale_preview_nodes.append(preview_rgb)
+            preview_alpha = _find_standard_preview_utility(
+                shader, _STANDARD_PREVIEW_ALPHA_MARKER, "multDoubleLinear",
+            )
+            if preview_alpha:
+                stale_preview_nodes.append(preview_alpha)
+        if len(files) > 1:
+            raise RuntimeError(f"ambiguous main texture: {shader}")
+        color_destination = f"{files[0]}.colorGain" if files else f"{shader}.baseColor"
+        touched = _expanded_plugs(color_destination, 3) + _expanded_plugs(f"{shader}.opacity", 3)
+        if files:
+            touched.extend(_expanded_plugs(f"{shader}.baseColor", 3))
+            touched.append(f"{files[0]}.alphaGain")
+        if preview_rgb:
+            touched.extend(_expanded_plugs(f"{preview_rgb}.input1", 3))
+            touched.extend(_expanded_plugs(f"{preview_rgb}.input2", 3))
+            touched.extend((
+                f"{preview_rgb}.{_STANDARD_PREVIEW_SHADER_LINK}",
+                f"{preview_rgb}.{_STANDARD_PREVIEW_TEXTURE_LINK}",
+            ))
+            preview_alpha = _find_standard_preview_utility(
+                shader, _STANDARD_PREVIEW_ALPHA_MARKER, "multDoubleLinear",
+            )
+            if preview_alpha:
+                touched.extend((f"{preview_alpha}.input1", f"{preview_alpha}.input2"))
+                touched.extend((
+                    f"{preview_alpha}.{_STANDARD_PREVIEW_SHADER_LINK}",
+                    f"{preview_alpha}.{_STANDARD_PREVIEW_TEXTURE_LINK}",
+                ))
+        if evaluator:
+            for route in hardware_morph_routes("dx11Shader"):
+                if route.evaluator_base:
+                    touched.extend(_expanded_plugs(f"{evaluator}.{route.evaluator_base}", route.size))
+        snapshots = {plug: _snapshot_plug(plug) for plug in dict.fromkeys(touched)}
+        if evaluator:
+            for route in hardware_morph_routes("dx11Shader"):
+                if route.evaluator_base:
+                    bases = _native_evaluator_plugs(
+                        evaluator, route.evaluator_base, route.size,
+                        edge_alpha=route.uniform == "EdgeColorA",
+                    )
+                    values = _native_route_values(route, authored)
+                    if len(bases) != len(values):
+                        raise RuntimeError(f"invalid evaluator base: {route.evaluator_base}")
+                    _bind_evaluator_bases(shader, route.uniform, bases, values)
+            color_source = f"{evaluator}.outputDiffuse"
+            alpha_source = f"{evaluator}.outputDiffuseAlpha"
+        else:
+            color_source = f"{shader}.{ATTR_MMD_DIFFUSE_COLOR}"
+            alpha_source = f"{shader}.mmd_diffuse_alpha"
+
+        if files:
+            texture = files[0]
+            _connect_if_needed(f"{texture}.outColor", f"{shader}.baseColor", force=True)
+            color_destination = f"{texture}.colorGain"
+            texture_alpha_source = alpha_source
+            opaque = cmds.attributeQuery("mmdTransparencyMode", node=shader, exists=True) and (
+                cmds.getAttr(f"{shader}.mmdTransparencyMode") == "opaque"
+            )
+            if not opaque:
+                alpha_source = f"{texture}.outAlpha"
+        else:
+            color_destination = f"{shader}.baseColor"
+        # A compound RGB connection makes stock VP2 treat the custom output
+        # as a shading-network node (green error material). Scalar connections
+        # are evaluated as uniforms by both stock VP2 backends.
+        source_node, source_attr = color_source.split(".", 1)
+        source_children = _scalar_leaf_attrs(source_node, source_attr, require_writable=False)
+        incoming = cmds.connectionInfo(color_destination, sourceFromDestination=True)
+        if incoming:
+            cmds.disconnectAttr(incoming, color_destination)
+        destination_node, destination_attr = color_destination.split(".", 1)
+        destination_children = _scalar_leaf_attrs(destination_node, destination_attr)
+        if len(source_children) != 3 or len(destination_children) != 3:
+            raise RuntimeError("standard preview requires three RGB components")
+        if files:
+            # VP2 traverses direct shader->file gain connections as a shading
+            # cycle. An expression supplies DG numbers without participating
+            # in shader compilation; it has no authored material state.
+            assignments = [(f"{texture}.{child}", f"{source_node}.{source}")
+                           for source, child in zip(source_children, destination_children)]
+            assignments.append((f"{texture}.alphaGain", texture_alpha_source))
+            body = "\n".join(f"{dst} = {src};" for dst, src in assignments)
+            preview_expression = _owned_standard_preview_expression(texture)
+            if preview_expression:
+                previous_expression_body = cmds.expression(
+                    preview_expression, query=True, string=True,
+                )
+            connected = preview_expression and all(
+                cmds.isConnected(f"{preview_expression}.output[{index}]", destination)
+                for index, (destination, _) in enumerate(assignments)
+            )
+            if previous_expression_body != body or not connected:
+                for destination, _ in assignments:
+                    incoming = cmds.connectionInfo(destination, sourceFromDestination=True)
+                    if incoming:
+                        cmds.disconnectAttr(incoming, destination)
+                if preview_expression is None:
+                    preview_expression = cmds.createNode("expression", name=texture + "_mmdPreview")
+                    cmds.addAttr(preview_expression, longName="mmdStandardPreview", attributeType="bool")
+                cmds.expression(preview_expression, edit=True, alwaysEvaluate=False, unitConversion="none",
+                                string=body)
+        else:
+            for source_child, destination_child in zip(source_children, destination_children):
+                _connect_if_needed(
+                    f"{source_node}.{source_child}", f"{destination_node}.{destination_child}", force=True,
+                )
+        for channel in "RGB":
+            _connect_if_needed(alpha_source, f"{shader}.opacity{channel}", force=True)
+    except Exception:
+        logger.warning("Failed to bind standard material %s", shader, exc_info=True)
+        if preview_expression and cmds.objExists(preview_expression):
+            if previous_expression_body is None:
+                cmds.delete(preview_expression)
+            else:
+                cmds.expression(preview_expression, edit=True, string=previous_expression_body)
+        _restore_plug_snapshots(snapshots)
+        return False
+    for node in dict.fromkeys(stale_preview_nodes):
+        if cmds.objExists(node):
+            cmds.delete(node)
+    return True
+
+
+def _find_standard_preview_utility(shader: str, marker: str, node_type: str) -> Optional[str]:
+    """Find the tagged utility owned by one standardSurface preview route."""
+    for node in cmds.listConnections(f"{shader}.message", source=False, destination=True) or []:
+        try:
+            actual_type = cmds.nodeType(node)
+            compatible_type = actual_type == node_type or (
+                node_type == "multDoubleLinear" and actual_type == "multDL"
+            )
+            if (
+                compatible_type
+                and cmds.attributeQuery(marker, node=node, exists=True)
+                and cmds.getAttr(f"{node}.{marker}")
+                and cmds.attributeQuery(_STANDARD_PREVIEW_SHADER_LINK, node=node, exists=True)
+                and cmds.isConnected(
+                    f"{shader}.message", f"{node}.{_STANDARD_PREVIEW_SHADER_LINK}"
+                )
+            ):
+                return node
+        except Exception:
+            continue
+    return None
+
+
+def _preview_utility_textures(node: str) -> List[str]:
+    """Resolve the file texture tagged on a preview utility, even after partial damage."""
+    textures = cmds.listConnections(
+        f"{node}.{_STANDARD_PREVIEW_TEXTURE_LINK}", source=True, destination=False, type="file",
+    ) or []
+    return list(dict.fromkeys(textures))
+
+
+def _ensure_standard_preview_utility(
+    shader: str, texture: str, marker: str, node_type: str,
+) -> Tuple[str, bool]:
+    """Create or reuse an owned, target-tagged stock Maya utility node."""
+    node = _find_standard_preview_utility(shader, marker, node_type)
+    created = node is None
+    if created:
+        suffix = "diffuseMultiply" if node_type == "multiplyDivide" else "alphaMultiply"
+        node = cmds.shadingNode(node_type, asUtility=True, name=f"{texture}_{suffix}")
+    try:
+        if created:
+            cmds.addAttr(node, longName=marker, attributeType="bool")
+            cmds.setAttr(f"{node}.{marker}", True)
+            cmds.addAttr(node, longName=_STANDARD_PREVIEW_SHADER_LINK, attributeType="message")
+            cmds.addAttr(node, longName=_STANDARD_PREVIEW_TEXTURE_LINK, attributeType="message")
+        _connect_if_needed(f"{shader}.message", f"{node}.{_STANDARD_PREVIEW_SHADER_LINK}", force=True)
+        _connect_if_needed(f"{texture}.message", f"{node}.{_STANDARD_PREVIEW_TEXTURE_LINK}", force=True)
+    except Exception:
+        if created and cmds.objExists(node):
+            cmds.delete(node)
+        raise
+    return node, created
+
+
+def _connect_preview_rgb(texture: str, color_source: str, node: str, shader: str) -> None:
+    """Repair the complete file * diffuse stock-node route channel by channel."""
+    source_node, source_attr = color_source.split(".", 1)
+    source_children = _scalar_leaf_attrs(source_node, source_attr, require_writable=False)
+    if len(source_children) != 3:
+        raise RuntimeError("standard preview requires three RGB components")
+    cmds.setAttr(f"{node}.operation", 1)
+    for channel, source_child, axis in zip("RGB", source_children, "XYZ"):
+        _connect_if_needed(f"{texture}.outColor{channel}", f"{node}.input1{axis}", force=True)
+        _connect_if_needed(f"{source_node}.{source_child}", f"{node}.input2{axis}", force=True)
+        _connect_if_needed(f"{node}.output{axis}", f"{shader}.baseColor{channel}", force=True)
+
+
+def _owned_standard_preview_expression(texture: str) -> Optional[str]:
+    """Return the legacy expression owned by this preview route, if present."""
+    owners = []
+    for attr in ("colorGainR", "colorGainG", "colorGainB", "alphaGain"):
+        incoming = cmds.connectionInfo(
+            f"{texture}.{attr}", sourceFromDestination=True,
+        )
+        owner = incoming.split(".", 1)[0] if incoming else None
+        if not owner or owner in owners:
+            continue
+        try:
+            if cmds.nodeType(owner) == "expression" and cmds.attributeQuery(
+                "mmdStandardPreview", node=owner, exists=True,
+            ):
+                owners.append(owner)
+        except Exception:
+            continue
+    if len(owners) > 1:
+        raise RuntimeError(f"ambiguous standard preview expressions: {texture}")
+    return owners[0] if owners else None
+
+
+def _bind_evaluator_bases(shader, uniform, bases, values):
+    """Let canonical edits and Undo reach an existing stock material evaluator."""
+    attribute = _AUTHORED_MATERIAL_ATTRIBUTES.get(uniform)
+    if attribute and cmds.nodeType(shader) == "standardSurface":
+        children = _scalar_leaf_attrs(shader, attribute, require_writable=False)
+        if len(children) != len(bases):
+            raise RuntimeError(f"authored material arity mismatch: {shader}.{attribute}")
+        for child, base in zip(children, bases):
+            _connect_if_needed(f"{shader}.{child}", base, force=True)
+    else:
+        for base, value in zip(bases, values):
+            cmds.setAttr(base, float(value))
 
 
 def bind_native_material_alpha(
@@ -399,7 +719,7 @@ def bind_native_material_alpha(
         destination = f"{render_shape}.materialAlpha[{int(material_index)}]"
         try:
             if evaluator:
-                cmds.setAttr(f"{evaluator}.baseDiffuseA", float(base_alpha))
+                _bind_evaluator_bases(shader, "DiffuseColorA", [f"{evaluator}.baseDiffuseA"], [base_alpha])
                 _connect_if_needed(
                     f"{evaluator}.outputDiffuseAlpha",
                     destination,
@@ -471,8 +791,7 @@ def bind_native_material_alpha(
                             raise RuntimeError(
                                 f"evaluator base arity mismatch: {evaluator}.{route.evaluator_base}"
                             )
-                        for base, value in zip(bases, values):
-                            cmds.setAttr(base, float(value))
+                        _bind_evaluator_bases(shader, route.uniform, bases, values)
                     outputs = _native_evaluator_plugs(
                         evaluator,
                         route.evaluator_output,
@@ -486,15 +805,7 @@ def bind_native_material_alpha(
                     for output, destination in zip(outputs, destinations):
                         _connect_if_needed(output, destination, force=True)
                 else:
-                    source_attribute = {
-                        "DiffuseColorRGB": ATTR_MMD_DIFFUSE_COLOR,
-                        "SpecularColor": ATTR_MMD_SPECULAR_COLOR,
-                        "Shininess": ATTR_MMD_SHININESS,
-                        "AmbientColor": ATTR_MMD_AMBIENT_COLOR,
-                        "EdgeColorRGB": ATTR_MMD_EDGE_COLOR,
-                        "EdgeColorA": ATTR_MMD_EDGE_ALPHA,
-                        "EdgeSize": ATTR_MMD_EDGE_SIZE,
-                    }.get(route.uniform)
+                    source_attribute = _AUTHORED_MATERIAL_ATTRIBUTES.get(route.uniform)
                     if source_attribute:
                         # Authored metadata is canonical. A DG connection also
                         # carries edits and Undo without a Python refresh callback.

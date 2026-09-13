@@ -77,6 +77,18 @@ struct MmdRenderQueueEntry {
     std::size_t inputIndex = 0;
 };
 
+/** Compare materialValues channels; alpha, queue identity, and settings are separate. */
+bool sameMmdMaterialValues(const MmdRenderQueueInput& left,
+                           const MmdRenderQueueInput& right);
+
+/** Copy materialValues channels while preserving alpha, identity, and settings. */
+void copyMmdMaterialValues(MmdRenderQueueInput& destination,
+                           const MmdRenderQueueInput& source);
+
+/** Compare the complete material record used by frame preflight. */
+bool sameMmdRenderQueueInput(const MmdRenderQueueInput& left,
+                             const MmdRenderQueueInput& right);
+
 /**
  * Classify a material using an explicit mode when available.
  *

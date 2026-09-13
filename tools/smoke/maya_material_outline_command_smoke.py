@@ -103,8 +103,8 @@ composition = build_maya_authoring_composition(cmds)
 coordinator = composition.coordinator
 material = coordinator.read_spec(root).materials[0]
 shader = str(material.binding_identity)
-# mayapy's OpenGL VP2 policy deliberately falls back from requested DX11
-# import. Build an equivalent registry-owned dx11Shader fixture explicitly;
+# New imports use standardSurface. Build a registry-owned legacy DX11
+# material explicitly for the native hardware-outline command;
 # this tests the command without claiming an interactive DX11 render gate.
 if cmds.nodeType(shader) != "dx11Shader":
     from mmd_tools.converters.mesh_converter import apply_shader_outline
@@ -112,6 +112,7 @@ if cmds.nodeType(shader) != "dx11Shader":
 
     old_shader = shader
     shader = str(cmds.shadingNode("dx11Shader", asShader=True, name="OutlineSmokeMaterial"))
+    cmds.setAttr(shader + ".shader", str(repo_root / "mmd_tools/shaders/MMDShader.fx"), type="string")
     shading_group = str(
         cmds.sets(
             renderable=True,

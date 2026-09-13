@@ -56,8 +56,6 @@ from mmd_tools.converters.mesh_material_properties import (
 from mmd_tools.converters.material_shader_parameters import (
     ATTR_MMD_EDGE_ALPHA,
     ATTR_MMD_DIFFUSE_ALPHA,
-    iter_hardware_shader_values,
-    material_base_parameter_values,
 )
 from mmd_tools.converters.mesh_texture_resolve import (
     resolve_pmx_toon_texture_path as _resolve_pmx_toon_texture_path,
@@ -1209,8 +1207,7 @@ class MeshConverter:
             "native_uv_weld_non_geometry_parse_count": 0,
             "native_uv_weld_meshes": [],
         }
-        if pmx_filepath:
-            self.texture_dir = os.path.dirname(pmx_filepath)
+        self.texture_dir = os.path.dirname(pmx_filepath or "")
 
     @staticmethod
     def _scene_name_set():
@@ -1810,7 +1807,7 @@ class MeshConverter:
         otherwise transparent atlas (and vice versa) is classified correctly.
         Results are stored in ``self._transparency_modes`` keyed by material index.
         Best-effort: any failure leaves a material unclassified and the simple
-        diffuse-alpha fallback in ``_setup_dx11_shader`` applies.
+        diffuse-alpha fallback in ``_setup_standard_shader`` applies.
         """
         self._transparency_modes = {}
         # Every material is classified automatically. This keeps opaque
@@ -2357,6 +2354,10 @@ class MeshConverter:
             # グループに追加
             parent_start = time.perf_counter()
             created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
+            if native_group and cmds.listRelatives(
+                created_mesh, shapes=True, type="mmdRenderShape", fullPath=True
+            ):
+                maya_mesh_utils.separate_render_proxy(created_mesh, geo_group)
             self._add_profile_time("parent_sec", parent_start)
             if self._use_cpp_uv_weld_batch and not native_group:
                 pending_native_welds[-1]["mesh"] = created_mesh
@@ -2425,121 +2426,6 @@ class MeshConverter:
         """
         sanitized_name = self._allocate_material_name(material, material_index)
 
-        # create_mmd_shaders設定を確認
-        create_mmd_shaders = settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS)
-
-        if create_mmd_shaders:
-            backend = effective_mmd_shader_backend()
-
-            if backend != "standard":
-                backend_order = [backend]
-
-                for target in backend_order:
-                    shader = None
-                    plugin_name = "dx11Shader" if target == "dx11" else "glslShader"
-                    node_type = "dx11Shader" if target == "dx11" else "GLSLShader"
-                    if not _ensure_shader_plugin(plugin_name):
-                        _warn_shader_backend_once(
-                            f"{target}-plugin-unavailable",
-                            f"{node_type} plugin '{plugin_name}' is unavailable. Trying next shader backend.",
-                        )
-                        if backend != "auto":
-                            break
-                        continue
-
-                    if target == "dx11":
-                        try:
-                            shader = cmds.shadingNode("dx11Shader", asShader=True, name=sanitized_name)
-                            ok, reason = _validate_shader_node(shader, "dx11Shader")
-                            if not ok:
-                                _warn_shader_backend_once(
-                                    "dx11-node-invalid",
-                                    f"Rejected dx11Shader node: {reason}. Trying next shader backend.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-
-                            self._setup_dx11_shader(
-                                shader,
-                                material,
-                                texture_path,
-                                all_textures,
-                                is_pmd,
-                                material_index,
-                                original_texture_path,
-                            )
-                            ok, reason = _validate_shader_node(shader, "dx11Shader")
-                            if not ok:
-                                _warn_shader_backend_once(
-                                    "dx11-node-invalid-after-setup",
-                                    f"Rejected configured dx11Shader node: {reason}. Trying next shader backend.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-                            return shader
-                        except Exception as e:
-                            _warn_shader_backend_once(
-                                "dx11-create-failed",
-                                f"Failed to create dx11Shader: {e}. Trying next shader backend.",
-                            )
-                            _delete_shader_node(shader)
-                            if backend != "auto":
-                                break
-
-                    if target == "glsl":
-                        try:
-                            shader = cmds.shadingNode("GLSLShader", asShader=True, name=sanitized_name)
-                            ok, reason = _validate_shader_node(shader, "GLSLShader")
-                            if not ok:
-                                _warn_shader_backend_once(
-                                    "glsl-node-invalid",
-                                    f"Rejected GLSLShader node: {reason}. Falling back.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-
-                            setup_ok = self._setup_glsl_shader(
-                                shader,
-                                material,
-                                texture_path,
-                                all_textures,
-                                is_pmd,
-                                material_index,
-                                original_texture_path,
-                            )
-                            ok, reason = _validate_shader_node(shader, "GLSLShader")
-                            if not setup_ok or not ok:
-                                reason = reason or "shader setup failed"
-                                _warn_shader_backend_once(
-                                    "glsl-setup-failed",
-                                    f"Rejected configured GLSLShader node: {reason}. Falling back.",
-                                )
-                                _delete_shader_node(shader)
-                                if backend != "auto":
-                                    break
-                                continue
-                            return shader
-                        except Exception as e:
-                            _warn_shader_backend_once(
-                                "glsl-create-failed",
-                                f"Failed to create GLSLShader: {e}. Falling back.",
-                            )
-                            _delete_shader_node(shader)
-                            if backend != "auto":
-                                break
-
-            if backend != "standard":
-                _warn_shader_backend_once(
-                    "standard-fallback",
-                    "Falling back to standardSurface for MMD material creation.",
-                )
-
         # 標準のstandardSurfaceを使用
         shader = cmds.shadingNode("standardSurface", asShader=True, name=sanitized_name)
         self._setup_standard_shader(
@@ -2588,8 +2474,11 @@ class MeshConverter:
         custom_attrs = {
             "mmd_resolved_texture_path": resolved_path(("MainTexture", "baseColor"), texture_path),
             "mmd_resolved_sphere_texture_path": resolved_path(("SphereTexture",), sphere_source),
-            "mmd_resolved_toon_texture_path": resolved_path(("ToonTexture",),
-                _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)),
+            "mmd_resolved_toon_texture_path": (
+                "" if getattr(material, "shared_toon_flag", 0) else resolved_path(
+                    ("ToonTexture",), _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+                )
+            ),
             ATTR_MMD_MATERIAL: 1,  # MMDマテリアルであることを示すフラグ
             ATTR_MMD_MATERIAL_INDEX: material.material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
@@ -2732,6 +2621,9 @@ class MeshConverter:
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
         maya_attribute_utils.set_attribute(shader, "metalness", 0.0, "float")
+        maya_attribute_utils.set_attribute(shader, "base", 1.0, "float")
+        maya_attribute_utils.set_attribute(shader, "specular", 0.2, "float")
+        maya_attribute_utils.set_attribute(shader, "specularRoughness", 0.6, "float")
 
         # テクスチャの設定
         raw_texture_path = original_texture_path or texture_path
@@ -2774,22 +2666,12 @@ class MeshConverter:
                     # Preserve PMX diffuse alpha while applying per-pixel
                     # texture alpha. Opaque materials deliberately have no
                     # opacity connection so VP2 keeps them in the opaque queue.
-                    opacity_multiply = cmds.shadingNode(
-                        "multiplyDivide",
-                        asUtility=True,
-                        name=sanitized_name + "_opacityMultiply",
-                    )
-                    maya_attribute_utils.set_attribute(opacity_multiply, "operation", 1, "long")
                     maya_attribute_utils.set_attribute(
-                        opacity_multiply,
-                        "input2X",
-                        material_opacity,
-                        "float",
+                        file_node, "alphaGain", material_opacity, "float"
                     )
-                    cmds.connectAttr(file_node + ".outAlpha", opacity_multiply + ".input1X", force=True)
                     for channel in "RGB":
                         cmds.connectAttr(
-                            opacity_multiply + ".outputX",
+                            file_node + ".outAlpha",
                             shader + f".opacity{channel}",
                             force=True,
                         )
@@ -2866,327 +2748,8 @@ class MeshConverter:
         # Resolve metadata only after file nodes (including repaired cache
         # paths) have been installed.
         self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
-
-    def _setup_glsl_shader(
-        self,
-        shader,
-        material,
-        texture_path,
-        all_textures,
-        is_pmd,
-        material_index=None,
-        original_texture_path=None,
-    ):
-        """GLSLShader を設定し、必須属性の設定に成功したか返す。"""
-        shader_ogsfx_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "shaders",
-            "MMDShader.ogsfx",
-        )
-        shader_ogsfx_path = os.path.normpath(shader_ogsfx_path)
-
-        setup_ok = True
-        setup_ok &= _set_shader_attribute_checked(shader, "shader", shader_ogsfx_path, "string")
-        setup_ok &= _set_shader_attribute_checked(shader, "technique", "Main", "string")
-        _ensure_mmd_shader_uniform_attributes(shader)
-
-        # Both hardware backends use the same base-value contract. Diffuse alpha
-        # stays separate so a later material-morph evaluator can own final RGB.
-        for binding, value in iter_hardware_shader_values(
-            material_base_parameter_values(material), "GLSLShader"
-        ):
-            setup_ok &= _set_shader_attribute_checked(shader, binding.attribute, value, binding.attribute_type)
-
-        for texture_flag in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
-            if cmds.attributeQuery(texture_flag, node=shader, exists=True):
-                maya_attribute_utils.set_attribute(shader, texture_flag, 0, "long")
-
-        # OGSFX exposes the same texture-slot contract as the DX11 effect.  The
-        # previous GLSL setup stopped after scalar uniforms, leaving every
-        # material untextured even when the PMX/PMD texture paths were valid.
-        self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
-
-        sphere_texture_path = None
-        if getattr(material, "sphere_texture_index", -1) >= 0:
-            sphere_index = int(material.sphere_texture_index)
-            if all_textures and sphere_index < len(all_textures):
-                sphere_texture_path = all_textures[sphere_index]
-                full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
-                self._connect_dx11_secondary_texture(
-                    shader,
-                    material,
-                    sphere_texture_path,
-                    full_sphere_path,
-                    "SphereTexture",
-                    "HasSphereTexture",
-                    "_sphere_texture",
-                    "Sphere",
-                )
-
-        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-        if full_toon_path and os.path.exists(full_toon_path):
-            toon_original_path = ""
-            toon_source_kind = "shared_toon"
-            toon_shared_id = ""
-            if (
-                getattr(material, "shared_toon_flag", 1) == 0
-                and all_textures
-                and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
-            ):
-                toon_original_path = all_textures[int(material.toon_texture_index)]
-                toon_source_kind = "pmx_texture"
-            elif hasattr(material, "toon_texture_index"):
-                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-            self._connect_dx11_secondary_texture(
-                shader,
-                material,
-                toon_original_path,
-                full_toon_path,
-                "ToonTexture",
-                "HasToonTexture",
-                "_toon_texture",
-                "Toon",
-                source_kind=toon_source_kind,
-                shared_toon_id=toon_shared_id,
-            )
-
-        self._apply_custom_attributes(
-            shader,
-            material,
-            all_textures,
-            is_pmd,
-            material_index,
-            texture_path,
-            sphere_texture_path,
-        )
-        return setup_ok
-
-    def _connect_dx11_secondary_texture(
-        self,
-        shader,
-        material,
-        original_path,
-        full_texture_path,
-        texture_attr,
-        has_texture_attr,
-        node_suffix,
-        warning_label,
-        source_kind="pmx_texture",
-        shared_toon_id="",
-    ):
-        """Connect a readable or resolved secondary texture to a dx11Shader."""
-        if not (
-            full_texture_path
-            and os.path.exists(full_texture_path)
-            and cmds.attributeQuery(texture_attr, node=shader, exists=True)
-        ):
-            if full_texture_path:
-                cmds.warning(f"{warning_label} texture file not found: {full_texture_path}")
-            return
-
-        file_texture_path = full_texture_path
-        unresolved = is_unreadable_file_texture_path(full_texture_path)
-        cache_path = None
-        if unresolved and settings.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True):
-            resolution = resolve_texture_to_cache(
-                original_path=original_path,
-                file_texture_path=full_texture_path,
-                model_path=self.model_filepath,
-                workspace_root=cmds.workspace(q=True, rootDirectory=True),
-            )
-            if resolution.status == "resolved" and resolution.cache_path:
-                file_texture_path = resolution.cache_path
-                cache_path = resolution.cache_path
-                unresolved = False
-
-        file_node = cmds.shadingNode("file", asTexture=True, name=shader + node_suffix)
-        self.created_texture_file_nodes.append(file_node)
-        maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
-        mark_kwargs = {"unresolved": unresolved}
-        if source_kind != "pmx_texture" or shared_toon_id:
-            mark_kwargs["source_kind"] = source_kind
-            mark_kwargs["shared_toon_id"] = shared_toon_id
-        maya_material_utils.mark_mmd_texture_file_node(
-            file_node,
-            original_path,
-            self.model_filepath,
-            **mark_kwargs,
-        )
-        if cache_path:
-            maya_attribute_utils.set_custom_attributes(
-                file_node,
-                {
-                    ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
-                    ATTR_MMD_TEXTURE_UNRESOLVED: False,
-                },
-            )
-        if unresolved:
-            issue = self._record_unresolved_texture_issue(
-                file_node=file_node,
-                shader=shader,
-                material=material,
-                original_path=original_path,
-                current_path=full_texture_path,
-            )
-            cmds.warning(
-                f"{warning_label} texture path needs resolution "
-                f"({issue.get('reason', 'unreadable_path')}): {full_texture_path}"
-            )
-            return
-
-        if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_texture_attr):
-            cmds.warning(f"Failed to connect {warning_label.lower()} texture to dx11Shader")
-
-    def _connect_dx11_main_texture(
-        self,
-        shader,
-        material,
-        texture_path,
-        original_texture_path=None,
-    ):
-        """Connect the main diffuse texture to a dx11Shader."""
-        raw_texture_path = original_texture_path or texture_path
-        if not raw_texture_path:
-            return
-
-        full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
-        self._connect_dx11_secondary_texture(
-            shader,
-            material,
-            raw_texture_path,
-            full_texture_path,
-            "MainTexture",
-            "HasMainTexture",
-            "_texture",
-            "Main",
-        )
-
-    def _setup_dx11_shader(
-        self,
-        shader,
-        material,
-        texture_path,
-        all_textures,
-        is_pmd,
-        material_index=None,
-        original_texture_path=None,
-    ):
-        """dx11Shaderを設定"""
-
-        # シェーダーファイルのパスを設定
-        shader_fx_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "shaders", "MMDShader.fx")
-        shader_fx_path = os.path.normpath(shader_fx_path)
-
-        # dx11Shaderにエフェクトファイルを設定
-        maya_attribute_utils.set_attribute(shader, "shader", shader_fx_path, "string")
-
-        # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
-        # 自動生成しないため、事前に動的アトリビュートとして作成しておく
-        _ensure_dx11_uniform_attributes(shader)
-        # The regular import route deliberately starts every DX11 material in
-        # the opaque pass.  Maya's partially ordered transparent queue causes
-        # large MMD models to render bodies/outlines in an unstable order when
-        # only some materials are classified as blended.  Keep the authored
-        # alpha uniforms and texture alpha (the opaque technique still clips
-        # fully transparent texels), but require an explicit later edit before
-        # selecting a translucent technique.
-        mode = TRANSPARENCY_MODE_OPAQUE
-        double_sided = _material_is_double_sided(material)
-        technique = _technique_for_transparency(mode, True, double_sided)
-        cmds.setAttr(f"{shader}.technique", technique, type="string")
-        _store_transparency_mode_attr(shader, mode)
-        _store_shader_double_sided_attr(shader, double_sided)
-
-        base_values = material_base_parameter_values(material)
-        for semantic in ("diffuse_rgb", "diffuse_alpha", "opacity", "specular", "specular_power", "ambient"):
-            for binding, value in iter_hardware_shader_values(
-                {semantic: base_values.get(semantic)}, "dx11Shader"
-            ):
-                if value is not None:
-                    maya_attribute_utils.set_attribute(shader, binding.attribute, value, binding.attribute_type)
-
-        # エッジ設定（PMXのみ）
-        if not is_pmd:
-            # エッジ色
-            _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-        # Outlines are an explicit Maya display opt-in. The authored edge size
-        # remains in metadata so the Material tab can restore it when enabled.
-        maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
-
-        # スフィアモード設定
-        sphere_mode = getattr(material, "sphere_mode", 0)
-        maya_attribute_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
-
-        for texture_flag in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
-            if cmds.attributeQuery(texture_flag, node=shader, exists=True):
-                maya_attribute_utils.set_attribute(shader, texture_flag, 0, "long")
-
-        # テクスチャ設定
-        self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
-
-        # PMD-to-PMX conversion preserves sphere texture metadata as well.
-        sphere_texture_path = None
-        if hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
-            if all_textures and material.sphere_texture_index < len(all_textures):
-                sphere_texture_path = all_textures[material.sphere_texture_index]
-                full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
-
-                if (
-                    full_sphere_path
-                    and os.path.exists(full_sphere_path)
-                    and cmds.attributeQuery("SphereTexture", node=shader, exists=True)
-                ):
-                    self._connect_dx11_secondary_texture(
-                        shader,
-                        material,
-                        sphere_texture_path,
-                        full_sphere_path,
-                        "SphereTexture",
-                        "HasSphereTexture",
-                        "_sphere_texture",
-                        "Sphere",
-                    )
-
-        # Toon texture setting. Custom toon uses the regular texture table;
-        # shared toon uses bundled toon01.bmp..toon10.bmp assets.
-        full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
-        if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
-            toon_original_path = ""
-            toon_source_kind = "shared_toon"
-            toon_shared_id = ""
-            if (
-                hasattr(material, "shared_toon_flag")
-                and hasattr(material, "toon_texture_index")
-                and int(material.shared_toon_flag) == 0
-                and all_textures
-                and 0 <= int(material.toon_texture_index) < len(all_textures)
-            ):
-                toon_original_path = all_textures[int(material.toon_texture_index)]
-                toon_source_kind = "pmx_texture"
-            elif hasattr(material, "toon_texture_index"):
-                toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
-            self._connect_dx11_secondary_texture(
-                shader,
-                material,
-                toon_original_path,
-                full_toon_path,
-                "ToonTexture",
-                "HasToonTexture",
-                "_toon_texture",
-                "Toon",
-                source_kind=toon_source_kind,
-                shared_toon_id=toon_shared_id,
-            )
-        elif full_toon_path:
-            cmds.warning(f"Toon texture file not found: {full_toon_path}")
-
-        # カスタムアトリビュートを適用
-        self._apply_custom_attributes(
-            shader,
-            material,
-            all_textures,
-            is_pmd,
-            material_index,
-            texture_path,
-            sphere_texture_path,
-        )
+        maya_attribute_utils.set_custom_attributes(shader, {
+            "mmdTransparencyMode": self._transparency_modes.get(
+                material_index, "blend" if material_opacity < 1.0 else "opaque"
+            ),
+        })

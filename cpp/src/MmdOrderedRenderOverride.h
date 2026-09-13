@@ -12,14 +12,14 @@
 #include <maya/MViewport2Renderer.h>
 
 #include <memory>
+#include <map>
 #include <string>
 
-class MmdNativeCasterRenderOverride;
+class MmdShadowResources;
 
 class MmdOrderedRenderOverride : public MHWRender::MRenderOverride {
 public:
-    explicit MmdOrderedRenderOverride(
-        MmdNativeCasterRenderOverride* nativeCasterOwner = nullptr);
+    MmdOrderedRenderOverride();
     ~MmdOrderedRenderOverride() override;
 
     MHWRender::DrawAPI supportedDrawAPIs() const override;
@@ -37,16 +37,27 @@ private:
     class OrderedRenderOperation;
     class OpaqueRenderOperation;
 
-    void requestFallback(const std::string& reason);
-    void clearFallback();
+    struct FallbackState {
+        bool requested = false;
+        bool frameActive = false;
+        bool retryPending = false;
+        bool rawRetryActive = false;
+        bool latched = false;
+        std::string reason;
+    };
 
-    MmdNativeCasterRenderOverride* nativeCasterOwner_ = nullptr;
-    std::unique_ptr<MmdNativeCasterRenderOverride>
-        privateNativeCasterOwner_;
+    void requestFallback(const std::string& reason,
+                         bool currentFrameUsesStandard = false);
+    void clearFallback();
+    FallbackState& activeFallbackState();
+    const FallbackState* activeFallbackState() const;
+    std::string fallbackDiagnosticReason() const;
+
+    std::unique_ptr<MmdShadowResources> nativeCasterOwner_;
     OrderedRenderOperation* operation_ = nullptr;
     bool operationsInstalled_ = false;
-    bool fallbackRequested_ = false;
-    std::string fallbackReason_;
+    std::string activeDestination_;
+    std::map<std::string, FallbackState> fallbackStates_;
 };
 
 class MmdOrderedRenderWitnessCommand : public MPxCommand {

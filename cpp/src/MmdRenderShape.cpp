@@ -4,6 +4,7 @@
  */
 
 #include "MmdRenderShape.h"
+#include "MmdRenderProfiler.h"
 
 #include <maya/MArgDatabase.h>
 #include <maya/MFnAttribute.h>
@@ -16,6 +17,8 @@
 #include <maya/MFloatVectorArray.h>
 #include <maya/MGlobal.h>
 #include <maya/MItDependencyNodes.h>
+#include <maya/MIntArray.h>
+#include <maya/MObjectArray.h>
 #include <maya/MPointArray.h>
 #include <maya/MPoint.h>
 #include <maya/MPlug.h>
@@ -303,86 +306,6 @@ std::string jsonEscape(const std::string& value)
     return stream.str();
 }
 
-void appendJsonString(std::ostringstream& stream,
-                      const char* key,
-                      const std::string& value,
-                      bool& first)
-{
-    if (!first) {
-        stream << ',';
-    }
-    first = false;
-    stream << jsonEscape(key) << ':' << jsonEscape(value);
-}
-
-void appendJsonBool(std::ostringstream& stream,
-                    const char* key,
-                    bool value,
-                    bool& first)
-{
-    if (!first) {
-        stream << ',';
-    }
-    first = false;
-    stream << jsonEscape(key) << ':' << (value ? "true" : "false");
-}
-
-void appendJsonNumber(std::ostringstream& stream,
-                      const char* key,
-                      std::size_t value,
-                      bool& first)
-{
-    if (!first) {
-        stream << ',';
-    }
-    first = false;
-    stream << jsonEscape(key) << ':' << value;
-}
-
-void appendJsonFloat(std::ostringstream& stream,
-                     const char* key,
-                     float value,
-                     bool& first)
-{
-    if (!first) {
-        stream << ',';
-    }
-    first = false;
-    stream << jsonEscape(key) << ':' << std::setprecision(9) << value;
-}
-
-void appendJsonFloatArray(std::ostringstream& stream,
-                          const char* key,
-                          const float* values,
-                          unsigned int valueCount,
-                          bool& first)
-{
-    if (!first) {
-        stream << ',';
-    }
-    first = false;
-    stream << jsonEscape(key) << ":[";
-    for (unsigned int index = 0U; index < valueCount; ++index) {
-        if (index != 0U) {
-            stream << ',';
-        }
-        stream << std::setprecision(9) << values[index];
-    }
-    stream << ']';
-}
-
-void appendJsonInt(std::ostringstream& stream,
-                   const char* key,
-                   int value,
-                   bool& first)
-{
-    if (!first) {
-        stream << ',';
-    }
-    first = false;
-    stream << jsonEscape(key) << ':' << value;
-}
-
 }  // namespace
 
 const MTypeId MmdRenderShape::id(kMmdRenderShapeId);
@@ -538,9 +461,8 @@ MStatus MmdRenderShape::initialize()
     if (!status) {
         return status;
     }
-    // This input belongs exclusively to the shape lifecycle.  It is not
-    // serialized, keyed, or exposed to authoring UI; a reopened scene starts
-    // source-visible until VP2 commits current buffers again.
+    // Legacy scene-compatibility input. No current renderer writes it; keep it
+    // nonpersistent until saved-scene migration proves the attributes removable.
     numericAttribute.setWritable(true);
     numericAttribute.setReadable(true);
     numericAttribute.setStorable(false);
@@ -556,11 +478,9 @@ MStatus MmdRenderShape::initialize()
     if (!status) {
         return status;
     }
-    // This is a transient source-control output.  It is intentionally not
-    // storable, so a saved scene always reopens source-visible by default.
-    // This output is evaluated by Maya's normal DG path from aProxyReady.
-    // The lifecycle helper never writes the user-owned source visibility
-    // destination directly.
+    // Legacy source-visibility output retained for old saved connections. It
+    // remains nonstorable and evaluates from aProxyReady, whose current value
+    // is always false.
     numericAttribute.setWritable(false);
     numericAttribute.setReadable(true);
     numericAttribute.setStorable(false);
@@ -586,8 +506,13 @@ MStatus MmdRenderShape::preEvaluation(
 {
     if (context.isNormal()) {
         MStatus status;
+        if (evaluationNode.dirtyPlugExists(aMaterialSettings, &status) && status) {
+            materialInputsDirty_ = true;
+            MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
+        }
         for (const MObject& child : aMaterialSettingChildren) {
             if (evaluationNode.dirtyPlugExists(child, &status) && status) {
+                materialInputsDirty_ = true;
                 MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
                 break;
             }
@@ -598,9 +523,11 @@ MStatus MmdRenderShape::preEvaluation(
         }
         if (evaluationNode.dirtyPlugExists(aMaterialAlpha, &status) &&
             status) {
+            materialInputsDirty_ = true;
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
         } else if (evaluationNode.dirtyPlugExists(aMaterialValues, &status) &&
                    status) {
+            materialInputsDirty_ = true;
             MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
         } else {
             bool materialValuesDirty = false;
@@ -612,6 +539,7 @@ MStatus MmdRenderShape::preEvaluation(
                 }
             }
             if (materialValuesDirty) {
+                materialInputsDirty_ = true;
                 MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
             }
         }
@@ -628,6 +556,7 @@ MStatus MmdRenderShape::setDependentsDirty(const MPlug& plug,
     }
     if (!plug.isNull() &&
         (plug.attribute() == aMaterialAlpha || isMaterialValuesPlug(plug))) {
+        materialInputsDirty_ = true;
         MHWRender::MRenderer::setGeometryDrawDirty(thisMObject());
     }
     return MS::kSuccess;
@@ -723,9 +652,9 @@ bool MmdRenderShape::prepareForPluginUnload()
                 return false;
             }
             MmdRenderShape* shape = fromMObject(node, &nodeStatus);
-            if (!nodeStatus || !shape || !shape->setProxyReady(false)) {
+            if (!nodeStatus || !shape) {
                 MGlobal::displayError(
-                    "[mmdRenderShape] Failed to restore source visibility before plugin unload.");
+                    "[mmdRenderShape] Failed to inspect source visibility before plugin unload.");
                 return false;
             }
             MPlug sourceVisibility(node, aSourceVisibility);
@@ -746,33 +675,8 @@ bool MmdRenderShape::prepareForPluginUnload()
     }
     if (foundLiveProxy) {
         MGlobal::displayError(
-            "[mmdRenderShape] Source visibility was restored, but live VP2 proxy nodes "
+            "[mmdRenderShape] Legacy source visibility is true, but live proxy nodes "
             "must be deleted before plugin unload.");
-        return false;
-    }
-    return true;
-}
-
-bool MmdRenderShape::setProxyReady(bool ready)
-{
-    const bool nextReady = ready && geometryValid_ && geometryWitnessValid_ &&
-                           renderItemWitnessValid_;
-    if (aProxyReady.isNull() || aSourceVisibility.isNull()) {
-        return false;
-    }
-    // supportsEvaluationManagerParallelUpdate() is false, so this lifecycle
-    // transition is made on Maya's serial VP2/DG boundary.  Updating the
-    // hidden input dirties aSourceVisibility through attributeAffects.
-    MPlug readiness(thisMObject(), aProxyReady);
-    if (readiness.isNull()) {
-        return false;
-    }
-    MStatus status;
-    const bool currentReady = readiness.asBool(&status);
-    if (!status) {
-        return false;
-    }
-    if (currentReady != nextReady && !readiness.setBool(nextReady)) {
         return false;
     }
     return true;
@@ -997,8 +901,10 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     std::vector<float> nextStaticNormals = next.normals;
     geometry_ = std::move(next);
     ++renderDataRevision_;
+    ++geometryBufferRevision_;
     meshInputDirty_ = true;
     staticPositions_ = std::move(nextStaticPositions);
+    materialInputsDirty_ = true;
     staticNormals_ = std::move(nextStaticNormals);
     boundingBox_ = nextBounds;
     staticBoundingBox_ = nextBounds;
@@ -1006,15 +912,183 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     evaluatedGeometryActive_ = false;
     evaluatedNormalRepairCount_ = 0U;
     evaluatedNormalStaticFallbackCount_ = 0U;
-    clearRenderItemWitness();
-    clearMaterialBindingDiagnostics();
+    evaluatedNormalRepairWarningEmitted_ = false;
+    renderFallbackReason_.clear();
     return true;
+}
+
+void MmdRenderShape::updateEvaluatedData()
+{
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateEvaluatedData");
+    if (geometry_.positions.empty()) {
+        const MPlug upstream = MPlug(thisMObject(), aInputMesh).source();
+        if (upstream.isNull() || !restoreGeometryFromSource(upstream.node())) {
+            return;
+        }
+    }
+    if (materialInputsDirty_) {
+        // Clear before evaluation so callbacks raised by a read remain pending.
+        materialInputsDirty_ = false;
+        const bool alphaReady = updateEvaluatedMaterialAlpha();
+        const bool valuesReady = updateEvaluatedMaterialValues();
+        const bool settingsReady = updateEvaluatedMaterialSettings();
+        if (!alphaReady || !valuesReady || !settingsReady) materialInputsDirty_ = true;
+    }
+
+    if (!consumeMeshInputDirty()) {
+        return;
+    }
+
+    MPlug inputPlug(thisMObject(), MmdRenderShape::aInputMesh);
+    if (inputPlug.isNull()) {
+        // A shape created by an older scene/plugin version may not expose the
+        // optional input.  Preserve its static geometry in that case.
+        useStaticGeometry();
+        return;
+    }
+
+    MStatus connectionStatus;
+    const bool connected = inputPlug.isConnected(&connectionStatus);
+    if (!connectionStatus) {
+        updateEvaluatedMesh(MObject::kNullObj);
+        return;
+    }
+
+    MStatus meshStatus;
+    MDataHandle inputHandle = [&] {
+        MProfilingScope inputProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                     "MMD.DemandInputMesh");
+        return inputPlug.asMDataHandle(&meshStatus);
+    }();
+    // MPlug owns the returned handle's storage; keep it alive through mesh
+    // consumption and release it on every exit, including failed evaluation.
+    struct InputHandleRelease {
+        const MPlug& plug;
+        MDataHandle& handle;
+        ~InputHandleRelease()
+        {
+            MProfilingScope releaseProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                           "MMD.ReleaseInputMesh");
+            plug.destructHandle(handle);
+        }
+    } release{inputPlug, inputHandle};
+    const MObject meshObject = [&] {
+        MProfilingScope extractProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                       "MMD.ExtractInputMesh");
+        return meshStatus && inputHandle.type() == MFnData::kMesh
+            ? inputHandle.asMesh() : MObject::kNullObj;
+    }();
+    if (!meshObject.isNull()) {
+        updateEvaluatedMesh(meshObject);
+        return;
+    }
+
+    if (connected || !meshStatus) {
+        // A connected but unevaluable mesh is an input failure, not a request
+        // to silently keep stale render data visible.
+        updateEvaluatedMesh(MObject::kNullObj);
+    } else {
+        useStaticGeometry();
+    }
+}
+
+bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
+{
+    // A saved scene owns the ordinary mesh and its shading assignments. Build
+    // the transient draw topology from those once, without rereading the PMX
+    // or serializing a second copy of its authored mesh/material data.
+    MStatus status;
+    MFnMesh mesh(sourceMesh, &status);
+    if (!status) return false;
+    MObjectArray sets;
+    MIntArray faceShaders, triangleCounts, triangleVertices;
+    MPointArray points;
+    if (!mesh.getConnectedShaders(0, sets, faceShaders) ||
+        !mesh.getTriangles(triangleCounts, triangleVertices) ||
+        !mesh.getPoints(points, MSpace::kObject)) return false;
+    if (faceShaders.length() != triangleCounts.length()) return false;
+
+    std::vector<std::vector<float>> positions(sets.length()), normals(sets.length()), uvs(sets.length());
+    std::vector<std::vector<uint32_t>> indices(sets.length()), sources(sets.length());
+    // Share only identical corners of the same source vertex and material.
+    // UV seams and authored face normals must remain distinct after reload.
+    std::vector<std::unordered_map<uint32_t, std::vector<uint32_t>>> sharedVertices(sets.length());
+    std::vector<mmd::MmdRenderQueueInput> inputs;
+    for (unsigned int i = 0; i < sets.length(); ++i) {
+        MFnDependencyNode set(sets[i]);
+        const MPlug shaderPlug = set.findPlug("surfaceShader", true, &status);
+        if (!status || shaderPlug.source().isNull()) return false;
+        MFnDependencyNode shader(shaderPlug.source().node());
+        const MPlug materialIndex = shader.findPlug("mmd_material_index", true, &status);
+        if (!status) return false;
+        const int index = materialIndex.asInt(&status);
+        if (!status || index < 0) return false;
+        mmd::MmdRenderQueueInput input;
+        input.materialIndex = static_cast<std::size_t>(index);
+        input.submeshIndex = i;
+        inputs.push_back(input);
+    }
+    unsigned int triangleOffset = 0;
+    for (unsigned int face = 0; face < triangleCounts.length(); ++face) {
+        const int group = faceShaders[face];
+        if (group < 0 || static_cast<unsigned int>(group) >= sets.length()) return false;
+        MIntArray faceVertices;
+        if (!mesh.getPolygonVertices(face, faceVertices)) return false;
+        for (int triangle = 0; triangle < triangleCounts[face]; ++triangle) {
+            if (triangleOffset + 3 > triangleVertices.length()) return false;
+            // The initializer converts PMX winding/coordinates to Maya space.
+            for (int corner = 2; corner >= 0; --corner) {
+                const int vertex = triangleVertices[triangleOffset + corner];
+                if (vertex < 0 || static_cast<unsigned int>(vertex) >= points.length()) return false;
+                MVector normal;
+                if (!mesh.getFaceVertexNormal(face, vertex, normal, MSpace::kObject)) return false;
+                float u = 0.0F, v = 0.0F;
+                for (unsigned int local = 0; local < faceVertices.length(); ++local) {
+                    if (faceVertices[local] == vertex) {
+                        mesh.getPolygonUV(face, local, u, v);
+                        break;
+                    }
+                }
+                const MPoint& point = points[vertex];
+                const float nx = static_cast<float>(normal.x);
+                const float ny = static_cast<float>(normal.y);
+                const float nz = static_cast<float>(-normal.z);
+                const float flippedV = 1.0F - v;
+                auto& candidates = sharedVertices[group][static_cast<uint32_t>(vertex)];
+                const auto existing = std::find_if(candidates.begin(), candidates.end(), [&](uint32_t index) {
+                    return normals[group][index * 3U] == nx &&
+                           normals[group][index * 3U + 1U] == ny &&
+                           normals[group][index * 3U + 2U] == nz &&
+                           uvs[group][index * 2U] == u &&
+                           uvs[group][index * 2U + 1U] == flippedV;
+                });
+                if (existing != candidates.end()) {
+                    indices[group].push_back(*existing);
+                    continue;
+                }
+                candidates.push_back(static_cast<uint32_t>(sources[group].size()));
+                positions[group].insert(positions[group].end(),
+                    {static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(-point.z)});
+                normals[group].insert(normals[group].end(),
+                    {nx, ny, nz});
+                uvs[group].insert(uvs[group].end(), {u, flippedV});
+                indices[group].push_back(static_cast<uint32_t>(sources[group].size()));
+                sources[group].push_back(static_cast<uint32_t>(vertex));
+            }
+            triangleOffset += 3;
+        }
+    }
+    return setMaterialSplitGeometry(positions, normals, uvs, indices, inputs, 1.0, sources);
 }
 
 bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateEvaluatedMesh");
     ++geometryUpdateCount_;
     ++renderDataRevision_;
+    ++geometryBufferRevision_;
     auto reject = [this](const std::string& reason) {
         const bool reasonChanged = recordRenderFallbackReason(reason);
         if (reasonChanged) {
@@ -1030,7 +1104,7 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         meshInputDirty_ = true;
         evaluatedNormalRepairCount_ = 0U;
         evaluatedNormalStaticFallbackCount_ = 0U;
-        clearMaterialBindingDiagnostics();
+        evaluatedNormalRepairWarningEmitted_ = false;
         return false;
     };
 
@@ -1062,11 +1136,19 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     }
 
     MPointArray points;
-    if (!meshFn.getPoints(points, MSpace::kObject)) {
+    if (![&] {
+            MProfilingScope fetchProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                         "MMD.GetPoints");
+            return meshFn.getPoints(points, MSpace::kObject);
+        }()) {
         return reject("could not read object-space positions");
     }
     MFloatVectorArray normals;
-    if (!meshFn.getVertexNormals(true, normals, MSpace::kObject)) {
+    if (![&] {
+            MProfilingScope fetchProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                         "MMD.GetVertexNormals");
+            return meshFn.getVertexNormals(true, normals, MSpace::kObject);
+        }()) {
         return reject("could not read object-space vertex normals");
     }
     if (static_cast<std::size_t>(points.length()) < expectedSourceVertexCount ||
@@ -1079,6 +1161,8 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     // usable.  Invalid slots use the immutable import-time stream instead of
     // triggering another normal calculation during every DG update.  The
     // repair list stays empty on the normal path.
+    MProfilingScope repackProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                                  "MMD.ExpandEvaluatedStreams");
     std::vector<float> nextPositions;
     std::vector<float> nextNormals;
     nextPositions.reserve(renderVertexCount * 3U);
@@ -1202,20 +1286,20 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
     boundingBox_ = nextBounds;
     geometryValid_ = true;
     evaluatedGeometryActive_ = true;
-    if (normalRepairCount != evaluatedNormalRepairCount_ ||
-        staticFallbackCount != evaluatedNormalStaticFallbackCount_) {
-        if (normalRepairCount > 0U) {
-            std::ostringstream warning;
-            warning << "[mmdRenderShape] Repaired " << normalRepairCount
-                    << " invalid evaluated mesh normal(s) with "
-                    << staticFallbackCount << " import-time static fallback(s).";
-            MGlobal::displayWarning(MString(warning.str().c_str()));
-        }
-        evaluatedNormalRepairCount_ = normalRepairCount;
-        evaluatedNormalStaticFallbackCount_ = staticFallbackCount;
+    if (normalRepairCount > 0U && !evaluatedNormalRepairWarningEmitted_) {
+        std::ostringstream warning;
+        warning << "[mmdRenderShape] Repaired " << normalRepairCount
+                << " invalid evaluated mesh normal(s) with "
+                << staticFallbackCount << " import-time static fallback(s).";
+        MGlobal::displayWarning(MString(warning.str().c_str()));
+        evaluatedNormalRepairWarningEmitted_ = true;
     }
-    clearRenderItemWitness();
-    clearMaterialBindingDiagnostics();
+    // Keep the latest counts in the diagnostic witness even when the set of
+    // invalid slots changes during playback; warning emission is independent
+    // from per-frame state updates.
+    evaluatedNormalRepairCount_ = normalRepairCount;
+    evaluatedNormalStaticFallbackCount_ = staticFallbackCount;
+    renderFallbackReason_.clear();
     return true;
 }
 
@@ -1223,6 +1307,7 @@ void MmdRenderShape::useStaticGeometry()
 {
     if (!geometryValid_ || evaluatedGeometryActive_) {
         ++renderDataRevision_;
+        ++geometryBufferRevision_;
         // Build both replacements before swapping either stream so a failed
         // allocation cannot expose a half-restored geometry state.
         std::vector<float> restoredPositions = staticPositions_;
@@ -1234,8 +1319,8 @@ void MmdRenderShape::useStaticGeometry()
         evaluatedGeometryActive_ = false;
         evaluatedNormalRepairCount_ = 0U;
         evaluatedNormalStaticFallbackCount_ = 0U;
-        clearRenderItemWitness();
-        clearMaterialBindingDiagnostics();
+        evaluatedNormalRepairWarningEmitted_ = false;
+        renderFallbackReason_.clear();
     }
 }
 
@@ -1244,36 +1329,47 @@ bool MmdRenderShape::hasValidGeometry() const
     return geometryValid_ && !geometry_.positions.empty();
 }
 
-void MmdRenderShape::updateEvaluatedMaterialAlpha()
+bool MmdRenderShape::updateEvaluatedMaterialAlpha()
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateMaterialAlpha");
+    bool valid = true;
     MPlug alphaPlug(thisMObject(), aMaterialAlpha);
     if (alphaPlug.isNull()) {
-        return;
+        return false;
     }
 
     MStatus alphaCountStatus;
+    MIntArray materialIndices;
+    // Enumerate connected/authored elements without evaluating every material
+    // on every split shape. Missing elements must remain missing.
     const unsigned int alphaCount =
-        alphaPlug.evaluateNumElements(&alphaCountStatus);
+        alphaPlug.getExistingArrayAttributeIndices(materialIndices, &alphaCountStatus);
     if (!alphaCountStatus) {
-        return;
+        return false;
     }
     std::vector<std::pair<std::size_t, float>> updates;
     updates.reserve(alphaCount);
     for (unsigned int physicalIndex = 0U; physicalIndex < alphaCount;
          ++physicalIndex) {
-        MStatus elementStatus;
-        MPlug alphaElement = alphaPlug.elementByPhysicalIndex(
-            physicalIndex, &elementStatus);
-        if (!elementStatus || alphaElement.isNull()) {
+        const unsigned int materialIndex =
+            static_cast<unsigned int>(materialIndices[physicalIndex]);
+        if (std::none_of(geometry_.queueInputs.begin(), geometry_.queueInputs.end(),
+                         [materialIndex](const mmd::MmdRenderQueueInput& input) {
+                             return input.materialIndex == materialIndex;
+                         })) {
             continue;
         }
-        const unsigned int materialIndex =
-            alphaElement.logicalIndex(&elementStatus);
-        if (!elementStatus) {
+        MStatus elementStatus;
+        MPlug alphaElement = alphaPlug.elementByLogicalIndex(
+            materialIndex, &elementStatus);
+        if (!elementStatus || alphaElement.isNull()) {
+            valid = false;
             continue;
         }
         const float diffuseAlpha = alphaElement.asFloat(&elementStatus);
         if (!elementStatus || !std::isfinite(diffuseAlpha)) {
+            valid = false;
             continue;
         }
         const float effectiveAlpha =
@@ -1288,41 +1384,55 @@ void MmdRenderShape::updateEvaluatedMaterialAlpha()
         }
     }
     if (!updates.empty()) {
-        applyMaterialAlphaUpdates(updates);
+        valid = applyMaterialAlphaUpdates(updates) && valid;
     }
+    return valid;
 }
 
-void MmdRenderShape::updateEvaluatedMaterialValues()
+bool MmdRenderShape::updateEvaluatedMaterialValues()
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateMaterialValues");
+    bool valid = true;
     MPlug valuesPlug(thisMObject(), aMaterialValues);
     if (valuesPlug.isNull()) {
-        return;
+        return false;
     }
 
     MStatus valuesCountStatus;
+    MIntArray materialIndices;
     const unsigned int valuesCount =
-        valuesPlug.evaluateNumElements(&valuesCountStatus);
+        valuesPlug.getExistingArrayAttributeIndices(materialIndices, &valuesCountStatus);
     if (!valuesCountStatus) {
-        return;
+        return false;
     }
 
     std::vector<std::pair<std::size_t, mmd::MmdRenderQueueInput>> updates;
     updates.reserve(valuesCount);
     for (unsigned int physicalIndex = 0U; physicalIndex < valuesCount;
          ++physicalIndex) {
-        MStatus elementStatus;
-        const MPlug element = valuesPlug.elementByPhysicalIndex(
-            physicalIndex, &elementStatus);
-        if (!elementStatus || element.isNull()) {
-            continue;
-        }
-        const unsigned int materialIndex = element.logicalIndex(&elementStatus);
-        if (!elementStatus) {
+        const unsigned int materialIndex =
+            static_cast<unsigned int>(materialIndices[physicalIndex]);
+
+        // Split shapes can retain bindings for every material in the model.
+        // Only read values that can be applied to this shape's draw queue.
+        if (std::none_of(geometry_.queueInputs.begin(), geometry_.queueInputs.end(),
+                         [materialIndex](const mmd::MmdRenderQueueInput& input) {
+                             return input.materialIndex == materialIndex;
+        })) {
             continue;
         }
 
+        MStatus elementStatus;
+        const MPlug element = valuesPlug.elementByLogicalIndex(
+            materialIndex, &elementStatus);
+        if (!elementStatus || element.isNull()) {
+            valid = false;
+            continue;
+        }
         mmd::MmdRenderQueueInput materialValues;
         if (!readMaterialValuesRecord(element, materialValues)) {
+            valid = false;
             MGlobal::displayError(
                 "[mmdRenderShape] Material value record rejected: "
                 "missing or non-finite numeric value.");
@@ -1331,7 +1441,7 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
         updates.emplace_back(materialIndex, std::move(materialValues));
     }
     if (updates.empty()) {
-        return;
+        return valid;
     }
 
     std::unordered_map<std::size_t, std::size_t> updateIndexByMaterial;
@@ -1341,46 +1451,13 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
         updateIndexByMaterial.emplace(updates[updateIndex].first, updateIndex);
     }
 
-    const auto applyValues = [](mmd::MmdRenderQueueInput& destination,
-                                const mmd::MmdRenderQueueInput& source) {
-        destination.diffuseColor = source.diffuseColor;
-        destination.specularColor = source.specularColor;
-        destination.specularPower = source.specularPower;
-        destination.ambientColor = source.ambientColor;
-        destination.edgeColor = source.edgeColor;
-        destination.edgeAlpha = source.edgeAlpha;
-        destination.edgeSize = source.edgeSize;
-        destination.mainTextureMultiply = source.mainTextureMultiply;
-        destination.mainTextureAdd = source.mainTextureAdd;
-        destination.sphereTextureMultiply = source.sphereTextureMultiply;
-        destination.sphereTextureAdd = source.sphereTextureAdd;
-        destination.toonTextureMultiply = source.toonTextureMultiply;
-        destination.toonTextureAdd = source.toonTextureAdd;
-    };
-    const auto valuesEqual = [](const mmd::MmdRenderQueueInput& left,
-                                const mmd::MmdRenderQueueInput& right) {
-        return left.diffuseColor == right.diffuseColor &&
-               left.specularColor == right.specularColor &&
-               left.specularPower == right.specularPower &&
-               left.ambientColor == right.ambientColor &&
-               left.edgeColor == right.edgeColor &&
-               left.edgeAlpha == right.edgeAlpha &&
-               left.edgeSize == right.edgeSize &&
-               left.mainTextureMultiply == right.mainTextureMultiply &&
-               left.mainTextureAdd == right.mainTextureAdd &&
-               left.sphereTextureMultiply == right.sphereTextureMultiply &&
-               left.sphereTextureAdd == right.sphereTextureAdd &&
-               left.toonTextureMultiply == right.toonTextureMultiply &&
-               left.toonTextureAdd == right.toonTextureAdd;
-    };
-
     bool valuesChanged = false;
     for (mmd::MmdRenderQueueInput& input : geometry_.queueInputs) {
         const auto updateIt = updateIndexByMaterial.find(input.materialIndex);
         if (updateIt != updateIndexByMaterial.end()) {
             const auto& update = updates[updateIt->second].second;
-            if (!valuesEqual(input, update)) {
-                applyValues(input, update);
+            if (!mmd::sameMmdMaterialValues(input, update)) {
+                mmd::copyMmdMaterialValues(input, update);
                 valuesChanged = true;
             }
         }
@@ -1390,46 +1467,56 @@ void MmdRenderShape::updateEvaluatedMaterialValues()
             queueGeometry.entry.materialIndex);
         if (updateIt != updateIndexByMaterial.end()) {
             const auto& update = updates[updateIt->second].second;
-            if (!valuesEqual(queueGeometry.material, update)) {
-                applyValues(queueGeometry.material, update);
+            if (!mmd::sameMmdMaterialValues(queueGeometry.material, update)) {
+                mmd::copyMmdMaterialValues(queueGeometry.material, update);
                 valuesChanged = true;
             }
         }
     }
     if (valuesChanged) {
-        resyncMaterialQueue(geometry_.queueInputs);
-        clearRenderItemWitness();
-        clearMaterialBindingDiagnostics();
+        valid = resyncMaterialQueue(geometry_.queueInputs) && valid;
     }
+    return valid;
 }
 
-void MmdRenderShape::updateEvaluatedMaterialSettings()
+bool MmdRenderShape::updateEvaluatedMaterialSettings()
 {
+    MProfilingScope profile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
+                            "MMD.UpdateMaterialSettings");
     MPlug settings(thisMObject(), aMaterialSettings);
     MStatus status;
-    const unsigned int count = settings.evaluateNumElements(&status);
-    if (!status || count == 0U) return;
+    MIntArray materialIndices;
+    const unsigned int count = settings.getExistingArrayAttributeIndices(materialIndices, &status);
+    if (!status) return false;
+    if (count == 0U) return true;
     auto nextInputs = geometry_.queueInputs;
     bool changed = false;
     for (unsigned int physical = 0; physical < count; ++physical) {
-        const MPlug element = settings.elementByPhysicalIndex(physical, &status);
-        if (!status) return;
-        const unsigned int materialIndex = element.logicalIndex(&status);
-        if (!status) return;
+        const unsigned int materialIndex = static_cast<unsigned int>(materialIndices[physical]);
+        // Split shapes retain model-wide bindings; evaluate only settings
+        // that can be applied to this shape's draw queue.
+        if (std::none_of(nextInputs.begin(), nextInputs.end(),
+                         [materialIndex](const mmd::MmdRenderQueueInput& input) {
+                             return input.materialIndex == materialIndex;
+                         })) {
+            continue;
+        }
+        const MPlug element = settings.elementByLogicalIndex(materialIndex, &status);
+        if (!status) return false;
         const int flags = element.child(0U).asInt(&status);
-        if (!status) return;
+        if (!status) return false;
         const int sphereMode = element.child(1U).asInt(&status);
-        if (!status) return;
+        if (!status) return false;
         const bool sharedToon = element.child(2U).asInt(&status) != 0;
-        if (!status) return;
+        if (!status) return false;
         const int toonIndex = element.child(3U).asInt(&status);
-        if (!status) return;
+        if (!status) return false;
         const std::string mainPath = element.child(4U).asString(&status).asUTF8();
-        if (!status) return;
+        if (!status) return false;
         const std::string spherePath = element.child(5U).asString(&status).asUTF8();
-        if (!status) return;
+        if (!status) return false;
         const std::string toonPath = element.child(6U).asString(&status).asUTF8();
-        if (!status) return;
+        if (!status) return false;
         const int sharedIndex = sharedToon ? toonIndex : -1;
         for (auto& input : nextInputs) {
             if (input.materialIndex != materialIndex) continue;
@@ -1453,40 +1540,9 @@ void MmdRenderShape::updateEvaluatedMaterialSettings()
             changed = true;
         }
     }
-    if (changed && resyncMaterialQueue(nextInputs)) {
-        clearRenderItemWitness();
-        clearMaterialBindingDiagnostics();
+    if (changed) {
+        if (!resyncMaterialQueue(nextInputs)) return false;
     }
-}
-
-bool MmdRenderShape::updateMainTextureAvailability(
-    const std::vector<bool>& availability)
-{
-    if (availability.size() != geometry_.queueInputs.size()) {
-        return false;
-    }
-
-    bool changed = false;
-    for (std::size_t index = 0U; index < geometry_.queueInputs.size();
-         ++index) {
-        if (geometry_.queueInputs[index].mainTextureAvailable !=
-            availability[index]) {
-            changed = true;
-            break;
-        }
-    }
-    if (!changed) {
-        return true;
-    }
-    std::vector<mmd::MmdRenderQueueInput> nextInputs = geometry_.queueInputs;
-    for (std::size_t index = 0U; index < nextInputs.size(); ++index) {
-        nextInputs[index].mainTextureAvailable = availability[index];
-    }
-    if (!resyncMaterialQueue(nextInputs)) {
-        return false;
-    }
-    clearRenderItemWitness();
-    clearMaterialBindingDiagnostics();
     return true;
 }
 
@@ -1540,6 +1596,7 @@ bool MmdRenderShape::resyncMaterialQueue(
         return true;
     }
 
+    ++geometryBufferRevision_;
     std::vector<QueueGeometry> reordered;
     reordered.reserve(nextQueue.size());
     for (const mmd::MmdRenderQueueEntry& entry : nextQueue) {
@@ -1598,16 +1655,7 @@ bool MmdRenderShape::applyMaterialAlphaUpdates(
     if (!resyncMaterialQueue(nextInputs)) {
         return false;
     }
-    clearRenderItemWitness();
-    clearMaterialBindingDiagnostics();
     return true;
-}
-
-bool MmdRenderShape::updateMaterialAlpha(std::size_t materialIndex,
-                                         float diffuseAlpha)
-{
-    return applyMaterialAlphaUpdates(
-        {{materialIndex, diffuseAlpha}});
 }
 
 bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
@@ -1689,9 +1737,10 @@ bool MmdRenderShape::reindexMaterialQueue(std::size_t firstIndex,
     geometry_.queueInputs = std::move(nextInputs);
     geometry_.renderQueue = std::move(nextQueue);
     geometry_.queueGeometry = std::move(reordered);
+    // Queue material indices now address different DG input records.
+    materialInputsDirty_ = true;
     ++renderDataRevision_;
-    clearRenderItemWitness();
-    clearMaterialBindingDiagnostics();
+    ++geometryBufferRevision_;
     return true;
 }
 
@@ -1700,236 +1749,37 @@ const MmdRenderShape::GeometryData& MmdRenderShape::geometry() const
     return geometry_;
 }
 
-bool MmdRenderShape::hasPassGeometry(mmd::MmdDrawPass pass) const
-{
-    return std::any_of(
-        geometry_.queueGeometry.begin(), geometry_.queueGeometry.end(),
-        [pass](const QueueGeometry& item) { return item.entry.pass == pass; });
-}
-
-void MmdRenderShape::clearRenderItemWitness()
-{
-    renderItemWitnessValid_ = false;
-    renderItemWitnessEntries_.clear();
-    geometryWitnessValid_ = false;
-    geometryWitnessVertexCount_ = 0U;
-    geometryWitnessIndexCount_ = 0U;
-    geometryWitnessDescriptorSummary_.clear();
-    setProxyReady(false);
-}
-
-void MmdRenderShape::clearMaterialBindingDiagnostics()
-{
-    materialBindingDiagnostics_.clear();
-}
-
-void MmdRenderShape::recordRenderItemWitness(
-    const std::vector<mmd::MmdRenderQueueEntry>& entries)
-{
-    renderItemWitnessEntries_ = entries;
-    renderItemWitnessValid_ = true;
-    renderFallbackReason_.clear();
-}
-
 bool MmdRenderShape::recordRenderFallbackReason(const std::string& reason)
 {
     const bool changed = renderFallbackReason_ != reason;
-    clearRenderItemWitness();
     renderFallbackReason_ = reason;
     return changed;
 }
 
-void MmdRenderShape::recordMaterialBindingDiagnostic(
-    const MaterialBindingDiagnostic& diagnostic)
-{
-    materialBindingDiagnostics_.push_back(diagnostic);
-}
-
-void MmdRenderShape::recordGeometryWitness(std::size_t vertexCount,
-                                           std::size_t indexCount,
-                                           const std::string& descriptorSummary)
-{
-    ++bufferUploadCount_;
-    geometryWitnessVertexCount_ = vertexCount;
-    geometryWitnessIndexCount_ = indexCount;
-    geometryWitnessDescriptorSummary_ = descriptorSummary;
-    geometryWitnessValid_ = true;
-}
-
 std::string MmdRenderShape::renderItemWitness() const
 {
-    if (!renderItemWitnessValid_) {
-        if (!renderFallbackReason_.empty()) {
-            return "failed reason=" + renderFallbackReason_;
-        }
-        return "pending";
+    if (!renderFallbackReason_.empty()) {
+        return "failed reason=" + renderFallbackReason_;
     }
-
-    std::ostringstream stream;
-    stream << "ready items=" << renderItemWitnessEntries_.size() << " order=";
-    for (std::size_t i = 0; i < renderItemWitnessEntries_.size(); ++i) {
-        if (i != 0U) {
-            stream << ',';
-        }
-        const mmd::MmdRenderQueueEntry& entry = renderItemWitnessEntries_[i];
-        stream << mmd::mmdDrawPassName(entry.pass) << "[m"
-               << entry.materialIndex << "/s" << entry.submeshIndex << "]";
-    }
-    if (geometryWitnessValid_) {
-        stream << " geometry=vertices=" << geometryWitnessVertexCount_
-               << ",indices=" << geometryWitnessIndexCount_;
-        if (!geometryWitnessDescriptorSummary_.empty()) {
-            stream << ",streams=" << geometryWitnessDescriptorSummary_;
-        }
-        stream << ",repairedNormals=" << evaluatedNormalRepairCount_;
-        stream << ",staticNormalFallbacks="
-               << evaluatedNormalStaticFallbackCount_;
-    } else {
-        stream << " geometry=pending";
-    }
-    return stream.str();
+    return "pending";
 }
 
 std::string MmdRenderShape::materialBindingDiagnosticsJson() const
 {
     std::ostringstream stream;
-    const char* status = renderItemWitnessValid_
-                             ? "ready"
-                             : (renderFallbackReason_.empty() ? "pending"
-                                                              : "failed");
+    const char* status = renderFallbackReason_.empty() ? "pending" : "failed";
     stream << "{\"version\":1,\"status\":"
            << jsonEscape(status) << ",\"fallbackReason\":"
            << jsonEscape(renderFallbackReason_)
            << ",\"geometryUpdates\":" << geometryUpdateCount_
-           << ",\"bufferUploads\":" << bufferUploadCount_
-           << ",\"items\":[";
-    for (std::size_t index = 0; index < materialBindingDiagnostics_.size();
-         ++index) {
-        if (index != 0U) {
-            stream << ',';
-        }
-        const MaterialBindingDiagnostic& diagnostic =
-            materialBindingDiagnostics_[index];
-        stream << '{';
-        bool first = true;
-        appendJsonNumber(stream, "queueIndex", diagnostic.queueIndex, first);
-        appendJsonNumber(stream, "materialIndex", diagnostic.materialIndex,
-                         first);
-        appendJsonNumber(stream, "submeshIndex", diagnostic.submeshIndex,
-                         first);
-        appendJsonString(stream, "renderItemName", diagnostic.renderItemName,
-                         first);
-        appendJsonString(stream, "pass", diagnostic.pass, first);
-        appendJsonBool(stream, "outline", diagnostic.outline, first);
-        appendJsonString(stream, "technique", diagnostic.technique, first);
-        appendJsonBool(stream, "uvStreamAvailable",
-                       diagnostic.uvStreamAvailable, first);
-        appendJsonFloat(stream, "diffuseAlpha", diagnostic.diffuseAlpha, first);
-        if (!first) {
-            stream << ',';
-        }
-        first = false;
-        stream << jsonEscape("materialValues") << ':' << '{';
-        bool materialValuesFirst = true;
-        appendJsonFloatArray(stream, "DiffuseColorRGB",
-                             diagnostic.materialValuesDiffuseColor.data(), 3U,
-                             materialValuesFirst);
-        appendJsonFloat(stream, "DiffuseColorA", diagnostic.diffuseAlpha,
-                        materialValuesFirst);
-        appendJsonFloatArray(stream, "SpecularColor",
-                             diagnostic.materialValuesSpecularColor.data(), 3U,
-                             materialValuesFirst);
-        appendJsonFloat(stream, "Shininess", diagnostic.materialValuesShininess,
-                        materialValuesFirst);
-        appendJsonFloatArray(stream, "AmbientColor",
-                             diagnostic.materialValuesAmbientColor.data(), 3U,
-                             materialValuesFirst);
-        appendJsonFloatArray(stream, "EdgeColorRGB",
-                             diagnostic.materialValuesEdgeColorRGB.data(), 3U,
-                             materialValuesFirst);
-        appendJsonFloat(stream, "EdgeColorA", diagnostic.materialValuesEdgeColorA,
-                        materialValuesFirst);
-        appendJsonFloat(stream, "EdgeSize", diagnostic.materialValuesEdgeSize,
-                        materialValuesFirst);
-        appendJsonFloatArray(
-            stream, "MainTextureMultiply",
-            diagnostic.materialValuesMainTextureMultiply.data(), 4U,
-            materialValuesFirst);
-        appendJsonFloatArray(stream, "MainTextureAdd",
-                             diagnostic.materialValuesMainTextureAdd.data(), 4U,
-                             materialValuesFirst);
-        appendJsonFloatArray(
-            stream, "SphereTextureMultiply",
-            diagnostic.materialValuesSphereTextureMultiply.data(), 4U,
-            materialValuesFirst);
-        appendJsonFloatArray(stream, "SphereTextureAdd",
-                             diagnostic.materialValuesSphereTextureAdd.data(), 4U,
-                             materialValuesFirst);
-        appendJsonFloatArray(
-            stream, "ToonTextureMultiply",
-            diagnostic.materialValuesToonTextureMultiply.data(), 4U,
-            materialValuesFirst);
-        appendJsonFloatArray(stream, "ToonTextureAdd",
-                             diagnostic.materialValuesToonTextureAdd.data(), 4U,
-                             materialValuesFirst);
-        stream << '}';
-        appendJsonBool(stream, "textureAlphaBlend",
-                       diagnostic.textureAlphaBlend, first);
-        appendJsonBool(stream, "effectiveTransparent",
-                       diagnostic.effectiveTransparent, first);
-        appendJsonBool(stream, "selfShadowMap", diagnostic.selfShadowMap,
-                       first);
-        appendJsonBool(stream, "selfShadow", diagnostic.selfShadow, first);
-        appendJsonBool(stream, "casterEligible", diagnostic.casterEligible,
-                       first);
-        appendJsonBool(stream, "casterRenderFilterParticipation",
-                       diagnostic.casterRenderFilterParticipation, first);
-        appendJsonString(stream, "renderItemType",
-                         diagnostic.renderItemType, first);
-        appendJsonString(stream, "casterExclusionReason",
-                         diagnostic.casterExclusionReason, first);
-        appendJsonString(stream, "mainTexturePath",
-                         diagnostic.mainTexturePath, first);
-        appendJsonString(stream, "sphereTexturePath",
-                         diagnostic.sphereTexturePath, first);
-        appendJsonString(stream, "toonTexturePath",
-                         diagnostic.toonTexturePath, first);
-        appendJsonString(stream, "toonTextureSource",
-                         diagnostic.toonTextureSource, first);
-        appendJsonBool(stream, "mainTextureRequested",
-                       diagnostic.mainTextureRequested, first);
-        appendJsonBool(stream, "sphereTextureRequested",
-                       diagnostic.sphereTextureRequested, first);
-        appendJsonBool(stream, "toonTextureRequested",
-                       diagnostic.toonTextureRequested, first);
-        appendJsonBool(stream, "mainTextureAcquired",
-                       diagnostic.mainTextureAcquired, first);
-        appendJsonBool(stream, "sphereTextureAcquired",
-                       diagnostic.sphereTextureAcquired, first);
-        appendJsonBool(stream, "toonTextureAcquired",
-                       diagnostic.toonTextureAcquired, first);
-        appendJsonBool(stream, "scalarParameterBindingSuccess",
-                       diagnostic.scalarParameterBindingSuccess, first);
-        appendJsonBool(stream, "mainTextureBindingSuccess",
-                       diagnostic.mainTextureBindingSuccess, first);
-        appendJsonBool(stream, "sphereTextureBindingSuccess",
-                       diagnostic.sphereTextureBindingSuccess, first);
-        appendJsonBool(stream, "toonTextureBindingSuccess",
-                       diagnostic.toonTextureBindingSuccess, first);
-        appendJsonBool(stream, "switchParameterBindingSuccess",
-                       diagnostic.switchParameterBindingSuccess, first);
-        appendJsonBool(stream, "shaderAvailable",
-                       diagnostic.shaderAvailable, first);
-        appendJsonBool(stream, "parameterBindingSuccess",
-                       diagnostic.parameterBindingSuccess, first);
-        appendJsonBool(stream, "shaderAssignmentSuccess",
-                       diagnostic.shaderAssignmentSuccess, first);
-        appendJsonBool(stream, "bindingSuccess", diagnostic.bindingSuccess,
-                       first);
-        appendJsonInt(stream, "sphereMode", diagnostic.sphereMode, first);
-        stream << '}';
-    }
-    stream << "]}";
+           // Version 1 exposed this top-level key. The retired geometry
+           // override no longer uploads buffers, so preserve the schema with
+           // its only valid value instead of retaining dead counter state.
+           << ",\"bufferUploads\":0"
+           << ",\"repairedNormals\":" << evaluatedNormalRepairCount_
+           << ",\"staticNormalFallbacks\":"
+           << evaluatedNormalStaticFallbackCount_
+           << ",\"items\":[]}";
     return stream.str();
 }
 
@@ -1993,72 +1843,6 @@ MStatus MmdRenderWitnessCommand::doIt(const MArgList& args)
 }
 
 bool MmdRenderWitnessCommand::isUndoable() const
-{
-    return false;
-}
-
-void* MmdRenderQueueUpdateCommand::creator()
-{
-    return new MmdRenderQueueUpdateCommand();
-}
-
-MSyntax MmdRenderQueueUpdateCommand::newSyntax()
-{
-    MSyntax syntax;
-    syntax.addFlag("-n", "-node", MSyntax::kString);
-    syntax.addFlag("-m", "-materialIndex", MSyntax::kLong);
-    syntax.addFlag("-a", "-alpha", MSyntax::kDouble);
-    syntax.enableEdit(false);
-    return syntax;
-}
-
-MStatus MmdRenderQueueUpdateCommand::doIt(const MArgList& args)
-{
-    MArgDatabase argData(newSyntax(), args);
-    if (!argData.isFlagSet("-node") || !argData.isFlagSet("-materialIndex") ||
-        !argData.isFlagSet("-alpha")) {
-        MGlobal::displayError(
-            "[mmdRenderQueueUpdate] Required flags: -node, -materialIndex, -alpha");
-        return MS::kFailure;
-    }
-
-    MSelectionList selection;
-    const MString nodeName = argData.flagArgumentString("-node", 0);
-    MStatus status = selection.add(nodeName);
-    if (!status || selection.length() == 0U) {
-        MGlobal::displayError(MString("[mmdRenderQueueUpdate] Node not found: ") +
-                              nodeName);
-        return MS::kFailure;
-    }
-
-    MObject node;
-    status = selection.getDependNode(0U, node);
-    if (!status) {
-        return status;
-    }
-    MmdRenderShape* shape = MmdRenderShape::fromMObject(node, &status);
-    if (!status || !shape) {
-        MGlobal::displayError(
-            "[mmdRenderQueueUpdate] Node is not an mmdRenderShape.");
-        return MS::kFailure;
-    }
-
-    const int materialIndex = argData.flagArgumentInt("-materialIndex", 0);
-    const double alpha = argData.flagArgumentDouble("-alpha", 0);
-    if (materialIndex < 0 || !shape->updateMaterialAlpha(
-                                  static_cast<std::size_t>(materialIndex),
-                                  static_cast<float>(alpha))) {
-        MGlobal::displayError(
-            "[mmdRenderQueueUpdate] Material alpha update was rejected.");
-        return MS::kFailure;
-    }
-
-    MHWRender::MRenderer::setGeometryDrawDirty(node, true);
-    setResult(mStringFromUtf8(shape->renderItemWitness()));
-    return MS::kSuccess;
-}
-
-bool MmdRenderQueueUpdateCommand::isUndoable() const
 {
     return false;
 }

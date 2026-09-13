@@ -10,11 +10,11 @@ def check_self_shadow(cmds, root, shape, panel, output_dir):
     """Check mode and PMX flag A/B/A on an imported, textured representative."""
     from mmd_tools.converters.light_converter import find_mmd_light
     from mmd_tools.converters.material_morph_runtime import _collect_shaders_by_material_index
-    from tools.render_override.render_override_vp2_ownership_e2e import _make_parity_camera
+    from tools.render_override.common import make_parity_camera
 
     light = find_mmd_light()
     assert light, "missing model light controller"
-    camera = _make_parity_camera(cmds, {"position": [0.04, 0.58, 3.4],
+    camera = make_parity_camera(cmds, {"position": [0.04, 0.58, 3.4],
         "target": [0.04, 0.58, 0.0], "fov": 28.0, "near": 0.1, "far": 10000.0})
     cmds.lookThru(panel, camera)
     cmds.select(root)
@@ -44,12 +44,25 @@ def check_self_shadow(cmds, root, shape, panel, output_dir):
         assert witness["casterDrawCount"] > 0 and witness["receiverDrawCount"] > 0
         assert witness["sameFrameShadowReady"] and witness["shadowDepth"]["writtenSamples"] > 0
         assert witness["shadowDepth"]["invalidSamples"] == 0
-        native = json.loads(cmds.mmdRenderWitness(node=shape, json=True))
-        alpha_casters = {item["materialIndex"] for item in native["items"]
-                         if not item["outline"] and item["selfShadowMap"]
-                         and item["effectiveTransparent"] and item["mainTextureAcquired"]}
+        # Ordered owns GPU draws now; derive expected PMX caster membership
+        # from the canonical material instead of retired GeometryOverride items.
+        alpha_casters = {index for index, shader in shaders.items()
+                         if flags[shader] & 4 and cmds.getAttr(shader + ".mmd_resolved_texture_path")
+                         and (cmds.getAttr(shader + ".mmdTransparencyMode") != "opaque"
+                              or cmds.getAttr(shader + ".mmd_diffuse_alpha") < 1.0)}
         assert alpha_casters, "fixture must contain textured transparent casters"
         assert alpha_casters <= set(witness["casterMaterialIndices"])
+        for index in alpha_casters:
+            shader = shaders[index]
+            cmds.setAttr(shader + ".mmd_draw_flags", flags[shader] & ~4)
+        capture("alpha_casters_off")
+        alpha_off = stages["alpha_casters_off"]["witness"]
+        assert not alpha_casters.intersection(alpha_off["casterMaterialIndices"])
+        assert alpha_off["shadowDepth"]["hash"] != witness["shadowDepth"]["hash"], "alpha casters wrote no depth"
+        for index in alpha_casters:
+            shader = shaders[index]
+            cmds.setAttr(shader + ".mmd_draw_flags", flags[shader])
+        assert capture("alpha_casters_restored") == on
         cmds.setAttr(mode_plug, 2)
         mode2 = capture("mode2")
         mode2_witness = stages["mode2"]["witness"]

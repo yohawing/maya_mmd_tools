@@ -1858,29 +1858,6 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def render_override_native_ui_gallery(session: nox.Session) -> None:
-    """Capture Plan 010 cases through the settings-backed C++ UI route."""
-
-    session.run(
-        sys.executable,
-        "tools/render_override/render_override_native_gallery.py",
-        *session.posargs,
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
-def maya_render_override_gui_smoke(session: nox.Session) -> None:
-    """Run the real Maya GUI/DX11 VP2 render-shape compatibility smoke."""
-    session.run(
-        sys.executable,
-        "tools/smoke/maya_render_override_gui_smoke.py",
-        *session.posargs,
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
 def fast_import_authoring(session: nox.Session) -> None:
     """Compare GUI Fast Load animation and save/reopen with ordinary PMX import."""
     session.run(
@@ -1892,16 +1869,72 @@ def fast_import_authoring(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_override_separation(session: nox.Session) -> None:
+    """Verify standard VP2 and MMD Render editing in two real GUI panels."""
+    session.run(sys.executable, "tools/render_override/separation_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_override_settings(session: nox.Session) -> None:
+    """Verify the official MMD Render option box in a real Maya GUI."""
+    session.run(sys.executable, "tools/render_override/settings_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_override_authoring(session: nox.Session) -> None:
-    """Verify native proxy authoring in an isolated Maya GUI."""
+    """Verify standard mesh and MMD Render authoring in two GUI panels."""
     session.run(
         sys.executable,
-        "tools/render_override/render_override_vp2_ownership_e2e.py",
-        "--model", "tests/data/test_morph_model.pmx",
-        "--capture-only", "--ui-import", "--authoring-checks",
+        "tools/render_override/separation_e2e.py",
+        "--textured", "--migrate-legacy",
         *session.posargs,
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def render_profile(session: nox.Session) -> None:
+    """Measure ordered-render CPU stages in an isolated Maya GUI."""
+    session.run(sys.executable, "tools/render_override/profile_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_scene_profile(session: nox.Session) -> None:
+    """Measure an existing scene in an isolated Maya 2026 GUI."""
+    session.run(sys.executable, "tools/render_override/scene_profile.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_vp2_native_geometry(session: nox.Session) -> None:
+    """Measure Maya-managed split meshes with the MMD DX11 effect."""
+    session.run(
+        sys.executable,
+        "tools/render_override/vp2_native_geometry_profile.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def render_vp2_transparency(session: nox.Session) -> None:
+    """Probe VP2 transparent ordering, face filtering, and two-panel contracts."""
+    session.run(
+        sys.executable,
+        "tools/render_override/vp2_transparency_checks.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def render_stock_preview(session: nox.Session) -> None:
+    """Verify standardSurface texture/color/alpha on OpenGL Core in Maya GUI."""
+    session.run(sys.executable, "tools/render_override/stock_preview_e2e.py",
+                *session.posargs, external=True)
 
 
 @nox.session(venv_backend="none")
@@ -1909,8 +1942,7 @@ def render_override_self_shadow(session: nox.Session) -> None:
     """Verify Ordered shadow modes and flags using an explicit textured PMX."""
     session.run(
         sys.executable,
-        "tools/render_override/render_override_vp2_ownership_e2e.py",
-        "--capture-only", "--ui-import", "--shadow-checks",
+        "tools/render_override/effects_e2e.py",
         *session.posargs,
         external=True,
     )

@@ -20,16 +20,23 @@ def separate_render_proxy(mesh_transform, parent, cmds_module=cmds):
         raise RuntimeError("FastLoad must have one render proxy before DAG organization")
     name = mesh_transform.rsplit("|", 1)[-1]
     render_transform = cmds_module.group(empty=True, name=f"{name}_render", parent=parent)
+    moved_proxy = None
     try:
-        cmds_module.parent(proxies[0], render_transform, shape=True, relative=True)
+        moved_proxy = cmds_module.parent(proxies[0], render_transform, shape=True, relative=True)[0]
+        cmds_module.setAttr(f"{render_transform}.inheritsTransform", False)
         cmds_module.connectAttr(
-            f"{mesh_transform}.matrix", f"{render_transform}.offsetParentMatrix"
+            f"{mesh_transform}.worldMatrix[0]", f"{render_transform}.offsetParentMatrix"
         )
         cmds_module.connectAttr(
             f"{mesh_transform}.visibility", f"{render_transform}.visibility"
         )
         cmds_module.setAttr(f"{render_transform}.hiddenInOutliner", True)
     except Exception:
+        # Restore the owned shape before deleting its temporary parent. If
+        # reparenting itself fails, leave the parent intact rather than destroy
+        # the source's render shape while reporting the connection failure.
+        if moved_proxy:
+            cmds_module.parent(moved_proxy, mesh_transform, shape=True, relative=True)
         cmds_module.delete(render_transform)
         raise
     return render_transform

@@ -19,8 +19,9 @@ def test_install_discovers_tool_script_and_preserves_fixed_menu_id() -> None:
         on_applied=on_applied,
     )
 
-    assert installed == ("MMDTranslateNamesMenuItem",)
-    call = cmds.menuItem.call_args_list[0]
+    assert installed == ("MMDMigrateRenderPreviewMenuItem", "MMDTranslateNamesMenuItem")
+    call = next(call for call in cmds.menuItem.call_args_list
+                if call.args == ("MMDTranslateNamesMenuItem",) and "command" in call.kwargs)
     assert call.args == ("MMDTranslateNamesMenuItem",)
     assert call.kwargs["label"] == "Translate MMD Names"
     assert call.kwargs["parent"] == "MMDToolsSubMenu"

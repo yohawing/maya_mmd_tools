@@ -5,7 +5,7 @@
 
 #include "MmdNativeMaterial.h"
 
-#include "MmdRenderOverride.h"
+#include "MmdShadowResources.h"
 
 #include <maya/MGlobal.h>
 
@@ -93,8 +93,7 @@ bool bindNativeMaterialParameters(
     MHWRender::MTexture* mainTexture,
     MHWRender::MTexture* sphereTexture,
     MHWRender::MTexture* toonTexture,
-    bool toonTextureRequested,
-    MmdRenderShape::MaterialBindingDiagnostic* diagnostic)
+    bool toonTextureRequested)
 {
     if (!shader) {
         return false;
@@ -132,31 +131,24 @@ bool bindNativeMaterialParameters(
         shader->setParameter("NativeCasterHardShadow", 0) &&
         shader->setParameter(
             "NativeCasterShadowBias",
-            MmdNativeCasterRenderOverride::kDefaultHardShadowBias) &&
+            MmdShadowResources::kDefaultHardShadowBias) &&
         shader->setParameter("UseShadows", false) &&
         shader->setParameter("ShadowStrength", 1.0F) &&
         shader->setParameter("ToonCoordinateOffset", 0.55F) &&
         shader->setParameter("NativeSrgbOutput", 1) &&
         shader->setParameter("MMDLightDirection", lightDirection) &&
         shader->setParameter("MMDLightColor", lightColor);
-    if (diagnostic) {
-        diagnostic->scalarParameterBindingSuccess = scalarBinding;
-    }
     if (!scalarBinding) {
         return false;
     }
 
-    // A requested-but-unavailable texture is a visible diagnostic failure but
-    // remains non-fatal, matching the existing fallback that draws without
-    // that optional texture.  A failed assignment to an acquired handle is
-    // still fatal as before.
+    // A requested-but-unavailable texture remains non-fatal, matching the
+    // existing fallback that draws without that optional texture. A failed
+    // assignment to an acquired handle is still fatal as before.
     bool mainTextureBinding = material.mainTexturePath.empty() || mainTexture;
     if (mainTexture) {
         MHWRender::MTextureAssignment assignment{mainTexture};
         mainTextureBinding = shader->setParameter("MainTexture", assignment);
-    }
-    if (diagnostic) {
-        diagnostic->mainTextureBindingSuccess = mainTextureBinding;
     }
     if (!mainTextureBinding && mainTexture) {
         return false;
@@ -169,9 +161,6 @@ bool bindNativeMaterialParameters(
         sphereTextureBinding =
             shader->setParameter("SphereTexture", assignment);
     }
-    if (diagnostic) {
-        diagnostic->sphereTextureBindingSuccess = sphereTextureBinding;
-    }
     if (!sphereTextureBinding && sphereTexture) {
         return false;
     }
@@ -181,9 +170,6 @@ bool bindNativeMaterialParameters(
         MHWRender::MTextureAssignment assignment{toonTexture};
         toonTextureBinding = shader->setParameter("ToonTexture", assignment);
     }
-    if (diagnostic) {
-        diagnostic->toonTextureBindingSuccess = toonTextureBinding;
-    }
     if (!toonTextureBinding && toonTexture) {
         return false;
     }
@@ -192,10 +178,6 @@ bool bindNativeMaterialParameters(
         shader->setParameter("HasMainTexture", mainTexture ? 1 : 0) &&
         shader->setParameter("HasSphereTexture", sphereTexture ? 1 : 0) &&
         shader->setParameter("HasToonTexture", toonTexture ? 1 : 0);
-    if (diagnostic) {
-        diagnostic->switchParameterBindingSuccess = switchBinding;
-        diagnostic->parameterBindingSuccess = switchBinding;
-    }
     return switchBinding;
 }
 

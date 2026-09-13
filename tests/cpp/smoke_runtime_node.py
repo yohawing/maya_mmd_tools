@@ -516,11 +516,8 @@ def main() -> int:
             raise RuntimeError(
                 "VP2 proxy input is not driven by source outMesh"
             )
-        if not cmds.isConnected(
-            f"{vp2_render_shape}.sourceVisibility",
-            f"{vp2_source_mesh}.visibility",
-        ):
-            raise RuntimeError("VP2 proxy does not drive source visibility")
+        if cmds.listConnections(f"{vp2_source_mesh}.visibility", source=True, destination=False):
+            raise RuntimeError("VP2 source visibility must remain independently editable")
         if bool(cmds.getAttr(f"{vp2_source_mesh}.intermediateObject")):
             raise RuntimeError("VP2 source mesh must not be marked intermediate")
         if not bool(cmds.getAttr(f"{vp2_source_mesh}.visibility")):
@@ -539,17 +536,15 @@ def main() -> int:
                     f"VP2 reopen expected one proxy shape, got {reopened_proxies!r}"
                 )
             reopened_sources = cmds.listConnections(
-                f"{reopened_proxies[0]}.sourceVisibility",
-                source=False,
-                destination=True,
-                plugs=True,
+                f"{reopened_proxies[0]}.inputMesh", source=True, destination=False, shapes=True,
             ) or []
-            if len(reopened_sources) != 1 or not reopened_sources[0].endswith(".visibility"):
-                raise RuntimeError(
-                    f"VP2 reopen lost source visibility connection: {reopened_sources!r}"
-                )
-            if not bool(cmds.getAttr(reopened_sources[0])):
-                raise RuntimeError("VP2 source must reopen visible while readiness is transient")
+            if len(reopened_sources) != 1:
+                raise RuntimeError(f"VP2 reopen lost source mesh: {reopened_sources!r}")
+            visibility = reopened_sources[0] + ".visibility"
+            if cmds.listConnections(visibility, source=True, destination=False):
+                raise RuntimeError("VP2 source visibility acquired an unexpected driver")
+            if not bool(cmds.getAttr(visibility)):
+                raise RuntimeError("VP2 source must reopen visible")
             vp2_transform = (cmds.listRelatives(
                 reopened_proxies[0], parent=True, fullPath=True
             ) or [None])[0]
@@ -563,7 +558,7 @@ def main() -> int:
             )
         print(
             "OK: VP2 fast load created source/proxy siblings, kept source visible, "
-            "and preserved the transient visibility fallback across scene reopen"
+            "and preserved the legacy visibility compatibility output across scene reopen"
         )
 
         morph_result = cmds.mmdFastLoad(f=str(FAST_LOAD_MORPH_MODEL), n="mmd_fast_morph_smoke", s=1.0, mo=True)
