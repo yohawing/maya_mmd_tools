@@ -473,6 +473,52 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertFalse(cmds.objExists(evaluator))
         self.assertEqual(cmds.connectionInfo(shader + ".opacityR", sourceFromDestination=True), shader + ".mmd_diffuse_alpha")
 
+    def test_removing_last_standard_morph_restores_native_texture_factors(self):
+        """Retiring the evaluator disconnects native inputs before neutral reset."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        maya_version = str(cmds.about(version=True)).split(".", 1)[0]
+        cpp_plugin = _REPO_ROOT / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll"
+        self.assertTrue(cpp_plugin.exists(), f"Build the Maya {maya_version} Debug C++ plugin first")
+        self.load_plugin(str(cpp_plugin))
+
+        material = PmxMaterial()
+        material.diffuse = (0.2, 0.3, 0.4, 0.8)
+        converter = MeshConverter("")
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        root, mesh, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+
+        source_mesh = cmds.listRelatives(mesh, shapes=True, type="mesh", fullPath=True)[0]
+        render_shape = cmds.createNode("mmdRenderShape", parent=mesh)
+        cmds.connectAttr(source_mesh + ".outMesh", render_shape + ".inputMesh")
+        bound = build_material_morph_graph(root)
+        self.assertTrue(bound["success"], bound)
+        self.assertEqual(bound["native_alpha"]["material_values"][0]["evaluator"], evaluator)
+
+        factor_plugs = {
+            f"{render_shape}.materialValues[0].{uniform}{axis}": neutral
+            for uniform, neutral in (
+                ("MainTextureMultiply", 1.0), ("MainTextureAdd", 0.0),
+                ("SphereTextureMultiply", 1.0), ("SphereTextureAdd", 0.0),
+                ("ToonTextureMultiply", 1.0), ("ToonTextureAdd", 0.0),
+            )
+            for axis in "RGBA"
+        }
+        for plug in factor_plugs:
+            self.assertTrue(cmds.connectionInfo(plug, isExactDestination=True), plug)
+
+        cmds.delete(morphs)
+        restored = build_material_morph_graph(root)
+        self.assertTrue(restored["success"], restored)
+        self.assertFalse(cmds.objExists(evaluator))
+        for plug, neutral in factor_plugs.items():
+            self.assertFalse(cmds.connectionInfo(plug, isExactDestination=True), plug)
+            self.assertAlmostEqual(cmds.getAttr(plug), neutral, places=6, msg=plug)
+
     def test_textured_preview_rebinding_failure_preserves_expression(self):
         """A failed stock replacement must keep the old expression recoverable."""
         from mmd_tools.converters.mesh_converter import MeshConverter

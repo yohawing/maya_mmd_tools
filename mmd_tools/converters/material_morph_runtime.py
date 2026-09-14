@@ -729,7 +729,7 @@ def bind_native_material_alpha(
                 if cmds.attributeQuery("mmd_diffuse_alpha", node=shader, exists=True):
                     _connect_if_needed(f"{shader}.mmd_diffuse_alpha", destination, force=True)
                 else:
-                    cmds.setAttr(destination, float(base_alpha))
+                    _reset_native_unbound_value(destination, base_alpha)
         except Exception:
             result["success"] = False
             failure = "bind_failed" if evaluator else "reset_failed"
@@ -816,7 +816,7 @@ def bind_native_material_alpha(
                         )
                     else:
                         for destination, value in zip(destinations, values):
-                            cmds.setAttr(destination, float(value))
+                            _reset_native_unbound_value(destination, value)
                 value_bindings[route.uniform] = tuple(values)
             result["material_values"].append(
                 {
@@ -841,6 +841,13 @@ def bind_native_material_alpha(
     if not result["bindings"] and shaders_by_index:
         result["success"] = False
     return result
+
+
+def _reset_native_unbound_value(destination: str, value: float) -> None:
+    """Remove an old evaluator input before restoring an unbound native value."""
+    for source in _exact_incoming_sources(destination):
+        cmds.disconnectAttr(source, destination)
+    cmds.setAttr(destination, float(value))
 
 
 def _native_authored_material_values(

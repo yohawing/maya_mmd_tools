@@ -933,10 +933,34 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             "mmdMaterialMorphEval" if node == "eval" else "standardSurface"
         )
         cmds.getAttr.side_effect = get_attr
+        incoming = {}
+
+        def connect(source, destination, force=False):  # noqa: ARG001
+            incoming[destination] = source
+
+        def connection_info(plug, **kwargs):
+            if kwargs.get("isExactDestination"):
+                return plug in incoming
+            if kwargs.get("sourceFromDestination"):
+                return incoming.get(plug, "")
+            raise AssertionError(kwargs)
+
+        def disconnect(source, destination):
+            self.assertEqual(incoming[destination], source)
+            del incoming[destination]
+
+        def set_attr(plug, *_args, **_kwargs):
+            if plug in incoming:
+                raise RuntimeError(f"setAttr on connected plug: {plug}")
+
+        cmds.connectionInfo.side_effect = connection_info
+        cmds.disconnectAttr.side_effect = disconnect
+        cmds.setAttr.side_effect = set_attr
 
         with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
             material_morph_runtime,
             "_connect_if_needed",
+            side_effect=connect,
         ) as connect_mock:
             bound = material_morph_runtime.bind_native_material_alpha(
                 "root",
@@ -982,6 +1006,12 @@ class TestResolveShaderColorRoute(unittest.TestCase):
         self.assertEqual(reset_values["nativeShape.materialValues[1].MainTextureMultiplyR"], 1.0)
         self.assertEqual(reset_values["nativeShape.materialValues[1].MainTextureAddR"], 0.0)
         self.assertEqual(len(reset_values), 24)
+        self.assertEqual(
+            len([call for call in cmds.disconnectAttr.call_args_list
+                 if ".materialValues[1]." in call.args[1]]),
+            24,
+        )
+        self.assertFalse(any(".materialValues[1].MainTexture" in plug for plug in incoming))
 
     def test_native_material_values_skip_when_authored_metadata_is_missing(self):
         """Missing legacy metadata must preserve native values and alpha routing."""
