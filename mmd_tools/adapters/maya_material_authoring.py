@@ -66,6 +66,8 @@ ATTR_MMD_TOON_TEXTURE_PATH = ATTR_MMD_TOON_PATH
 ATTR_MMD_DIFFUSE_ALPHA = "mmd_diffuse_alpha"
 ATTR_MMD_EDGE_ALPHA = "mmd_edge_alpha"
 ATTR_MMD_MATERIAL_MORPH_OFFSETS = "mmd_material_morph_offsets_json"
+_STANDARD_PREVIEW_SHADER_LINK = "mmdStandardPreviewShader"
+_STANDARD_PREVIEW_TEXTURE_LINK = "mmdStandardPreviewTexture"
 _MATERIAL_OUTLINE_ATTRS = (
     "technique",
     "EdgeSize",
@@ -527,6 +529,15 @@ class MayaMaterialAuthoring:
             }
         return result
 
+    def _has_connected_standard_preview(self, shader: str) -> bool:
+        """Leave connected preview colors to their DG source; retain legacy writes."""
+        if str(self._call("node_type", shader)) != "standardSurface":
+            return False
+        return any(
+            self._call("list_connections", shader + "." + attr, source=True, destination=False)
+            for attr in ("baseColor", "baseColorR", "baseColorG", "baseColorB")
+        )
+
     def _material_value_updates(
         self,
         shader: str,
@@ -553,7 +564,7 @@ class MayaMaterialAuthoring:
                 str(self._call("node_type", shader)),
                 has_main_texture=bool(old.resolved_texture_path or old.texture_path),
             )
-            if route is not None:
+            if route is not None and not self._has_connected_standard_preview(shader):
                 add("viewport_diffuse", list(new.diffuse[:3]))
                 if route.diffuse_alpha_attribute is not None:
                     add("viewport_diffuse_alpha", new.diffuse[3])
@@ -678,7 +689,7 @@ class MayaMaterialAuthoring:
                 str(self._call("node_type", shader)),
                 has_main_texture=bool(old.resolved_texture_path or old.texture_path),
             )
-            if route is not None:
+            if route is not None and not self._has_connected_standard_preview(shader):
                 runtime_target = self._resolve_runtime_diffuse_target(shader, route)
                 if runtime_target is None:
                     self._set_attr(
@@ -1080,6 +1091,7 @@ class MayaMaterialAuthoring:
             for node, payload in morph_updates:
                 self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
             self._update_native_render_queue(root, first_index, second_index)
+            self._rebuild_material_morph_graph(root)
         except Exception as exc:
             raise MayaMaterialAuthoringError(
                 f"failed to apply adjacent material reindex under root {root!r}: {exc}"
@@ -1139,6 +1151,7 @@ class MayaMaterialAuthoring:
             for node, payload in morph_updates:
                 self._set_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS, payload, "string")
             self._update_native_render_queue(root, first_index, second_index)
+            self._rebuild_material_morph_graph(root)
         except Exception as exc:
             raise MayaMaterialAuthoringError(
                 f"failed to apply adjacent material reindex under root {root!r}: {exc}"
@@ -1886,6 +1899,21 @@ class MayaMaterialAuthoring:
                 identity = self._canonical_node(str(candidate).rsplit(".", 1)[0])
                 if identity not in file_nodes:
                     file_nodes.append(identity)
+        if (
+            not file_nodes
+            and semantic == "main"
+            and route is not None
+            and self._call("node_type", shader) == "standardSurface"
+        ):
+            slot = route.texture_slot("main")
+            if slot is not None:
+                _, tagged = self._standard_preview_texture_binding(
+                    f"{shader}.{slot.texture_attribute}"
+                )
+                for candidate in tagged:
+                    identity = self._canonical_node(str(candidate).rsplit(".", 1)[0])
+                    if identity not in file_nodes:
+                        file_nodes.append(identity)
         if len(file_nodes) != 1:
             return -1
         file_node = file_nodes[0]
@@ -1954,6 +1982,9 @@ class MayaMaterialAuthoring:
             plugs=True,
             type="file",
         ) or []
+        preview_utility = None
+        if not source_plugs and slot.semantic == "main" and self._call("node_type", shader) == "standardSurface":
+            preview_utility, source_plugs = self._standard_preview_texture_binding(destination)
         file_nodes = [
             self._canonical_node(str(source).rsplit(".", 1)[0])
             for source in source_plugs
@@ -1965,7 +1996,33 @@ class MayaMaterialAuthoring:
         if not resolved_path:
             if file_nodes:
                 file_node = file_nodes[0]
-                self._call("disconnect_attr", f"{file_node}.outColor", destination)
+                if preview_utility:
+                    for channel, axis in zip("RGB", "XYZ"):
+                        utility_input = f"{preview_utility}.input1{axis}"
+                        for source in self._call(
+                            "list_connections",
+                            utility_input,
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        ) or []:
+                            if str(source).rsplit(".", 1)[0] == file_node:
+                                self._call("disconnect_attr", str(source), utility_input)
+                    for utility in self._owned_standard_preview_utilities(shader):
+                        if self._call("node_type", utility) in {"multDoubleLinear", "multDL"}:
+                            alpha_input = f"{utility}.input1"
+                            for source in self._call(
+                                "list_connections",
+                                alpha_input,
+                                source=True,
+                                destination=False,
+                                plugs=True,
+                            ) or []:
+                                if str(source).rsplit(".", 1)[0] == file_node:
+                                    self._call("disconnect_attr", str(source), alpha_input)
+                        self._call("delete", utility)
+                else:
+                    self._call("disconnect_attr", f"{file_node}.outColor", destination)
                 remaining = self._call(
                     "list_connections",
                     f"{file_node}.outColor",
@@ -1999,9 +2056,29 @@ class MayaMaterialAuthoring:
             )
         self._set_attr(file_node, "fileTextureName", resolved_path, "string")
         self._set_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH, source_path or "", "string")
-        expected_source = f"{file_node}.outColor"
-        if expected_source not in {str(source) for source in source_plugs}:
-            self._call("connect_attr", expected_source, destination, force=True)
+        if preview_utility:
+            for channel, axis in zip("RGB", "XYZ"):
+                expected_source = f"{file_node}.outColor{channel}"
+                utility_input = f"{preview_utility}.input1{axis}"
+                incoming = self._call(
+                    "list_connections",
+                    utility_input,
+                    source=True,
+                    destination=False,
+                    plugs=True,
+                ) or []
+                if expected_source not in {str(source) for source in incoming}:
+                    self._call("connect_attr", expected_source, utility_input, force=True)
+            self._call(
+                "connect_attr",
+                f"{file_node}.message",
+                f"{preview_utility}.{_STANDARD_PREVIEW_TEXTURE_LINK}",
+                force=True,
+            )
+        else:
+            expected_source = f"{file_node}.outColor"
+            if expected_source not in {str(source) for source in source_plugs}:
+                self._call("connect_attr", expected_source, destination, force=True)
         if slot.presence_attribute is not None:
             self._set_attr(
                 shader,
@@ -2009,6 +2086,85 @@ class MayaMaterialAuthoring:
                 1,
                 "long",
             )
+
+    def _standard_preview_texture_binding(self, destination: str) -> tuple[str | None, list[str]]:
+        """Resolve one tagged StandardSurface preview multiplier and its file."""
+        shader = self._canonical_node(destination.rsplit(".", 1)[0])
+        sources = self._call(
+            "list_connections",
+            destination,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        utilities = []
+        for source in sources:
+            node = self._canonical_node(str(source).rsplit(".", 1)[0])
+            if node in utilities or self._call("node_type", node) != "multiplyDivide":
+                continue
+            if not self._has_attr(node, "mmdStandardPreviewMultiply"):
+                continue
+            if not bool(self._get_attr(node, "mmdStandardPreviewMultiply")):
+                continue
+            if not self._preview_utility_owned_by_shader(shader, node):
+                continue
+            utilities.append(node)
+        if not utilities:
+            return None, []
+        if len(utilities) != 1:
+            raise MayaMaterialAuthoringError(
+                f"material preview has ambiguous multiply utilities: {destination!r}"
+            )
+        utility = utilities[0]
+        tagged = self._call(
+            "list_connections",
+            f"{utility}.{_STANDARD_PREVIEW_TEXTURE_LINK}",
+            source=True,
+            destination=False,
+            plugs=True,
+            type="file",
+        ) or []
+        return utility, list(dict.fromkeys(str(source) for source in tagged))
+
+    def _preview_utility_owned_by_shader(self, shader: str, utility: str) -> bool:
+        """Require the exact shader message link before treating a helper as ours."""
+        if not self._has_attr(utility, _STANDARD_PREVIEW_SHADER_LINK):
+            return False
+        owners = self._call(
+            "list_connections",
+            f"{utility}.{_STANDARD_PREVIEW_SHADER_LINK}",
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        return f"{shader}.message" in {str(owner) for owner in owners}
+
+    def _owned_standard_preview_utilities(self, shader: str) -> list[str]:
+        """Find stock preview helpers that are explicitly owned by one shader."""
+        utilities = []
+        for destination in (f"{shader}.baseColor", f"{shader}.opacity"):
+            sources = self._call(
+                "list_connections",
+                destination,
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or []
+            for source in sources:
+                node = self._canonical_node(str(source).rsplit(".", 1)[0])
+                if node in utilities or not self._preview_utility_owned_by_shader(shader, node):
+                    continue
+                node_type = self._call("node_type", node)
+                marker = (
+                    "mmdStandardPreviewMultiply"
+                    if node_type == "multiplyDivide"
+                    else "mmdStandardPreviewAlpha"
+                    if node_type in {"multDoubleLinear", "multDL"}
+                    else None
+                )
+                if marker and self._has_attr(node, marker) and bool(self._get_attr(node, marker)):
+                    utilities.append(node)
+        return utilities
 
     @staticmethod
     def _toon_texture_paths(material: MmdMaterialSpec) -> tuple[str | None, str | None]:

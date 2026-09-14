@@ -6,6 +6,11 @@ from typing import Any, List, Optional, Union
 import maya.cmds as cmds
 
 from ..core.constants import ATTR_MMD_LIGHT, DEFAULT_LIGHT_NAME
+from .light_converter import (
+    MMD_SELF_SHADOW_DISTANCE_ATTR,
+    MMD_SELF_SHADOW_MODE_ATTR,
+    ensure_mmd_light_shadow_attrs,
+)
 from .vmd_context import VmdLightAnimationContext
 
 try:
@@ -100,13 +105,88 @@ def get_or_create_light() -> str:
     """Return the MMD directional light transform, creating one if needed."""
     existing = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True)
     if existing:
-        return existing[0]
+        return ensure_mmd_light_shadow_attrs(existing[0])
 
     light_shape = cmds.directionalLight(name=DEFAULT_LIGHT_NAME)
     light_transform = cmds.listRelatives(light_shape, parent=True)[0]
     cmds.addAttr(light_transform, longName=ATTR_MMD_LIGHT, attributeType="bool")
     cmds.setAttr(f"{light_transform}.{ATTR_MMD_LIGHT}", True)
-    return light_transform
+    return ensure_mmd_light_shadow_attrs(light_transform)
+
+
+def convert_self_shadow_animation(converter_or_context, shadow_frames) -> bool:
+    """Convert VMD self-shadow mode/distance keys on the tagged MMD light."""
+    context = _resolve_light_animation_context(converter_or_context)
+    return _convert_self_shadow_animation(context, shadow_frames)
+
+
+def _convert_self_shadow_animation(
+    context: VmdLightAnimationContext,
+    shadow_frames,
+) -> bool:
+    """Key parsed VMD self-shadow state without changing light direction/color."""
+    if not shadow_frames:
+        return False
+
+    light_transform = ensure_mmd_light_shadow_attrs(context.get_or_create_light())
+    samples = []
+    for frame in shadow_frames:
+        mode = int(_frame_value(frame, "mode", "mode", 0))
+        if mode not in (0, 1, 2):
+            raise ValueError(f"VMD self-shadow mode must be 0, 1, or 2: {mode}")
+        frame_number = _frame_value(frame, "frame_number", "frame", 0)
+        samples.append(
+            (
+                context.vmd_frame_to_maya_time(frame_number),
+                mode,
+                float(_frame_value(frame, "distance", "distance", 0.0)),
+            )
+        )
+
+    mode_samples = [(maya_time, mode) for maya_time, mode, _distance in samples]
+    distance_samples = [(maya_time, distance) for maya_time, _mode, distance in samples]
+    animation_layer = context.anim_layer if context.use_animation_layers and context.anim_layer else None
+    channels = {
+        MMD_SELF_SHADOW_MODE_ATTR: mode_samples,
+        MMD_SELF_SHADOW_DISTANCE_ATTR: distance_samples,
+    }
+    if animation_layer:
+        context.add_attrs_to_anim_layer(light_transform, list(channels))
+        # Maya layers enum channels as discrete overrides, even on an additive
+        # layer. Only the continuous distance channel needs a base-value delta.
+        channels.update(context.samples_as_anim_layer_deltas(
+            light_transform, {MMD_SELF_SHADOW_DISTANCE_ATTR: distance_samples}
+        ))
+
+    keyed = context.batch_key_scalar_channels(light_transform, channels, animation_layer)
+    if not keyed:
+        return False
+
+    # VMD mode is a discrete byte; force the generated Maya curve to remain
+    # stepped while distance keeps the existing linear scalar-channel path.
+    try:
+        tangent_target = f"{light_transform}.{MMD_SELF_SHADOW_MODE_ATTR}"
+        if animation_layer:
+            tangent_target = cmds.animLayer(
+                animation_layer,
+                query=True,
+                findCurveForPlug=f"{light_transform}.{MMD_SELF_SHADOW_MODE_ATTR}",
+            ) or []
+            if isinstance(tangent_target, (list, tuple)):
+                if len(tangent_target) != 1:
+                    raise RuntimeError("self-shadow mode animLayer curve is missing")
+                tangent_target = tangent_target[0]
+            if not isinstance(tangent_target, str) or not tangent_target:
+                raise RuntimeError("self-shadow mode animLayer curve is missing")
+        cmds.keyTangent(
+            tangent_target,
+            edit=True,
+            outTangentType="step",
+        )
+    except Exception as exc:
+        context.logger.error("Failed to set stepped self-shadow mode keys: %s", exc)
+        return False
+    return True
 
 
 def convert_light_animation(converter_or_context, light_frames, vmd_bytes: Optional[bytes] = None) -> bool:

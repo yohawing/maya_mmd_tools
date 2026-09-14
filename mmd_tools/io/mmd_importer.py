@@ -19,6 +19,7 @@ from mmd_tools.converters import vmd_profile
 from mmd_tools.converters.vmd_motion_kind import detect_vmd_motion_kind
 from mmd_tools.io import pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
+from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 from mmd_tools.core.logger import get_logger
 
 logger = get_logger("mmd_tools.io.mmd_importer")
@@ -314,13 +315,10 @@ def import_mmd_file(
 
     if strategy.use_cpp_fast_load:
         _emit_progress(10)
-        mesh_only = options.get(
-            "cpp_fast_load_mesh_only",
-            settings.get(settings_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True),
-        )
+        mesh_only = options.get("cpp_fast_load_mesh_only", False)
         if options.get("create_mmd_control_rig", False):
             # The control-rig analyzer needs the indexed joints emitted by
-            # the fast skeleton/skin path.  A requested rig therefore takes
+            # the shared PMX authoring path.  A requested rig therefore takes
             # precedence over the mesh-only performance option.
             mesh_only = False
         base_name = options.get("custom_namespace") or Path(filepath).stem
@@ -340,6 +338,10 @@ def import_mmd_file(
         # RenderOverride route without changing the direct API contract.
         if options.get("use_cpp_vp2_ownership", False):
             fast_kwargs["vp2_ownership"] = True
+        if not mesh_only:
+            fast_kwargs["options"] = options
+            if progress_callback is not None:
+                fast_kwargs["progress_callback"] = progress_callback
         try:
             fast_root = fast_import(filepath, **fast_kwargs)
         except Exception as exc:
@@ -347,6 +349,18 @@ def import_mmd_file(
                 _raise_native_vp2_failure(options, f"fast importer error: {exc}", exc)
             raise
         if fast_root is not None:
+            # Fast Load returns before the Python importer's scene setup.
+            # Reuse its shared light policy, including get-or-create and opt-out.
+            light_controller = ModelImportPipeline(
+                logger=logger,
+                filepath=filepath,
+                scale=import_scale,
+                options=options,
+            ).create_light_controller()
+            if light_controller:
+                from maya import cmds
+
+                cmds.select(fast_root, replace=True)
             _emit_progress(90)
             if vp2_ownership_requested:
                 diagnostics = _native_route_profile(options)

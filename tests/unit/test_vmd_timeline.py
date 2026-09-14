@@ -63,6 +63,25 @@ class TestVmdTimeline(MayaTestBase):
             75.0,
         )
 
+    def test_shadow_only_motion_sets_playback_range(self):
+        """Shadow-only VMD uses its last key for the playback range."""
+        vmd_data = type("VmdDataStub", (), {})()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+        vmd_data.shadow_frames = [{"frame_number": 20}]
+        context = VmdTimelineContext(
+            logger=self.converter.logger,
+            fps=30.0,
+            vmd_frame_to_maya_time=float,
+        )
+
+        setup_timeline(context, vmd_data)
+
+        self.assertEqual(cmds.playbackOptions(q=True, max=True), 20.0)
+        self.assertEqual(cmds.playbackOptions(q=True, animationEndTime=True), 20.0)
+
     def test_timeline_context_factory_matches_converter_state(self):
         """Converter timeline context factory binds fps and frame conversion."""
         self.converter.fps = 24.0

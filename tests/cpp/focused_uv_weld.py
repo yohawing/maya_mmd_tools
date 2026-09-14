@@ -274,8 +274,8 @@ def main() -> int:
             raise RuntimeError(
                 f"weld count mismatch: result={result!r}, before={old_vertex_count}, after={actual_new}"
             )
-        if actual_new >= old_vertex_count:
-            raise RuntimeError("real PMX fixture did not remove any UV-seam vertex slots")
+        if actual_new != old_vertex_count:
+            raise RuntimeError("already-welded FastLoad mesh changed vertex count")
         if actual_faces != old_face_count:
             raise RuntimeError("UV weld changed the polygon count")
 
@@ -285,10 +285,27 @@ def main() -> int:
             raise RuntimeError("UV face-corner assignments changed during weld")
 
         if not cmds.attributeQuery("mmd_source_vertex_indices", node=transform, exists=True):
-            raise RuntimeError("C++ weld did not write mmd_source_vertex_indices")
-        source_indices = cmds.getAttr(f"{transform}.mmd_source_vertex_indices") or []
-        if len(source_indices) != actual_new or len(set(int(value) for value in source_indices)) != actual_new:
-            raise RuntimeError("source-vertex mapping does not match welded topology")
+            raise RuntimeError("FastLoad pre-weld omitted mmd_source_vertex_indices")
+        source_indices = [
+            int(value) for value in (cmds.getAttr(f"{transform}.mmd_source_vertex_indices") or [])
+        ]
+        if len(source_indices) != actual_new or len(set(source_indices)) != actual_new:
+            raise RuntimeError("FastLoad source-vertex mapping does not match welded topology")
+        if not cmds.attributeQuery("mmd_source_to_local_indices", node=transform, exists=True):
+            raise RuntimeError("FastLoad pre-weld omitted mmd_source_to_local_indices")
+        fast_source_to_local = [
+            int(value)
+            for value in (cmds.getAttr(f"{transform}.mmd_source_to_local_indices") or [])
+        ]
+        if not fast_source_to_local or any(
+            value < 0 or value >= actual_new for value in fast_source_to_local
+        ):
+            raise RuntimeError("FastLoad source-to-local mapping is incomplete")
+        if max(source_indices) >= len(fast_source_to_local):
+            raise RuntimeError("FastLoad source indices exceed source-to-local mapping")
+        expected_welded_vertex_count = len(fast_source_to_local) - actual_new
+        if expected_welded_vertex_count <= 0:
+            raise RuntimeError("focused fixture did not exercise FastLoad pre-weld")
 
         cmds.delete(transform)
         if cmds.objExists(transform):
@@ -343,19 +360,23 @@ def main() -> int:
                 raise RuntimeError(f"batch weld changed shading assignments for {mesh}")
             if batch_records[mesh]["new"] != after["vertices"]:
                 raise RuntimeError(f"batch weld vertex count mismatch for {mesh}: {batch_records[mesh]!r}")
+            if after["vertices"] != before["vertices"]:
+                raise RuntimeError(f"batch changed already-welded FastLoad mesh topology for {mesh}")
             if not cmds.attributeQuery("mmd_source_vertex_indices", node=mesh, exists=True):
-                raise RuntimeError(f"batch weld omitted source indices for {mesh}")
+                raise RuntimeError(f"FastLoad batch mesh omitted source indices for {mesh}")
             source_indices = [
                 int(value) for value in (cmds.getAttr(f"{mesh}.mmd_source_vertex_indices") or [])
             ]
             if len(source_indices) != after["vertices"] or len(set(source_indices)) != after["vertices"]:
                 raise RuntimeError(f"batch source indices do not match welded topology for {mesh}")
             if not cmds.attributeQuery("mmd_source_to_local_indices", node=mesh, exists=True):
-                raise RuntimeError(f"batch weld omitted source-to-local mapping for {mesh}")
+                raise RuntimeError(f"FastLoad batch mesh omitted source-to-local mapping for {mesh}")
             source_to_local = [
                 int(value) for value in (cmds.getAttr(f"{mesh}.mmd_source_to_local_indices") or [])
             ]
-            if not source_to_local or any(value < 0 or value >= after["vertices"] for value in source_to_local):
+            if not source_to_local or any(
+                value < 0 or value >= after["vertices"] for value in source_to_local
+            ):
                 raise RuntimeError(f"batch source-to-local mapping is incomplete for {mesh}")
             if max(source_indices) >= len(source_to_local):
                 raise RuntimeError(f"batch source indices exceed source-to-local mapping for {mesh}")
@@ -397,15 +418,15 @@ def main() -> int:
             morph_fixture = Path(directory) / "morph_equivalence.pmx"
             _write_morph_equivalence_fixture(morph_fixture)
             morph_loaded = cmds.mmdFastLoad(
-                f=str(morph_fixture), n="morph_equivalence", s=1.0, mo=False
+                f=str(morph_fixture), n="morph_equivalence", s=1.0, mo=True
             )
             morph_transform = morph_loaded[0]
             morph_result = cmds.mmdWeldUvSeamVertices(
                 m=morph_transform, f=str(morph_fixture)
             )
-            if [int(morph_result[1]), int(morph_result[2])] != [6, 5]:
+            if [int(morph_result[1]), int(morph_result[2])] != [5, 5]:
                 raise RuntimeError(
-                    "native morph equivalence did not weld only the equal seam pair: "
+                    "FastLoad did not pre-weld only the equal seam pair: "
                     f"{morph_result!r}"
                 )
             morph_map = cmds.getAttr(
@@ -415,6 +436,28 @@ def main() -> int:
                 raise RuntimeError("equivalent Vertex/UV/Additional-UV sources were not welded")
             if int(morph_map[2]) == int(morph_map[3]):
                 raise RuntimeError("conflicting vertex morph sources were welded")
+            morph_shape = (cmds.listRelatives(morph_transform, shapes=True, type="mesh") or [None])[0]
+            blend_shapes = [
+                node for node in (cmds.listHistory(morph_shape) or [])
+                if cmds.nodeType(node) == "blendShape"
+            ]
+            if len(blend_shapes) != 1:
+                raise RuntimeError(f"FastLoad did not create one vertex blendShape: {blend_shapes!r}")
+            equivalent_local = int(morph_map[0])
+            before_morph = cmds.xform(
+                f"{morph_transform}.vtx[{equivalent_local}]", query=True,
+                objectSpace=True, translation=True,
+            )
+            cmds.setAttr(f"{blend_shapes[0]}.vertex_delta", 1.0)
+            after_morph = cmds.xform(
+                f"{morph_transform}.vtx[{equivalent_local}]", query=True,
+                objectSpace=True, translation=True,
+            )
+            if abs(float(after_morph[1]) - float(before_morph[1]) - 0.5) > 1.0e-6:
+                raise RuntimeError(
+                    "equivalent welded morph sources were double-applied or lost: "
+                    f"before={before_morph!r}, after={after_morph!r}"
+                )
             cmds.delete(morph_transform)
 
             # Exercise the production material-split route with the same
@@ -621,8 +664,10 @@ def main() -> int:
         converted_count = int(cmds.polyEvaluate(converted_mesh, vertex=True))
         if converted_count != actual_new:
             raise RuntimeError("Python import did not use the native morph-equivalent weld result")
-        if int(converter.profile["uv_welded_vertex_count"]) != old_vertex_count - converted_count:
-            raise RuntimeError("Python converter did not report the combined planned/native weld count")
+        if int(converter.profile["uv_welded_vertex_count"]) != expected_welded_vertex_count:
+            raise RuntimeError(
+                "Python converter did not report the same weld reduction as FastLoad"
+            )
         if not cmds.attributeQuery("mmd_source_to_local_indices", node=converted_mesh, exists=True):
             raise RuntimeError("Python/C++ weld did not preserve the complete source-to-local mapping")
         source_to_local = cmds.getAttr(f"{converted_mesh}.mmd_source_to_local_indices") or []
@@ -641,8 +686,8 @@ def main() -> int:
         cmds.delete(root)
 
         print(
-            "OK: C++ UV weld reduced "
-            f"{old_vertex_count} -> {actual_new}; native import -> {converted_count} vertices"
+            "OK: FastLoad pre-weld and native Python weld agree on "
+            f"{converted_count} vertices"
         )
         return 0
     finally:

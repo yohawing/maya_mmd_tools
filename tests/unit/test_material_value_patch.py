@@ -19,8 +19,13 @@ from mmd_tools.adapters.maya_material_shader_route import (  # noqa: E402
     material_shader_route,
 )
 from mmd_tools.adapters.maya_material_authoring import (  # noqa: E402
+    ATTR_MMD_TEXTURE_PATH,
     MayaMaterialAuthoring,
     MayaMaterialAuthoringError,
+)
+from mmd_tools.core.constants import (  # noqa: E402
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+    ATTR_MMD_TEXTURE_INDEX,
 )
 from mmd_tools.core.material_authoring import classify_material_change  # noqa: E402
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
@@ -360,6 +365,156 @@ def test_adapter_binding_patch_updates_only_selected_texture_graph() -> None:
     )
     assert rebuilds == ["|Model_root", "|Model_root"]
     assert shader == updated.binding_identity
+
+
+def test_binding_patch_reuses_file_behind_owned_standard_preview_multiplier() -> None:
+    """Texture edits must not duplicate a file hidden behind the preview utility."""
+
+    class UtilityPreviewCmds(FakeCmdsAdapter):
+        def list_connections(self, node: str, **kwargs: object) -> list[str]:
+            if kwargs.get("source") is True and kwargs.get("destination") is False:
+                values = list(self.connections.get(node, []))
+                if kwargs.get("type") == "file":
+                    values = [
+                        value
+                        for value in values
+                        if self.types.get(value.rsplit(".", 1)[0]) == "file"
+                    ]
+                return values
+            return super().list_connections(node, **kwargs)
+
+    cmds = UtilityPreviewCmds()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    file_node = next(node for node, node_type in cmds.types.items() if node_type == "file")
+    utility = "ownedPreviewMultiply"
+    cmds.types[utility] = "multiplyDivide"
+    cmds.attrs[(utility, "mmdStandardPreviewMultiply")] = True
+    cmds.attrs[(utility, "mmdStandardPreviewShader")] = None
+    cmds.connections[f"{shader}.baseColor"] = [
+        f"{utility}.outputX",
+        f"{utility}.outputY",
+        f"{utility}.outputZ",
+    ]
+    cmds.connections[f"{utility}.mmdStandardPreviewShader"] = [f"{shader}.message"]
+    cmds.connections[f"{utility}.mmdStandardPreviewTexture"] = [f"{file_node}.message"]
+    for channel, axis in zip("RGB", "XYZ"):
+        cmds.connections[f"{utility}.input1{axis}"] = [f"{file_node}.outColor{channel}"]
+
+    cmds.calls.clear()
+    adapter.apply_material_binding_patch(
+        "|Model_root",
+        bound,
+        replace(bound, resolved_texture_path="C:/textures/edited.png"),
+    )
+
+    assert not any(call[0] == "shading_node" and call[1][0] == "file" for call in cmds.calls)
+    assert any(
+        call[0] == "set_attr"
+        and call[1][0] == f"{file_node}.fileTextureName"
+        and call[1][1] == "C:/textures/edited.png"
+        for call in cmds.calls
+    )
+
+
+def test_texture_index_preserves_provenance_behind_owned_preview_multiplier() -> None:
+    """The stock preview helper must not hide the PMX texture-table identity."""
+
+    class UtilityPreviewCmds(FakeCmdsAdapter):
+        def list_connections(self, node: str, **kwargs: object) -> list[str]:
+            if kwargs.get("source") is True and kwargs.get("destination") is False:
+                values = list(self.connections.get(node, []))
+                if kwargs.get("type") == "file":
+                    values = [
+                        value
+                        for value in values
+                        if self.types.get(value.rsplit(".", 1)[0]) == "file"
+                    ]
+                return values
+            return super().list_connections(node, **kwargs)
+
+    cmds = UtilityPreviewCmds()
+    adapter = _authoring(cmds, FakeRegistry())
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    file_node = next(node for node, node_type in cmds.types.items() if node_type == "file")
+    utility = "ownedPreviewMultiply"
+    cmds.types[utility] = "multiplyDivide"
+    cmds.attrs[(utility, "mmdStandardPreviewMultiply")] = True
+    cmds.attrs[(utility, "mmdStandardPreviewShader")] = None
+    cmds.connections[f"{shader}.baseColor"] = [f"{utility}.outputX"]
+    cmds.connections[f"{utility}.mmdStandardPreviewShader"] = [f"{shader}.message"]
+    cmds.connections[f"{utility}.mmdStandardPreviewTexture"] = [f"{file_node}.message"]
+    resolved = r"C:\textures\face.png"
+    cmds.attrs[(shader, ATTR_MMD_TEXTURE_PATH)] = resolved
+    cmds.attrs[(shader, ATTR_MMD_TEXTURE_INDEX)] = 7
+    cmds.attrs[(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)] = bound.texture_path
+    cmds.attrs[(file_node, "fileTextureName")] = resolved
+
+    assert adapter._texture_index_for_write(
+        shader,
+        ATTR_MMD_TEXTURE_INDEX,
+        ATTR_MMD_TEXTURE_PATH,
+        bound.texture_path,
+    ) == 7
+
+
+def test_binding_patch_removes_owned_preview_helpers_before_base_color_write() -> None:
+    """Clearing a stock texture tears down both owned helper routes first."""
+
+    class UtilityPreviewCmds(FakeCmdsAdapter):
+        def list_connections(self, node: str, **kwargs: object) -> list[str]:
+            if kwargs.get("source") is True and kwargs.get("destination") is False:
+                values = list(self.connections.get(node, []))
+                if kwargs.get("type") == "file":
+                    values = [
+                        value
+                        for value in values
+                        if self.types.get(value.rsplit(".", 1)[0]) == "file"
+                    ]
+                return values
+            return super().list_connections(node, **kwargs)
+
+    cmds = UtilityPreviewCmds()
+    adapter = _authoring(cmds, FakeRegistry())
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    file_node = next(node for node, node_type in cmds.types.items() if node_type == "file")
+    rgb = "ownedPreviewMultiply"
+    alpha = "ownedPreviewAlpha"
+    cmds.types.update({rgb: "multiplyDivide", alpha: "multDoubleLinear"})
+    for utility, marker in (
+        (rgb, "mmdStandardPreviewMultiply"),
+        (alpha, "mmdStandardPreviewAlpha"),
+    ):
+        cmds.attrs[(utility, marker)] = True
+        cmds.attrs[(utility, "mmdStandardPreviewShader")] = None
+        cmds.connections[f"{utility}.mmdStandardPreviewShader"] = [f"{shader}.message"]
+    cmds.connections[f"{rgb}.mmdStandardPreviewTexture"] = [f"{file_node}.message"]
+    cmds.connections[f"{shader}.baseColor"] = [f"{rgb}.outputX"]
+    cmds.connections[f"{shader}.opacity"] = [f"{alpha}.output"]
+    for channel, axis in zip("RGB", "XYZ"):
+        cmds.connections[f"{rgb}.input1{axis}"] = [f"{file_node}.outColor{channel}"]
+    cmds.connections[f"{alpha}.input1"] = [f"{file_node}.outAlpha"]
+
+    cmds.calls.clear()
+    adapter.apply_material_binding_patch(
+        "|Model_root",
+        bound,
+        replace(bound, texture_path=None, resolved_texture_path=None),
+    )
+
+    delete_indices = [
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "delete" and call[1][0] in {rgb, alpha}
+    ]
+    base_color_index = next(
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "set_attr" and call[1][0] == f"{shader}.baseColor"
+    )
+    assert len(delete_indices) == 2
+    assert max(delete_indices) < base_color_index
 
 
 def test_binding_patch_removes_texture_graph_before_writing_base_color() -> None:

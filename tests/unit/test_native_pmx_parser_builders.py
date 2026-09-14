@@ -1,7 +1,9 @@
 """Native PMX parser JSON-to-PmxData builder contract tests."""
 
 from ctypes import c_float, c_uint32
+import io
 from pathlib import Path
+import struct
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -14,14 +16,16 @@ from mmd_tools.core.native.native_pmx_parser import (
     _build_morphs,
     _build_rigid_bodies,
     _build_vertices,
+    _read_material_memos,
     _load_soft_bodies_from_legacy,
     parse_pmx_native,
 )
 from mmd_tools.core.pmx_data import PmxData
-from mmd_tools.core.pmx_data.header import PmxEncoding
+from mmd_tools.core.pmx_data.header import PmxEncoding, PmxHeader
 from mmd_tools.core.pmx_data.morph import PmxMorphType
-from mmd_tools.core.pmx_data.material import PmxSphereMode
+from mmd_tools.core.pmx_data.material import PmxMaterial, PmxSphereMode
 from mmd_tools.core.pmx_data.soft_body import PmxSoftBody, _UNSUPPORTED_DETAIL_SIZE
+from mmd_tools.core.pmx_data.vertex import PmxVertex
 
 
 def _rounded_uvs(uvs):
@@ -66,6 +70,92 @@ def _make_test_soft_body():
 
 
 class TestNativePmxParserBuilders(unittest.TestCase):
+    def test_read_material_memos_skips_mixed_geometry_and_rejects_corruption(self):
+        """Material memos survive every PMX vertex weight layout and index width."""
+        for bone_index_size in (1, 2, 4):
+            with self.subTest(bone_index_size=bone_index_size):
+                pmx_data = PmxData()
+                pmx_data.header.version = 2.1
+                pmx_data.header.encoding = PmxEncoding.UTF8
+                pmx_data.header.vertex_index_size = 1
+                pmx_data.header.texture_index_size = 1
+                pmx_data.header.material_index_size = 1
+                pmx_data.header.bone_index_size = bone_index_size
+                pmx_data.header.morph_index_size = 1
+                pmx_data.header.rigid_body_index_size = 1
+                pmx_data.header.additional_uv = 4
+                for mode in range(5):
+                    vertex = PmxVertex(bone_index_size, additional_uv_count=4)
+                    vertex.weight_transform_type = mode
+                    vertex.additional_uvs = [
+                        (float(mode + channel), 0.1, 0.2, 0.3)
+                        for channel in range(4)
+                    ]
+                    vertex.edge_magnification = 1.0
+                    if mode == 0:
+                        vertex.bone_indices = [0]
+                    elif mode in (1, 3):
+                        vertex.bone_indices = [0, 1]
+                        vertex.bone_weights = [0.25]
+                        if mode == 3:
+                            vertex.sdef_c = (0.1, 0.2, 0.3)
+                            vertex.sdef_r0 = (0.4, 0.5, 0.6)
+                            vertex.sdef_r1 = (0.7, 0.8, 0.9)
+                    else:
+                        vertex.bone_indices = [0, 1, 2, 3]
+                        vertex.bone_weights = [0.1, 0.2, 0.3, 0.4]
+                    pmx_data.vertices.append(vertex)
+                material = PmxMaterial(1, PmxEncoding.UTF8, material_index=0)
+                material.memo = "geometry-after-memo"
+                pmx_data.materials = [material]
+
+                with TemporaryDirectory() as temp_dir:
+                    path = Path(temp_dir) / "mixed_geometry_memos.pmx"
+                    pmx_data.write_file(str(path))
+                    raw = path.read_bytes()
+                    self.assertEqual(_read_material_memos(raw), [material.memo])
+
+                    stream = io.BytesIO(raw)
+                    header = PmxHeader()
+                    header.parse(stream)
+                    vertex_count = struct.unpack("<I", stream.read(4))[0]
+                    self.assertEqual(vertex_count, 5)
+                    first_weight_offset = stream.tell() + 32 + header.additional_uv * 16
+
+                    with self.assertRaisesRegex(ValueError, "truncated PMX vertex"):
+                        _read_material_memos(raw[:first_weight_offset])
+
+                    invalid_weight = bytearray(raw)
+                    invalid_weight[first_weight_offset] = 9
+                    with self.assertRaisesRegex(ValueError, "unsupported PMX vertex weight type"):
+                        _read_material_memos(bytes(invalid_weight))
+
+    def test_read_material_memos_handles_multiple_non_ascii_materials(self):
+        pmx_data = PmxData()
+        pmx_data.header.version = 2.0
+        pmx_data.header.encoding = PmxEncoding.UTF8
+        pmx_data.header.vertex_index_size = 1
+        pmx_data.header.texture_index_size = 1
+        pmx_data.header.material_index_size = 1
+        pmx_data.header.bone_index_size = 1
+        pmx_data.header.morph_index_size = 1
+        pmx_data.header.rigid_body_index_size = 1
+        first = PmxMaterial(1, PmxEncoding.UTF8, material_index=0)
+        first.name = "材質一"
+        first.memo = "コメント一 日本語"
+        second = PmxMaterial(1, PmxEncoding.UTF8, material_index=1)
+        second.name = "材質二"
+        second.memo = "memo-2 / 追加"
+        pmx_data.materials = [first, second]
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "material_memos.pmx"
+            pmx_data.write_file(str(path))
+            self.assertEqual(
+                _read_material_memos(path.read_bytes()),
+                [first.memo, second.memo],
+            )
+
     def test_build_materials_maps_native_sphere_mode_values_and_fails_closed(self):
         """Native descriptor sphere-mode names preserve PMX semantics."""
         expected_modes = {

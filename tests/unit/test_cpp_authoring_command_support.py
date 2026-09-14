@@ -34,12 +34,11 @@ def test_native_authoring_support_is_registered_and_built():
     assert 'plugin.deregisterCommand("mmdWeldUvSeamVertices")' in plugin
     assert "renderer->deregisterOverride" in plugin
     assert "if (!cleanupStatus)" in plugin
-    assert "keeping its pointer and registration state" in plugin
     assert "registration remains tracked" in plugin
     override_cleanup = plugin.split(
-        "if (sCppRegisteredMmdNativeCasterOverride && renderer)", 1
-    )[1].split("if (sCppRegisteredMmdNativeCasterWitnessCommand)", 1)[0]
+        "if (sCppRegisteredMmdOrderedOverride && renderer)", 1
+    )[1].split("if (sCppRegisteredMmdOrderedWitnessCommand)", 1)[0]
     assert override_cleanup.index("if (!cleanupStatus)") < override_cleanup.index(
-        "delete sMmdNativeCasterOverride"
+        "delete sMmdOrderedOverride"
     )
     assert "MmdAuthoringCommandSupport.cpp" in cmake

@@ -602,7 +602,11 @@ def main(argv: list[str] | None = None) -> int:
             maya_commandport.quit_maya(args.port)
         maya_commandport.close_process_logs(proc)
         if args.cleanup_launch_files:
-            for path in (out / f"commandport_{args.port}.mel", out / f"launch_maya_{args.maya}_{args.port}.bat"):
+            for path in (
+                out / f"commandport_{args.port}.mel",
+                *(out / f"launch_maya_{args.maya}_{args.port}{suffix}"
+                  for suffix in (".bat", ".vbs", ".json")),
+            ):
                 try:
                     path.unlink()
                 except FileNotFoundError:

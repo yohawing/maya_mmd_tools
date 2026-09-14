@@ -22,18 +22,51 @@ class MmdMorphControllerNode(om.MPxNode):
         super().__init__()
         self._topology_cache_key = None
         self._topology_cache = {}
+        self._topology_dependents = None
 
     def setDependentsDirty(self, plug, affected_plugs):
-        """Dirty the output array and all existing elements without evaluating DG state."""
+        """Dirty only cached topology dependents, falling back when state is uncertain."""
         N = type(self)
         if plug.attribute() not in (N.aInputWeight, N.aTopologyVersion, N.aGroupTopology):
             return
 
         node_fn = om.MFnDependencyNode(self.thisMObject())
         output_array = node_fn.findPlug(N.aOutputWeight, False)
+
+        if plug.attribute() in (N.aTopologyVersion, N.aGroupTopology):
+            self._invalidate_topology_cache()
+            self._dirty_all_existing_outputs(output_array, affected_plugs)
+            return
+
+        if not plug.isElement or self._topology_dependents is None:
+            self._dirty_all_existing_outputs(output_array, affected_plugs)
+            return
+
+        try:
+            source_index = plug.logicalIndex()
+            target_indices = {source_index}
+            target_indices.update(self._topology_dependents.get(source_index, ()))
+            existing_indices = set(output_array.getExistingArrayAttributeIndices())
+        except (AttributeError, TypeError, ValueError):
+            self._invalidate_topology_cache()
+            self._dirty_all_existing_outputs(output_array, affected_plugs)
+            return
+
+        for logical_index in sorted(target_indices.intersection(existing_indices)):
+            affected_plugs.append(output_array.elementByLogicalIndex(logical_index))
+
+    @staticmethod
+    def _dirty_all_existing_outputs(output_array, affected_plugs):
+        """Preserve the conservative dirty contract for an uncertain topology."""
         affected_plugs.append(output_array)
         for logical_index in output_array.getExistingArrayAttributeIndices():
             affected_plugs.append(output_array.elementByLogicalIndex(logical_index))
+
+    def _invalidate_topology_cache(self):
+        """Prevent partial dirty propagation until compute parses topology again."""
+        self._topology_cache_key = None
+        self._topology_cache = {}
+        self._topology_dependents = None
 
     def compute(self, plug, data):
         N = type(self)
@@ -43,8 +76,18 @@ class MmdMorphControllerNode(om.MPxNode):
         topology_version = data.inputValue(N.aTopologyVersion).asInt()
         topology_source = data.inputValue(N.aGroupTopology).asString() or "{}"
         cache_key = (topology_version, topology_source)
-        if cache_key != self._topology_cache_key:
-            self._topology_cache = self._parse_topology(topology_version, topology_source)
+        if cache_key != self._topology_cache_key or self._topology_dependents is None:
+            self._invalidate_topology_cache()
+            topology = self._parse_topology(topology_version, topology_source)
+            dependents = {}
+            for target_index, sources in topology.items():
+                for source_index, _rate in sources:
+                    dependents.setdefault(source_index, set()).add(target_index)
+            self._topology_cache = topology
+            self._topology_dependents = {
+                source_index: tuple(sorted(target_indices))
+                for source_index, target_indices in dependents.items()
+            }
             self._topology_cache_key = cache_key
 
         inputs = data.inputArrayValue(N.aInputWeight)

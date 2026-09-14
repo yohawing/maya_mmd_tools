@@ -10,7 +10,9 @@ DLL が利用不可能な場合や解析に失敗した場合は None を返す�
 from __future__ import annotations
 
 import ctypes
+import io
 import json
+import struct
 import tempfile
 from ctypes import POINTER, c_float, c_size_t, c_uint8, c_uint32, c_void_p
 from pathlib import Path
@@ -258,6 +260,15 @@ def _parse_pmx_bytes(lib: Any, pmx_bytes: bytes) -> Optional[PmxData]:
         pmx.materials = _build_materials(
             mat_json, mat_grps, mat_grp_count, tex_map, tex_list,
         )
+        material_memos = _read_material_memos(pmx_bytes)
+        if len(material_memos) != len(pmx.materials):
+            raise ValueError(
+                "native material count differs from PMX source: {} != {}".format(
+                    len(pmx.materials), len(material_memos)
+                )
+            )
+        for material, memo in zip(pmx.materials, material_memos):
+            material.memo = memo
         pmx.textures = tex_list
 
         bones_json = metadata.get("skeleton", {}).get("bones", [])
@@ -582,6 +593,63 @@ def _build_materials(
         materials.append(m)
 
     return materials
+
+
+def _read_material_memos(pmx_bytes: bytes) -> List[str]:
+    """Read PMX material memos omitted by the native JSON ABI."""
+    stream = io.BytesIO(pmx_bytes)
+    header = PmxHeader()
+    header.parse(stream)
+
+    def read_exact(size: int, section: str) -> bytes:
+        value = stream.read(size)
+        if len(value) != size:
+            raise ValueError("truncated PMX {} section".format(section))
+        return value
+
+    def read_u32(section: str) -> int:
+        return struct.unpack("<I", read_exact(4, section))[0]
+
+    def skip_string(section: str) -> None:
+        read_exact(read_u32(section), section)
+
+    if not 0 <= header.additional_uv <= 4:
+        raise ValueError("unsupported PMX additional UV count: {}".format(header.additional_uv))
+    vertex_count = read_u32("vertex count")
+    if header.bone_index_size not in (1, 2, 4):
+        raise ValueError("unsupported PMX bone index size: {}".format(header.bone_index_size))
+    for _ in range(vertex_count):
+        read_exact(32 + header.additional_uv * 16, "vertex")
+        weight_type = read_exact(1, "vertex weight type")[0]
+        if weight_type == 0:
+            read_exact(header.bone_index_size, "BDEF1 vertex")
+        elif weight_type == 1:
+            read_exact(header.bone_index_size * 2 + 4, "BDEF2 vertex")
+        elif weight_type in (2, 4):
+            read_exact(header.bone_index_size * 4 + 16, "BDEF4 vertex")
+        elif weight_type == 3:
+            read_exact(header.bone_index_size * 2 + 40, "SDEF vertex")
+        else:
+            raise ValueError("unsupported PMX vertex weight type: {}".format(weight_type))
+        read_exact(4, "vertex edge scale")
+
+    if header.vertex_index_size not in (1, 2, 4) or header.texture_index_size not in (1, 2, 4):
+        raise ValueError("unsupported PMX index size")
+    read_exact(read_u32("face count") * header.vertex_index_size, "face indices")
+    for _ in range(read_u32("texture count")):
+        skip_string("texture path")
+
+    material_count = read_u32("material count")
+    memos = []
+    for material_index in range(material_count):
+        material = PmxMaterial(
+            header.texture_index_size,
+            header.encoding,
+            material_index=material_index,
+        )
+        material.parse(stream)
+        memos.append(material.memo)
+    return memos
 
 
 def _build_bone_flag(flags: dict) -> int:

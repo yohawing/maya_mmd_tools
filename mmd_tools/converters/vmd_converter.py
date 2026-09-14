@@ -65,6 +65,7 @@ from .vmd_import_state import (
     capture_anim_layer_selection,
     clear_existing_camera_motion,
     clear_existing_light_motion,
+    clear_existing_shadow_motion,
     clear_existing_motion,
     collect_clearable_authoring_attrs,
     record_bind_poses,
@@ -83,7 +84,11 @@ from .vmd_legacy_bone_routes import (
     build_legacy_bone_key_routes,
     collect_ik_link_joints,
 )
-from .vmd_light_animation import convert_light_animation, get_or_create_light
+from .vmd_light_animation import (
+    convert_light_animation,
+    convert_self_shadow_animation,
+    get_or_create_light,
+)
 from .vmd_motion_kind import detect_vmd_motion_kind
 from .vmd_morph_animation import convert_morph_animation
 from .vmd_morph_mapping import (
@@ -531,7 +536,7 @@ class VmdConverter:
             vmd_data: パース済みのVMDデータ
             target_namespace: 対象となるネームスペース（省略可）
             target_model: 対象モデルのroot node（指定時はbone/morph mappingをroot配下へ限定）
-            scene_animation_only: camera/lightだけをモデル処理なしで読み込む
+            scene_animation_only: camera/light/self-shadowだけをモデル処理なしで読み込む
             layer_name: アニメーションレイヤー名
             bake_mode: True の場合は live rig ではなく runtime final-pose bake を優先する
             clear_existing_motion: True の場合は既存の VMD motion keys/layer を削除してから読み込む
@@ -1041,6 +1046,18 @@ class VmdConverter:
                 self._clear_existing_light_motion()
                 light_sample_bytes = vmd_bytes if import_context.bake_mode else None
                 self._convert_light_animation(import_context.vmd_data.light_frames, vmd_bytes=light_sample_bytes)
+            if (
+                import_context.import_light_animation
+                and hasattr(import_context.vmd_data, "shadow_frames")
+                and import_context.vmd_data.shadow_frames
+            ):
+                if not (
+                    hasattr(import_context.vmd_data, "light_frames")
+                    and import_context.vmd_data.light_frames
+                ):
+                    self._clear_existing_shadow_motion()
+                if not self._convert_self_shadow_animation(import_context.vmd_data.shadow_frames):
+                    raise RuntimeError("VMD self-shadow animation conversion failed")
             _emit_progress(94)
 
             self._restore_import_timeline_state(import_start_time)
@@ -2549,6 +2566,11 @@ class VmdConverter:
                     vmd_data.light_frames,
                     vmd_bytes=vmd_bytes if bake_mode else None,
                 )
+            if self.import_light_animation and getattr(vmd_data, "shadow_frames", None):
+                if not getattr(vmd_data, "light_frames", None):
+                    self._clear_existing_shadow_motion()
+                if not self._convert_self_shadow_animation(vmd_data.shadow_frames):
+                    raise RuntimeError("VMD self-shadow animation conversion failed")
             self._restore_import_timeline_state(current_time)
             return True
         except Exception as exc:
@@ -2628,6 +2650,10 @@ class VmdConverter:
     def _clear_existing_light_motion(self) -> None:
         """既存のMMD照明アニメーションキーを削除する。"""
         clear_existing_light_motion(self.logger)
+
+    def _clear_existing_shadow_motion(self) -> None:
+        """既存のMMDセルフシャドウキーだけを削除する。"""
+        clear_existing_shadow_motion(self.logger)
 
     def _should_use_mmd_runtime_bake(
         self,
@@ -3861,6 +3887,10 @@ class VmdConverter:
             変換が成功した場合True
         """
         return convert_light_animation(self._light_animation_context(), light_frames, vmd_bytes=vmd_bytes)
+
+    def _convert_self_shadow_animation(self, shadow_frames: List) -> bool:
+        """VMDセルフシャドウを既存MMDライトへキーする。"""
+        return convert_self_shadow_animation(self._light_animation_context(), shadow_frames)
 
     def _convert_morph_animation(self, morph_frames: List) -> bool:
         """モーフアニメーションを変換

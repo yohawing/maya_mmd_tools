@@ -607,6 +607,7 @@ class TestMorphConverter(MayaTestBase):
             offsets = [
                 {
                     "rigid_body_index": 0,
+                    "is_local": 1,
                     "impulse": (0.1, -0.2, 0.3),
                     "torque": (-0.4, 0.5, -0.6),
                 }
@@ -640,6 +641,7 @@ class TestMorphConverter(MayaTestBase):
             [
                 {
                     "rigid_body_index": 0,
+                    "is_local": 1,
                     "impulse": [0.1, -0.2, 0.3],
                     "torque": [-0.4, 0.5, -0.6],
                 }
@@ -674,6 +676,7 @@ class TestMorphConverter(MayaTestBase):
                     "offsets": [
                         {
                             "rigid_body_index": 0,
+                            "is_local": 1,
                             "impulse": [0.1, -0.2, 0.3],
                             "torque": [-0.4, 0.5, -0.6],
                         }

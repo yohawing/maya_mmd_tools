@@ -52,7 +52,7 @@
     "native": {
       "_comment": "Development Mode settings for native and compiled import paths",
       "use_cpp_fast_load": false,
-      "cpp_fast_load_mesh_only": true,
+      "cpp_fast_load_mesh_only": false,
       "use_cpp_vp2_ownership": false,
       "require_native_pmx_parse": true,
       "use_cpp_rig_nodes": false

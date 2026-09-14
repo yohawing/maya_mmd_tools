@@ -68,9 +68,40 @@ def main() -> int:
             raise RuntimeError(f"expected one fast skinCluster, got {skin_clusters!r}")
         skin_cluster = skin_clusters[0]
 
+        mesh_transform = (cmds.listRelatives(
+            mesh_shapes[0], parent=True, fullPath=True
+        ) or [None])[0]
+        provenance_attr = f"{mesh_transform}.mmd_source_vertex_indices"
+        if not mesh_transform or not cmds.attributeQuery(
+            "mmd_source_vertex_indices", node=mesh_transform, exists=True
+        ):
+            raise RuntimeError("fast skin mesh has no local-to-source provenance")
+        local_to_source = cmds.getAttr(provenance_attr)
+        if not isinstance(local_to_source, (list, tuple)):
+            raise RuntimeError("fast skin local-to-source provenance is not an array")
+
         selection = om.MSelectionList()
         selection.add(mesh_shapes[0])
         mesh_fn = om.MFnMesh(selection.getDagPath(0))
+        if len(local_to_source) != mesh_fn.numVertices:
+            raise RuntimeError(
+                "fast skin provenance/local vertex mismatch: "
+                f"{len(local_to_source)} rows for {mesh_fn.numVertices} vertices"
+            )
+        if len({int(source) for source in local_to_source}) != len(local_to_source):
+            raise RuntimeError("fast skin provenance contains duplicate source rows")
+        for vertex_index in range(mesh_fn.numVertices):
+            weights = cmds.skinPercent(
+                skin_cluster,
+                f"{mesh_shapes[0]}.vtx[{vertex_index}]",
+                query=True,
+                value=True,
+            ) or []
+            if not weights or not math.isclose(sum(weights), 1.0, abs_tol=1.0e-5):
+                raise RuntimeError(
+                    "fast skin weights were not applied for local vertex "
+                    f"{vertex_index} (source {local_to_source[vertex_index]}): {weights!r}"
+                )
         _, normal_ids = mesh_fn.getNormalIds()
         normals = mesh_fn.getNormals(om.MSpace.kObject)
         if not normal_ids:
@@ -104,7 +135,8 @@ def main() -> int:
 
         print(
             "OK: fast_import skeleton/skin authored-normal policy "
-            f"(deformUserNormals=True, blockGPU={block_gpu})"
+            f"(deformUserNormals=True, blockGPU={block_gpu}, "
+            f"weightedVertices={mesh_fn.numVertices})"
         )
         return 0
     finally:

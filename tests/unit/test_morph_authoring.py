@@ -116,6 +116,25 @@ def test_impulse_schema_is_kept_but_requires_reject_policy() -> None:
         replace_morph(_spec(impulse), replace(impulse, runtime_capability="supported"))
 
 
+def test_impulse_local_flag_is_preserved_when_present() -> None:
+    impulse = _morph(
+        0,
+        "impulse",
+        (
+            {
+                "rigid_body_index": 12,
+                "is_local": 1,
+                "impulse": [0, 1, 2],
+                "torque": [3, 4, 5],
+            },
+        ),
+        runtime_capability="unsupported",
+        loss_policy="reject",
+    )
+    result = replace_morph_offsets(_spec(impulse), 0, impulse.offsets)
+    assert result.morphs[0].offsets[0]["is_local"] == 1
+
+
 def test_flip_and_impulse_use_raw_pmx_field_names_strictly() -> None:
     flip = _morph(0, "flip", runtime_capability="unsupported", loss_policy="reject")
     with pytest.raises(MorphAuthoringError, match="unknown fields"):

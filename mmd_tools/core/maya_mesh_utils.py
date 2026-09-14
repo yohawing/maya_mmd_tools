@@ -11,6 +11,49 @@ from mmd_tools.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def separate_render_proxy(mesh_transform, parent, cmds_module=cmds):
+    """Keep native draw shapes out of editable blendShape target hierarchies."""
+    proxies = cmds_module.listRelatives(
+        mesh_transform, shapes=True, type="mmdRenderShape", fullPath=True
+    ) or []
+    if len(proxies) != 1:
+        raise RuntimeError("FastLoad must have one render proxy before DAG organization")
+    name = mesh_transform.rsplit("|", 1)[-1]
+    render_transform = cmds_module.group(empty=True, name=f"{name}_render", parent=parent)
+    moved_proxy = None
+    try:
+        moved_proxy = cmds_module.parent(proxies[0], render_transform, shape=True, relative=True)[0]
+        cmds_module.setAttr(f"{render_transform}.inheritsTransform", False)
+        cmds_module.connectAttr(
+            f"{mesh_transform}.worldMatrix[0]", f"{render_transform}.offsetParentMatrix"
+        )
+        cmds_module.connectAttr(
+            f"{mesh_transform}.visibility", f"{render_transform}.visibility"
+        )
+        cmds_module.setAttr(f"{render_transform}.hiddenInOutliner", True)
+    except Exception:
+        # Restore the owned shape before deleting its temporary parent. If
+        # reparenting itself fails, leave the parent intact rather than destroy
+        # the source's render shape while reporting the connection failure.
+        if moved_proxy:
+            cmds_module.parent(moved_proxy, mesh_transform, shape=True, relative=True)
+        cmds_module.delete(render_transform)
+        raise
+    return render_transform
+
+
+def resolve_mesh_shape(mesh_node):
+    """Resolve the editable mesh, excluding render proxies and intermediate shapes."""
+    if cmds.nodeType(mesh_node) == "mesh":
+        return mesh_node
+    shapes = cmds.listRelatives(
+        mesh_node, shapes=True, noIntermediate=True, type="mesh", fullPath=True
+    ) or []
+    if len(shapes) != 1:
+        raise ValueError(f"Expected one editable mesh below {mesh_node}, got {len(shapes)}")
+    return shapes[0]
+
+
 # A dot product below this bound represents a meaningful authored-vs-geometric
 # normal difference (approximately 0.8 degrees for unit vectors).
 _AUTHORED_NORMAL_DOT_TOLERANCE = 1.0e-4
@@ -259,7 +302,7 @@ def apply_vertex_weights(
     influence_count = len(influence_paths)
 
     mesh_selection_list = om.MSelectionList()
-    mesh_selection_list.add(mesh_node)
+    mesh_selection_list.add(resolve_mesh_shape(mesh_node))
     shape_dag_path = mesh_selection_list.getDagPath(0)
     mesh_fn = om.MFnMesh(shape_dag_path)
     vertex_count = mesh_fn.numVertices
