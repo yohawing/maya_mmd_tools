@@ -312,7 +312,7 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=Fal
         assert capture("isolate_cleared") == with_control
         from tools.render_override.performance_checks import check_camera_updates
         current_proxy = cmds.listRelatives(root, ad=True, type="mmdRenderShape", fullPath=True)[0]
-        report["cameraPerformance"] = check_camera_updates(cmds, current_proxy, render)
+        report["cameraPerformance"] = check_camera_updates(cmds, current_proxy, render, capture=capture)
         from tools.smoke.maya_fast_import_authoring import _viewport
         report["authoringViewport"] = _viewport(cmds, root, out)
         report["status"] = "pass"

@@ -570,11 +570,12 @@ private:
         bool sameBuffers(const GeometryKey& other) const
         {
             return handle == other.handle && bufferRevision == other.bufferRevision &&
-                   world == other.world && visible == other.visible;
+                   visible == other.visible;
         }
         bool operator==(const GeometryKey& other) const
         {
-            return revision == other.revision && sameBuffers(other);
+            return revision == other.revision && world == other.world &&
+                   sameBuffers(other);
         }
     };
 
