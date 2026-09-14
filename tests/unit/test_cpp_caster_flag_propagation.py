@@ -30,15 +30,18 @@ def test_fast_load_preserves_receiver_and_caster_flags_separately() -> None:
     assert "bool selfShadow = false;" in queue_header
 
 
-def test_queue_and_structured_diagnostics_preserve_caster_eligibility() -> None:
+def test_queue_and_shape_settings_preserve_caster_and_receiver_flags() -> None:
     queue_header = (CPP / "MmdRenderQueue.h").read_text(encoding="utf-8")
-    shape_header = (CPP / "MmdRenderShape.h").read_text(encoding="utf-8")
+    queue_source = (CPP / "MmdRenderQueue.cpp").read_text(encoding="utf-8")
     shape_source = (CPP / "MmdRenderShape.cpp").read_text(encoding="utf-8")
     smoke = (CPP / "MmdRenderQueueSmoke.cpp").read_text(encoding="utf-8")
 
     assert "bool selfShadowMap = false;" in queue_header
-    assert "bool selfShadowMap = false;" in shape_header
-    assert 'appendJsonBool(stream, "selfShadowMap", diagnostic.selfShadowMap' in shape_source
+    assert "bool selfShadow = false;" in queue_header
+    assert "left.selfShadowMap == right.selfShadowMap" in queue_source
+    assert "left.selfShadow == right.selfShadow" in queue_source
+    assert "input.selfShadowMap = bool(flags & 4);" in shape_source
+    assert "input.selfShadow = bool(flags & 8);" in shape_source
     assert "materialInput.selfShadowMap = true;" in smoke
     assert "materialInput.selfShadow = false;" in smoke
     assert "secondMaterialInput.selfShadowMap = false;" in smoke
@@ -47,5 +50,3 @@ def test_queue_and_structured_diagnostics_preserve_caster_eligibility() -> None:
     assert "!secondMaterial->selfShadowMap" in smoke
     assert "!firstMaterial->selfShadow" in smoke
     assert "secondMaterial->selfShadow" in smoke
-    assert "bool selfShadow = false;" in shape_header
-    assert 'appendJsonBool(stream, "selfShadow", diagnostic.selfShadow' in shape_source
