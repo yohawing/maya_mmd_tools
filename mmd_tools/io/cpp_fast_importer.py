@@ -607,27 +607,38 @@ def _apply_basic_materials(
     """Assign materials and return the parsed metadata for root attributes."""
     metadata = None
     material_groups = None
-    try:
-        pmx_bytes = Path(filepath).read_bytes()
-        parsed_model_cls = _mmd_parsed_model_class()
-        parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
-        if parsed is not None:
-            try:
-                metadata_text = parsed.metadata_json
-                material_groups = parsed.material_groups or []
-            finally:
-                parsed.free()
-            if metadata_text:
-                metadata = json.loads(metadata_text)
-        else:
-            logger.debug("Native parsed-model metadata unavailable; trying current native PMX parser")
-    except Exception as exc:
-        logger.debug("Parsed-model material metadata unavailable: %s", exc)
-
-    if not metadata or not material_groups:
+    native_material_data = None
+    if (native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None
+            and getattr(native_pmx, "soft_body_loader", None) is None):
         native_material_data = _load_native_fast_material_data(
             filepath, native_pmx=native_pmx
         )
+        if native_material_data is not None:
+            metadata, material_groups = native_material_data
+
+    if not metadata or not material_groups:
+        try:
+            pmx_bytes = Path(filepath).read_bytes()
+            parsed_model_cls = _mmd_parsed_model_class()
+            parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
+            if parsed is not None:
+                try:
+                    metadata_text = parsed.metadata_json
+                    material_groups = parsed.material_groups or []
+                finally:
+                    parsed.free()
+                if metadata_text:
+                    metadata = json.loads(metadata_text)
+            else:
+                logger.debug("Native parsed-model metadata unavailable; trying current native PMX parser")
+        except Exception as exc:
+            logger.debug("Parsed-model material metadata unavailable: %s", exc)
+
+    if not metadata or not material_groups:
+        if native_material_data is None:
+            native_material_data = _load_native_fast_material_data(
+                filepath, native_pmx=native_pmx
+            )
         if native_material_data is not None:
             metadata, material_groups = native_material_data
 
@@ -639,7 +650,8 @@ def _apply_basic_materials(
         materials = metadata.get("materials") or []
         used_names = _scene_name_set(cmds_module)
         converter = None
-        if native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None:
+        if (native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None
+                and len(getattr(native_pmx, "materials", ()) or ()) >= len(materials)):
             from mmd_tools.converters.mesh_converter import MeshConverter
             from mmd_tools.converters.material_morph_runtime import bind_standard_material
 

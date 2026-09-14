@@ -44,6 +44,7 @@ from mmd_tools.io.cpp_fast_importer import (
     fast_import,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.pmx_data import PmxData
 
 
 class TestCppFastImportRouting(unittest.TestCase):
@@ -732,6 +733,97 @@ class TestFastImportMetadata(unittest.TestCase):
         self.assertEqual(metadata["metadata"]["comment"], "コメントJP")
         self.mock_parsed_cls.from_pmx_bytes.assert_called_once_with(b"fake pmx bytes")
         mock_parsed.free.assert_called_once_with()
+
+    def test_basic_materials_uses_shared_native_pmx_without_reparsing(self):
+        """Shared native material data drives aliases, textures, faces and root metadata."""
+        pmx = SimpleNamespace(
+            header=SimpleNamespace(model_name="モデルJP", model_name_english="Model EN",
+                                   comment="コメントJP", comment_english="Comment EN"),
+            vertices=[], faces=[(0, 1, 2)], textures=["tex/diffuse.png"],
+            materials=[SimpleNamespace(name="材質", name_english="Material EN",
+                                       face_count=3, texture_index=0)],
+            soft_bodies=[object()],
+        )
+        cmds = MagicMock()
+        cmds.ls.return_value = []
+        converter = MagicMock()
+        converter._material_name_by_index = {}
+        converter._create_material.return_value = "shader"
+
+        with patch("mmd_tools.converters.mesh_converter.MeshConverter", return_value=converter) as converter_cls, patch(
+            "mmd_tools.converters.material_morph_runtime.bind_standard_material", return_value=True
+        ):
+            metadata = _apply_basic_materials("model.pmx", "mesh1", cmds, native_pmx=pmx)
+
+        self.mock_read_bytes.assert_not_called()
+        self.mock_parsed_cls.from_pmx_bytes.assert_not_called()
+        converter_cls.assert_called_once_with("model.pmx")
+        self.assertEqual(metadata["metadata"]["comment"], "コメントJP")
+        self.assertEqual(metadata["metadata"]["counts"]["softBodies"], 1)
+        self.assertEqual(metadata["materials"][0]["englishName"], "Material EN")
+        self.assertEqual(converter._material_name_by_index[0], "Material_EN_fast")
+        self.assertEqual(converter._create_material.call_args.kwargs["texture_path"], "tex/diffuse.png")
+        cmds.sets.assert_any_call("mesh1.f[0:0]", edit=True, forceElement="shaderSG")
+
+    def test_basic_materials_keeps_lazy_soft_bodies_unresolved(self):
+        """PMX 2.1 uses parsed metadata without triggering the legacy soft-body loader."""
+        pmx = PmxData()
+        pmx.materials = [SimpleNamespace(texture_index=0)]
+        pmx.textures = ["tex/diffuse.png"]
+        loader = MagicMock(side_effect=AssertionError("legacy PMX reparse"))
+        pmx.soft_body_loader = loader
+        parsed = MagicMock()
+        parsed.metadata_json = json.dumps({
+            "metadata": {"name": "Model", "counts": {"softBodies": 2}},
+            "materials": [{"name": "材質", "englishName": "Material EN"}],
+        })
+        parsed.material_groups = [(0, 3, 0)]
+        self.mock_parsed_cls.from_pmx_bytes.return_value = parsed
+        cmds = MagicMock()
+        cmds.ls.return_value = []
+        converter = MagicMock()
+        converter._material_name_by_index = {}
+        converter._create_material.return_value = "shader"
+
+        with patch("mmd_tools.converters.mesh_converter.MeshConverter", return_value=converter), patch(
+            "mmd_tools.converters.material_morph_runtime.bind_standard_material", return_value=True
+        ):
+            metadata = _apply_basic_materials("model.pmx", "mesh1", cmds, native_pmx=pmx)
+
+        loader.assert_not_called()
+        self.assertIs(pmx.soft_body_loader, loader)
+        self.mock_read_bytes.assert_called_once_with()
+        self.mock_parsed_cls.from_pmx_bytes.assert_called_once_with(b"fake pmx bytes")
+        parsed.free.assert_called_once_with()
+        self.assertEqual(metadata["metadata"]["counts"]["softBodies"], 2)
+        self.assertEqual(converter._material_name_by_index[0], "Material_EN_fast")
+        self.assertEqual(converter._create_material.call_args.kwargs["texture_path"], "tex/diffuse.png")
+        cmds.sets.assert_any_call("mesh1.f[0:0]", edit=True, forceElement="shaderSG")
+
+    def test_basic_materials_falls_back_when_shared_pmx_has_no_materials(self):
+        """Incomplete shared native data keeps the parsed-model material path."""
+        parsed = MagicMock()
+        parsed.metadata_json = json.dumps({"metadata": {"name": "Parsed"},
+                                           "materials": [{"name": "mat"}]})
+        parsed.material_groups = [(0, 3, 0)]
+        self.mock_parsed_cls.from_pmx_bytes.return_value = parsed
+        cmds = MagicMock()
+        cmds.ls.return_value = []
+
+        with patch.object(cpp_fast_importer, "_create_standard_material", return_value="shader") as create, patch(
+            "mmd_tools.converters.mesh_converter.MeshConverter"
+        ) as converter_cls:
+            metadata = _apply_basic_materials(
+                "model.pmx", "mesh1", cmds, native_pmx=SimpleNamespace(materials=[])
+            )
+
+        self.assertEqual(metadata["metadata"]["name"], "Parsed")
+        self.mock_read_bytes.assert_called_once_with()
+        self.mock_parsed_cls.from_pmx_bytes.assert_called_once_with(b"fake pmx bytes")
+        parsed.free.assert_called_once_with()
+        create.assert_called_once()
+        converter_cls.assert_not_called()
+        cmds.sets.assert_any_call("mesh1.f[0:0]", edit=True, forceElement="shaderSG")
 
     @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
     def test_basic_materials_falls_back_to_current_native_parser(self, mock_parse_native):
