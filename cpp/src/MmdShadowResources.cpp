@@ -126,6 +126,24 @@ bool buildCasterLightMatrix(
     if (!normalizeVector(lightDirection)) {
         return false;
     }
+    resources.lightDirection = {static_cast<float>(lightDirection.x),
+                                static_cast<float>(lightDirection.y),
+                                static_cast<float>(lightDirection.z)};
+    const MPlug color = lightNode.findPlug("mmd_light_color", true,
+                                          &attributeStatus);
+    if (attributeStatus && color.numChildren() == 3U) {
+        std::array<float, 3> lightColor;
+        bool validColor = true;
+        for (unsigned int index = 0U; index < 3U; ++index) {
+            MStatus componentStatus;
+            lightColor[index] = color.child(index).asFloat(&componentStatus);
+            validColor = validColor && componentStatus &&
+                         std::isfinite(lightColor[index]);
+        }
+        if (validColor) {
+            resources.lightColor = lightColor;
+        }
+    }
 
     MVector up = std::abs(lightDirection.y) > 0.95 ? MVector(1.0, 0.0, 0.0)
                                                    : MVector(0.0, 1.0, 0.0);

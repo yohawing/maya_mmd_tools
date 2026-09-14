@@ -93,7 +93,9 @@ bool bindNativeMaterialParameters(
     MHWRender::MTexture* mainTexture,
     MHWRender::MTexture* sphereTexture,
     MHWRender::MTexture* toonTexture,
-    bool toonTextureRequested)
+    bool toonTextureRequested,
+    const std::array<float, 3>& lightDirection,
+    const std::array<float, 3>& lightColor)
 {
     if (!shader) {
         return false;
@@ -101,8 +103,6 @@ bool bindNativeMaterialParameters(
 
     // Bind the scalar/color subset and texture switches explicitly so an
     // effect instance never inherits authored values from another item.
-    const float lightDirection[3] = {-0.5F, -1.0F, -1.0F};
-    const float lightColor[3] = {0.6039216F, 0.6039216F, 0.6039216F};
     const bool scalarBinding =
         shader->setParameter("DiffuseColorRGB", material.diffuseColor.data()) &&
         shader->setParameter("DiffuseColorA", material.diffuseAlpha) &&
@@ -136,8 +136,8 @@ bool bindNativeMaterialParameters(
         shader->setParameter("ShadowStrength", 1.0F) &&
         shader->setParameter("ToonCoordinateOffset", 0.55F) &&
         shader->setParameter("NativeSrgbOutput", 1) &&
-        shader->setParameter("MMDLightDirection", lightDirection) &&
-        shader->setParameter("MMDLightColor", lightColor);
+        shader->setParameter("MMDLightDirection", lightDirection.data()) &&
+        shader->setParameter("MMDLightColor", lightColor.data());
     if (!scalarBinding) {
         return false;
     }

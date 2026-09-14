@@ -8,6 +8,7 @@
 #include <maya/MShaderManager.h>
 #include <maya/MTextureManager.h>
 
+#include <array>
 #include <string>
 
 #include "MmdRenderQueue.h"
@@ -32,6 +33,8 @@ bool bindNativeMaterialParameters(
     MHWRender::MTexture* mainTexture,
     MHWRender::MTexture* sphereTexture,
     MHWRender::MTexture* toonTexture,
-    bool toonTextureRequested);
+    bool toonTextureRequested,
+    const std::array<float, 3>& lightDirection,
+    const std::array<float, 3>& lightColor);
 
 }  // namespace mmd

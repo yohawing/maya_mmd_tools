@@ -23,7 +23,7 @@ def run_probe(config_path):
     from maya import cmds
     from mmd_tools.io.mmd_importer import import_mmd_file
     from mmd_tools.converters.material_morph_runtime import _collect_shaders_by_material_index
-    from tools.render_override.shadow_checks import check_self_shadow
+    from tools.render_override.shadow_checks import check_light_binding, check_self_shadow
 
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     out = Path(config["output"])
@@ -50,6 +50,7 @@ def run_probe(config_path):
                          displayAppearance="smoothShaded", displayTextures=True, grid=False)
         cmds.select(clear=True)
         report["shadow"] = check_self_shadow(cmds, root, shape, panel, out)
+        report["lightBinding"] = check_light_binding(cmds, panel, out)
         if config.get("vp2ShadowComparison"):
             from tools.render_override.vp2_shadow_checks import check_vp2_shadow
 

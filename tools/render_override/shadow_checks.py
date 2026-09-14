@@ -6,6 +6,49 @@ from tools.render_override.common import capture_view
 from tools.render_override.render_override_visual_gate import read_png_rgb
 
 
+def check_light_binding(cmds, panel, output_dir):
+    """Verify that body lighting follows the MMD controller with shadows off."""
+    from mmd_tools.converters.light_converter import find_mmd_light
+
+    light = find_mmd_light()
+    assert light, "missing model light controller"
+    mode_plug = f"{light}.mmd_self_shadow_mode"
+    color_plug = f"{light}.mmd_light_color"
+    rotation_plug = f"{light}.rotateY"
+    original_mode = cmds.getAttr(mode_plug)
+    original_color = cmds.getAttr(color_plug)[0]
+    original_rotation = cmds.getAttr(rotation_plug)
+
+    def capture(label):
+        cmds.refresh(force=True)
+        path = capture_view(cmds, output_dir / f"light_{label}.png", panel, 1024, 1024)
+        witness = json.loads(cmds.mmdOrderedRenderWitness())
+        assert not witness["error"] and witness["drawCount"] > 0, witness
+        return read_png_rgb(path)[2]
+
+    try:
+        cmds.setAttr(mode_plug, 0)
+        baseline = capture("baseline")
+        cmds.setAttr(color_plug, 0.08, 0.95, 0.1, type="float3")
+        color_changed = capture("color_changed")
+        cmds.setAttr(color_plug, *original_color, type="float3")
+        assert capture("color_restored") == baseline
+        cmds.setAttr(rotation_plug, original_rotation + 120.0)
+        direction_changed = capture("direction_changed")
+        cmds.setAttr(rotation_plug, original_rotation)
+        assert capture("direction_restored") == baseline
+        color_pixels = sum(a != b for a, b in zip(baseline, color_changed))
+        direction_pixels = sum(a != b for a, b in zip(baseline, direction_changed))
+        assert color_pixels > 100, "MMD light color did not affect native body"
+        assert direction_pixels > 100, "MMD light direction did not affect native body"
+        return {"colorChangedPixels": color_pixels,
+                "directionChangedPixels": direction_pixels}
+    finally:
+        cmds.setAttr(color_plug, *original_color, type="float3")
+        cmds.setAttr(rotation_plug, original_rotation)
+        cmds.setAttr(mode_plug, original_mode)
+
+
 def check_self_shadow(cmds, root, shape, panel, output_dir):
     """Check mode and PMX flag A/B/A on an imported, textured representative."""
     from mmd_tools.converters.light_converter import find_mmd_light

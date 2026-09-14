@@ -2,6 +2,7 @@
  * @brief Private shadow resources owned by MMD Render.
  */
 #pragma once
+#include <array>
 #include <maya/MMatrix.h>
 #include <maya/MRenderTargetManager.h>
 #include <maya/MSelectionList.h>
@@ -28,6 +29,8 @@ public:
         MHWRender::MRenderTarget* colorTarget = nullptr;
         MHWRender::MRenderTarget* depthTarget = nullptr;
         MMatrix lightViewProjection;
+        std::array<float, 3> lightDirection = {-0.5F, -1.0F, -1.0F};
+        std::array<float, 3> lightColor = {0.6039216F, 0.6039216F, 0.6039216F};
         float depthBias = 0.0F;
         int selfShadowMode = 0;
         double selfShadowDistance = 0.0;
