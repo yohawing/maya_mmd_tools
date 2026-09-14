@@ -5,8 +5,6 @@
 
 #include "MmdNativeMaterial.h"
 
-#include "MmdShadowResources.h"
-
 #include <maya/MGlobal.h>
 
 #include <cstdlib>
@@ -127,11 +125,6 @@ bool bindNativeMaterialParameters(
         shader->setParameter("HasMainTexture", 0) &&
         shader->setParameter("HasSphereTexture", 0) &&
         shader->setParameter("HasToonTexture", 0) &&
-        shader->setParameter("NativeCasterProbe", 0) &&
-        shader->setParameter("NativeCasterHardShadow", 0) &&
-        shader->setParameter(
-            "NativeCasterShadowBias",
-            MmdShadowResources::kDefaultHardShadowBias) &&
         shader->setParameter("UseShadows", false) &&
         shader->setParameter("ShadowStrength", 1.0F) &&
         shader->setParameter("ToonCoordinateOffset", 0.55F) &&

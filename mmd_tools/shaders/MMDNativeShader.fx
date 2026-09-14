@@ -1,9 +1,6 @@
-// Development-only native VP2 shader for the opt-in render-override witness.
-//
-// The normal Python importer owns MMDShader.fx.  This effect includes that
-// product shader for the shared material/lighting contract, then adds the
-// native VP2 body/outline techniques and the caster/receiver diagnostics that
-// are intentionally unavailable to the importer shader.
+// Native VP2 shader for the ordered render override.  It includes MMDShader.fx
+// for the shared material/lighting contract and adds body, outline, and caster
+// techniques with receiver-side self-shadow.
 
 #include "MMDShader.fx"
 
@@ -27,50 +24,17 @@ float CasterDepthBias<
     string UIWidget = "None";
 > = 0.35f;
 
-// Same-frame native receiver probe.  The C++ render override assigns its
-// private R32F caster target to borrowed body MShaderInstances using
-// MRenderTargetAssignment.  It is intentionally opt-in and encodes the raw
-// sampled depth directly in BODY pixels; this is a binding/ordering witness,
-// not a shadow compare, PCF, bias, or production receiver-composition path.
+// The ordered render override binds its same-frame R32F caster target to body
+// shaders for receiver-side self-shadow comparison.
 Texture2D NativeCasterDepthTexture<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Depth Probe";
+    string UIName = "Native Caster Depth";
     string UIWidget = "None";
     string ResourceType = "2D";
     int mipmaplevels = NumberOfMipMaps;
 >;
 
-int NativeCasterProbe<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Depth Probe Enabled";
-    string UIWidget = "None";
-    float UIMin = 0;
-    float UIMax = 1;
-    float UIStep = 1;
-> = 0;
-
-// Opt-in receiver-side hard-shadow comparison witness.  This is a flat
-// two-color mask only; it never feeds the product light/shadow composition.
-int NativeCasterHardShadow<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Hard Shadow Mask Enabled";
-    string UIWidget = "None";
-    float UIMin = 0;
-    float UIMax = 1;
-    float UIStep = 1;
-> = 0;
-
 // Product self-shadow state. Zero preserves the ordinary native material.
 int NativeSelfShadowMode<string UIWidget = "None";> = 0;
-
-// Normalized [0, 1] receiver comparison bias.  CasterDepthBias remains the
-// clip-Z offset used while rasterizing the private caster target; the helper
-// subtracts that offset before comparing the receiver depth.
-float NativeCasterShadowBias<
-    string UIGroup = "Native Diagnostics";
-    string UIName = "Native Caster Shadow Bias";
-    string UIWidget = "None";
-> = 0.001f;
 
 // The caster deliberately keeps the same vertex input contract as the native
 // material shader so MSceneRender can reuse mmdRenderShape's geometry buffers.
@@ -135,37 +99,7 @@ float EvaluateNativeSelfShadow(float3 worldPosition, out bool inside)
     return 1.0 - saturate(delta * ramp - 0.3);
 }
 
-// Compare a receiver's row-major caster projection against the same-frame
-// R32F target.  UV conversion is explicit (including Maya's top-origin Y),
-// sampling is point mip 0, and clear pixels are conservatively lit.
-bool EvaluateNativeCasterHardShadow(float3 worldPosition, out bool occluded)
-{
-    occluded = false;
-    float4 casterClip = mul(float4(worldPosition, 1.0),
-                            CasterLightViewProjection);
-    if (casterClip.w <= 1.0e-6f)
-        return false;
-
-    float3 receiverNdc = casterClip.xyz / casterClip.w;
-    if (receiverNdc.x < -1.0f || receiverNdc.x > 1.0f ||
-        receiverNdc.y < -1.0f || receiverNdc.y > 1.0f ||
-        receiverNdc.z < 0.0f || receiverNdc.z > 1.0f)
-        return false;
-
-    float2 casterUV = float2(receiverNdc.x * 0.5f + 0.5f,
-                             0.5f - receiverNdc.y * 0.5f);
-    float sampledDepth =
-        NativeCasterDepthTexture.SampleLevel(ShadowSampler, casterUV, 0).r;
-    if (sampledDepth >= 1.0f - 1.0e-6f)
-        return true;
-
-    float casterRawDepth = sampledDepth - CasterDepthBias;
-    occluded = receiverNdc.z - NativeCasterShadowBias > casterRawDepth;
-    return true;
-}
-
-// Native body pixel shader.  The shared helper keeps the product lighting
-// path byte-stable while the opt-in probe/mask diagnostics remain native-only.
+// Native body pixel shader with receiver-side self-shadow.
 float4 NativeMainPS(VS_OUTPUT input) : SV_TARGET
 {
     float opacity = 0.0f;
@@ -179,32 +113,6 @@ float4 NativeMainPS(VS_OUTPUT input) : SV_TARGET
     }
     else
         litColor = ComputeMmdLitColor(input, opacity);
-
-    // Keep the normal native path byte-stable when the default-off probe is
-    // disabled.  When enabled, sample only the exact same-frame caster target
-    // and visibly encode its raw depth in body pixels for an A/B/A witness.
-    if (NativeCasterProbe != 0)
-    {
-        float4 casterClip = mul(float4(input.worldPosition, 1.0),
-                                CasterLightViewProjection);
-        float casterW = max(abs(casterClip.w), 1.0e-6);
-        float2 casterUV = casterClip.xy / casterW * 0.5 + 0.5;
-        float sampledDepth = NativeCasterDepthTexture.Sample(
-            ShadowSampler, saturate(casterUV)).r;
-        litColor = float3(sampledDepth, 1.0 - sampledDepth, 0.0);
-    }
-    else if (NativeCasterHardShadow != 0)
-    {
-        // Diagnostic mask colors are intentionally flat and distinct: green
-        // means lit and blue means occluded.  They replace the output only
-        // while this opt-in flag is effective and do not compose into `shadow`.
-        bool hardShadowOccluded = false;
-        EvaluateNativeCasterHardShadow(input.worldPosition,
-                                       hardShadowOccluded);
-        litColor = hardShadowOccluded
-                       ? float3(0.08f, 0.22f, 1.0f)
-                       : float3(0.10f, 1.0f, 0.10f);
-    }
 
     float3 outputColor = NativeSrgbOutput != 0
                              ? litColor

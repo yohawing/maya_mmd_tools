@@ -20,12 +20,21 @@ def test_native_caster_shader_stays_out_of_product_shader() -> None:
     assert "NativeCasterDepthTexture" not in product_shader
 
 
-def test_native_material_initializes_diagnostic_flags_off() -> None:
+def test_native_material_uses_receiver_shadow_without_diagnostic_flags() -> None:
     source = (CPP / "MmdNativeMaterial.cpp").read_text(encoding="utf-8")
+    native_shader = (ROOT / "mmd_tools" / "shaders" / "MMDNativeShader.fx").read_text(
+        encoding="utf-8"
+    )
 
-    assert 'shader->setParameter("NativeCasterProbe", 0)' in source
-    assert 'shader->setParameter("NativeCasterHardShadow", 0)' in source
-    assert '"NativeCasterShadowBias"' in source
+    for dead_parameter in (
+        "NativeCasterProbe",
+        "NativeCasterHardShadow",
+        "NativeCasterShadowBias",
+    ):
+        assert dead_parameter not in source
+        assert dead_parameter not in native_shader
+    assert "EvaluateNativeSelfShadow(input.worldPosition, inside)" in native_shader
+    assert "NativeCasterDepthTexture.SampleLevel(ShadowSampler, uv, 0)" in native_shader
 
 
 def test_native_material_binding_has_no_dead_shape_diagnostic_dependency() -> None:
