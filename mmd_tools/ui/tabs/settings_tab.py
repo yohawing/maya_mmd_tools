@@ -160,7 +160,7 @@ class SettingsTab(BaseTab):
         return widget
 
     def _create_advanced_tab(self):
-        """Create the development-only native import controls."""
+        """Create native import controls and the development-only rig option."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
         self.advanced_native_group = QGroupBox(
@@ -198,7 +198,7 @@ class SettingsTab(BaseTab):
         self.advanced_native_group.setLayout(native_layout)
         layout.addWidget(self.advanced_native_group)
         layout.addStretch()
-        self.advanced_native_group.setVisible(False)
+        self.use_cpp_rig_nodes_check.setVisible(False)
         return widget
 
     def retranslateUi(self):

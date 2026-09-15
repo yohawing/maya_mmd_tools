@@ -191,7 +191,9 @@ class SettingsPresenter:
             block_signals = getattr(checkbox, "blockSignals", None)
             blocked = block_signals(True) if callable(block_signals) else None
             try:
-                checkbox.setChecked(bool(self.settings_service.get(key, False)))
+                checkbox.setChecked(bool(self.settings_service.get(
+                    key, key != setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES
+                )))
             finally:
                 if callable(block_signals):
                     block_signals(blocked)
@@ -228,7 +230,9 @@ class SettingsPresenter:
         if hasattr(self.view, "dev_tools_group"):
             self.view.dev_tools_group.setVisible(bool(enabled))
         if hasattr(self.view, "advanced_native_group"):
-            self.view.advanced_native_group.setVisible(bool(enabled))
+            self.view.advanced_native_group.setVisible(True)
+        if hasattr(self.view, "use_cpp_rig_nodes_check"):
+            self.view.use_cpp_rig_nodes_check.setVisible(bool(enabled))
         self._sync_native_advanced_controls()
         self.refresh_command_port_status()
 

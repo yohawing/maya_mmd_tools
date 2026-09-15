@@ -639,7 +639,7 @@ class TestControlRigSettingSourceInspection(unittest.TestCase):
         checkbox_end = self.source.index(")", checkbox_start)
         self.assertIn("True", self.source[checkbox_start:checkbox_end])
 
-    def test_import_defaults_keep_native_render_routes_off(self):
+    def test_import_defaults_enable_native_render_routes(self):
         defaults_path = (
             Path(import_export_tab.__file__).resolve().parents[2]
             / "config"
@@ -649,8 +649,8 @@ class TestControlRigSettingSourceInspection(unittest.TestCase):
 
         self.assertFalse(defaults["import"]["rig"]["bake_mode"])
         self.assertTrue(defaults["import"]["animation"]["vmd_rotation_time_curve"])
-        self.assertFalse(defaults["import"]["native"]["use_cpp_fast_load"])
-        self.assertFalse(defaults["import"]["native"]["use_cpp_vp2_ownership"])
+        self.assertTrue(defaults["import"]["native"]["use_cpp_fast_load"])
+        self.assertTrue(defaults["import"]["native"]["use_cpp_vp2_ownership"])
 
     def test_japanese_control_rig_label_uses_katakana(self):
         translation_path = (

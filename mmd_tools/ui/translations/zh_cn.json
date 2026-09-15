@@ -194,8 +194,8 @@
     "separate_meshes": "按材质分割网格",
     "import_physics": "从 PMX 物理数据创建刚体和关节",
     "disable_backface_culling": "禁用背面剔除以实现双面渲染",
-    "use_cpp_fast_load": "使用编译后的 C++ PMX 导入器代替 Python 导入器（实验性）",
-    "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要启用 C++ Fast Load，仅用于网格显示（实验性）"
+    "use_cpp_fast_load": "使用编译后的 C++ PMX 导入器代替 Python 导入器",
+    "use_cpp_vp2_ownership": "使用 MMD Render 绘制。需要 C++ Fast Load 和 DirectX 11。"
   },
   "messages": {
     "ready": "准备就绪",
@@ -382,8 +382,8 @@
     "reduce_bake_keys": "减少烘焙关键帧",
     "create_mmd_control_rig": "创建 MMD Control Rig",
     "vmd_rotation_time_curve": "保留VMD旋转时间曲线（实验性）",
-    "use_cpp_fast_load": "使用 C++ Fast Load（实验性）",
-    "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride（实验性）",
+    "use_cpp_fast_load": "使用 C++ Fast Load",
+    "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride",
     "new_file": "新建文件",
     "enable_ik": "启用IK",
     "invert_value": "反转值",

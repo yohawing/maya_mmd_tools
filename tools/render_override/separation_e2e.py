@@ -91,11 +91,19 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=Fal
             fixture.write_file(str(model))
         report["model"] = str(model)
         report["modelSha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
-        root = import_mmd_file(str(model), options={
-            "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
-            "import_morphs": True, "import_physics": False,
-            "separate_meshes_by_material": split,
-        })
+        from mmd_tools.core.settings import settings
+        from mmd_tools.services.settings_service import SettingsService
+
+        # This runner owns an isolated Maya profile. Exercise the normal UI
+        # defaults instead of bypassing routing with explicit native flags.
+        settings.reset()
+        settings.set("import.model.separate_meshes_by_material", split)
+        settings.set("import.physics.import_physics", False)
+        options = SettingsService().build_pmx_import_options()
+        assert not SettingsService().is_development_mode()
+        assert options["use_cpp_fast_load"] and options["use_cpp_vp2_ownership"]
+        report["importOptions"] = options
+        root = import_mmd_file(str(model), options=options)
         assert root, "import failed"
         assert original_panels == {p: cmds.modelEditor(p, q=True, rendererOverrideName=True) for p in panels}
         proxies = cmds.listRelatives(root, ad=True, type="mmdRenderShape", fullPath=True)

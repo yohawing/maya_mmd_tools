@@ -37,14 +37,10 @@ def resolve_model_import_strategy(
     options: Mapping[str, Any],
     settings_get: SettingsGetter = settings.get,
 ) -> ModelImportStrategy:
-    """Resolve model import path flags without mutating import state."""
+    """Default PMX to Fast Load; explicit options override persisted settings."""
     suffix = Path(filepath).suffix.lower()
     development_mode = bool(settings_get(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, False))
-    default_fast_load = (
-        settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
-        if development_mode
-        else False
-    )
+    default_fast_load = settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
     requested_fast_load = bool(
         options.get(
             "use_cpp_fast_load",

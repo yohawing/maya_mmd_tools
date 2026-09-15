@@ -66,6 +66,9 @@ class _FakeCheckBox:
     def setEnabled(self, value):
         self._enabled = bool(value)
 
+    def setVisible(self, value):
+        self.visible = bool(value)
+
     def isEnabled(self):
         return self._enabled
 
@@ -407,7 +410,8 @@ class TestLoadSettings(unittest.TestCase):
         settings.set("ui.general.development_mode", False)
         self.presenter.load_settings()
         self.assertFalse(self.view.dev_tools_group.visible)
-        self.assertFalse(self.view.advanced_native_group.visible)
+        self.assertTrue(self.view.advanced_native_group.visible)
+        self.assertFalse(self.view.use_cpp_rig_nodes_check.visible)
 
         settings.set("ui.general.development_mode", True)
         self.presenter.load_settings()

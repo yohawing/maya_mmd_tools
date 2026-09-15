@@ -194,8 +194,8 @@
     "separate_meshes": "依材質分割網格",
     "import_physics": "從 PMX 物理資料建立剛體與關節",
     "disable_backface_culling": "停用背面剔除以啟用雙面算圖",
-    "use_cpp_fast_load": "使用編譯後的 C++ PMX 匯入器取代 Python 匯入器（實驗性）",
-    "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要啟用 C++ Fast Load，僅用於網格顯示（實驗性）"
+    "use_cpp_fast_load": "使用編譯後的 C++ PMX 匯入器取代 Python 匯入器",
+    "use_cpp_vp2_ownership": "使用 MMD Render 繪製。需要 C++ Fast Load 和 DirectX 11。"
   },
   "messages": {
     "ready": "準備就緒",
@@ -382,8 +382,8 @@
     "reduce_bake_keys": "減少烘焙關鍵影格",
     "create_mmd_control_rig": "建立 MMD Control Rig",
     "vmd_rotation_time_curve": "保留VMD旋轉時間曲線（實驗性）",
-    "use_cpp_fast_load": "使用 C++ Fast Load（實驗性）",
-    "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride（實驗性）",
+    "use_cpp_fast_load": "使用 C++ Fast Load",
+    "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride",
     "new_file": "新建檔案",
     "enable_ik": "啟用IK",
     "invert_value": "反轉值",

@@ -50,10 +50,10 @@
       "static_channel_epsilon_rotate_deg": 0.01
     },
     "native": {
-      "_comment": "Development Mode settings for native and compiled import paths",
-      "use_cpp_fast_load": false,
+      "_comment": "Native import defaults; parser diagnostics and rig nodes remain development-only",
+      "use_cpp_fast_load": true,
       "cpp_fast_load_mesh_only": false,
-      "use_cpp_vp2_ownership": false,
+      "use_cpp_vp2_ownership": true,
       "require_native_pmx_parse": true,
       "use_cpp_rig_nodes": false
     },
