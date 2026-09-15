@@ -40,12 +40,17 @@ class MmdMaterialMorphEvalNode(om.MPxNode):
     aOperationType = None
     aMorphOrder = None
     _base_attrs = {}
+    _base_alpha_attrs = {}
     _offset_attrs = {}
     _output_attrs = {}
     _base_children = {}
     _offset_children = {}
     _output_children = {}
     _all_output_attrs = ()
+
+    def postConstructor(self):
+        # Proxied authored values must survive deletion of the last morph driver.
+        self.setExistWithoutInConnections(True)
 
     @staticmethod
     def _plug_matches_any(plug, attributes):
@@ -98,12 +103,13 @@ class MmdMaterialMorphEvalNode(om.MPxNode):
         N = type(self)
         if not self._plug_matches_any(plug, N._all_output_attributes()):
             return None
-        base = {
-            name: self._read_value(
-                data.inputValue(N._base_attrs[name]), size, N._base_children[name]
+        base = {}
+        for name, size in _MATERIAL_CHANNELS.items():
+            base[name] = self._read_value(
+                data.inputValue(N._base_attrs[name]), min(size, 3), N._base_children[name]
             )
-            for name, size in _MATERIAL_CHANNELS.items()
-        }
+            if name in N._base_alpha_attrs:
+                base[name] += (data.inputValue(N._base_alpha_attrs[name]).asDouble(),)
         material, tex_mul, tex_add = self.compose(base, self._read_contributions(data))
         for name, values in material.items():
             title = f"{name[0].upper()}{name[1:]}"
@@ -191,6 +197,12 @@ def _numeric_attr(name, short_name, size, default, *, output=False):
             n_attr.writable = False
             n_attr.storable = False
         children.append(child)
+    if size == 3:
+        parent = n_attr.create(name, short_name, *children)
+        if output:
+            n_attr.writable = False
+            n_attr.storable = False
+        return parent, tuple(children)
     c_attr = om.MFnCompoundAttribute()
     parent = c_attr.create(name, short_name)
     for child in children:
@@ -208,6 +220,7 @@ def creator():
 def initialize():
     N = MmdMaterialMorphEvalNode
     N._base_attrs = {}
+    N._base_alpha_attrs = {}
     N._offset_attrs = {}
     N._output_attrs = {}
     N._base_children = {}
@@ -217,10 +230,16 @@ def initialize():
 
     for name, size in _MATERIAL_CHANNELS.items():
         title = f"{name[0].upper()}{name[1:]}"
-        attr, children = _numeric_attr(f"base{title}", f"base{title}", size, 0.0)
+        # RGB proxies need a real numeric triple; alpha keeps its existing name
+        # as a separate scalar so whole-colour edits also reach the stored base.
+        attr, children = _numeric_attr(f"base{title}", f"base{title}", min(size, 3), 0.0)
         N._base_attrs[name] = attr
         N._base_children[name] = children
         N.addAttribute(attr)
+        if size == 4:
+            alpha, _ = _numeric_attr(f"base{title}A", f"base{title}a", 1, 0.0)
+            N._base_alpha_attrs[name] = alpha
+            N.addAttribute(alpha)
 
     n_attr = om.MFnNumericAttribute()
     e_attr = om.MFnEnumAttribute()
@@ -270,7 +289,7 @@ def initialize():
         for attr in (parent, *N._output_children[name])
     )
 
-    for source in (*N._base_attrs.values(), N.aContribution, N.aContributionWeight,
+    for source in (*N._base_attrs.values(), *N._base_alpha_attrs.values(), N.aContribution, N.aContributionWeight,
                    N.aOperationType, N.aMorphOrder, *N._offset_attrs.values()):
         for output in N._output_attrs.values():
             N.attributeAffects(source, output)

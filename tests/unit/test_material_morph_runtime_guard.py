@@ -200,6 +200,14 @@ class TestMaterialMorphRuntimeGuard(unittest.TestCase):
 
 
 class TestCompleteRouteRollback(unittest.TestCase):
+    def setUp(self):
+        # These command doubles model non-proxy legacy attributes; real proxy
+        # migration and Undo are covered by the Maya integration suite.
+        patcher = mock.patch.object(material_morph_runtime, "maya_proxy_attribute")
+        proxy = patcher.start()
+        proxy.is_proxy.return_value = False
+        self.addCleanup(patcher.stop)
+
     class _StateCmds:
         def __init__(self, fail_at):
             self.fail_at = fail_at
@@ -485,6 +493,14 @@ class TestDetectEffectiveVp2DrawApi(unittest.TestCase):
 
 
 class TestResolveShaderColorRoute(unittest.TestCase):
+    def setUp(self):
+        # These command doubles model non-proxy legacy attributes; real proxy
+        # migration and Undo are covered by the Maya integration suite.
+        patcher = mock.patch.object(material_morph_runtime, "maya_proxy_attribute")
+        proxy = patcher.start()
+        proxy.is_proxy.return_value = False
+        self.addCleanup(patcher.stop)
+
     """Backend- and VP2-API-aware colour plug contract resolver."""
 
     def _patch_cmds(self, **overrides):
@@ -939,6 +955,8 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             incoming[destination] = source
 
         def connection_info(plug, **kwargs):
+            if kwargs.get("getLockedAncestor"):
+                return plug if plug.startswith("shader.") else ""
             if kwargs.get("isExactDestination"):
                 return plug in incoming
             if kwargs.get("sourceFromDestination"):

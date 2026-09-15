@@ -238,6 +238,24 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=Fal
         assert report["materialGraph"]["evaluator_nodes"], report["materialGraph"]
         yield
         assert capture("material_graph_zero") == initial
+        # The native authoring command must also edit the new proxy storage.
+        report["proxiedMaterialAuthoring"] = json.loads(cmds.mmdAuthoringSetMaterialValues(payload=json.dumps({
+            "version": 1, "root": cmds.ls(root, long=True)[0], "shader": shaders[0],
+            "material_index": 0, "updates": [
+                {"field": "diffuse_color", "value": [0.05, 0.8, 0.1]},
+                {"field": "diffuse_alpha", "value": 0.35},
+            ],
+        })))
+        assert report["proxiedMaterialAuthoring"]["ok"], report["proxiedMaterialAuthoring"]
+        yield
+        assert capture("proxied_material") == authored_preview
+        cmds.undo()
+        yield
+        assert capture("proxied_material_undo") == initial
+        cmds.redo()
+        yield
+        assert capture("proxied_material_redo") == authored_preview
+        cmds.undo()
         authored = {index: _collect_mmd_material_dict(shader) for index, shader in shaders.items()}
         cmds.setAttr(material_nodes[0] + ".weight", 1.0)
         report["materialValues"] = {shader: {"baseColor": cmds.getAttr(shader + ".baseColor"),

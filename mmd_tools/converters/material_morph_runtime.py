@@ -19,6 +19,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPECULAR_COLOR,
 )
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core import maya_proxy_attribute
 from mmd_tools.converters.morph_runtime_common import (
     connect_if_needed as _connect_if_needed,
     get_morph_order,
@@ -428,7 +429,12 @@ def bind_standard_material(shader: str, evaluator: Optional[str] = None) -> bool
             for route in hardware_morph_routes("dx11Shader"):
                 if route.evaluator_base:
                     touched.extend(_expanded_plugs(f"{evaluator}.{route.evaluator_base}", route.size))
+        for attribute in _AUTHORED_MATERIAL_ATTRIBUTES.values():
+            if cmds.attributeQuery(attribute, node=shader, exists=True):
+                touched.extend(_expanded_plugs(f"{shader}.{attribute}", 4))
         snapshots = {plug: _snapshot_plug(plug) for plug in dict.fromkeys(touched)}
+        if not evaluator:
+            _release_authored_proxies(shader)
         if evaluator:
             for route in hardware_morph_routes("dx11Shader"):
                 if route.evaluator_base:
@@ -610,17 +616,99 @@ def _owned_standard_preview_expression(texture: str) -> Optional[str]:
 
 
 def _bind_evaluator_bases(shader, uniform, bases, values):
-    """Let canonical edits and Undo reach an existing stock material evaluator."""
+    """Expose evaluator bases through the existing editable shader attributes.
+
+    A shader -> evaluator -> texture -> shader node cycle makes VP2 material
+    dirtiness expensive even though the individual plugs are acyclic. Maya
+    proxies keep the same editing/export plugs with one stored base value.
+    Existing non-proxy drivers retain their original route.
+    """
     attribute = _AUTHORED_MATERIAL_ATTRIBUTES.get(uniform)
     if attribute and cmds.nodeType(shader) == "standardSurface":
-        children = _scalar_leaf_attrs(shader, attribute, require_writable=False)
+        children = _scalar_leaf_attrs(shader, attribute, require_writable=False, include_locked=True)
         if len(children) != len(bases):
             raise RuntimeError(f"authored material arity mismatch: {shader}.{attribute}")
-        for child, base in zip(children, bases):
-            _connect_if_needed(f"{shader}.{child}", base, force=True)
+        authored = f"{shader}.{attribute}"
+        previous_base = _authored_proxy_source(authored)
+        plugs = _expanded_plugs(authored, len(children))
+        if not previous_base and (
+            any(cmds.connectionInfo(plug, getLockedAncestor=True) for plug in plugs)
+            or any(cmds.connectionInfo(plug, isDestination=True) for plug in plugs)
+            or not maya_proxy_attribute.supports_proxy(authored)
+        ):
+            # Keep authored animation/rig connections that predate migration.
+            for child, leaf in zip(children, bases):
+                _connect_if_needed(f"{shader}.{child}", leaf, force=True)
+            return
+        base = bases[0]
+        if len(children) > 1:
+            node, leaf = base.split(".", 1)
+            parents = cmds.attributeQuery(leaf, node=node, listParent=True) or []
+            if not parents or len(cmds.attributeQuery(parents[0], node=node, listChildren=True) or []) != len(children):
+                raise RuntimeError("Reload the MMD Tools plugin before rebuilding material proxies")
+            base = f"{node}.{parents[0]}"
+        if previous_base and _same_source(previous_base, base):
+            _connect_proxy_inputs(base, authored, len(children))
+            return
+        value = cmds.getAttr(authored)
+        for plug in _expanded_plugs(base, len(children)):
+            for source in _exact_incoming_sources(plug):
+                cmds.disconnectAttr(source, plug)
+        _set_plug_value(base, value, cmds.getAttr(base, type=True))
+        if previous_base:
+            _copy_input_drivers(previous_base, base, len(children))
+        for plug in plugs:
+            maya_proxy_attribute.set_proxy(plug, True, base)
+        _connect_proxy_inputs(base, authored, len(children))
     else:
         for base, value in zip(bases, values):
             cmds.setAttr(base, float(value))
+
+
+def _connect_proxy_inputs(base, authored, size):
+    """Maya proxies require explicit connections on both parent and children."""
+    for source, destination in zip(_expanded_plugs(base, size), _expanded_plugs(authored, size)):
+        if not any(_same_source(source, old) for old in _exact_incoming_sources(destination)):
+            cmds.connectAttr(source, destination, force=True)
+
+
+def _authored_proxy_source(plug):
+    """Recognize only the evaluator-base proxies owned by this binding."""
+    if not maya_proxy_attribute.is_proxy(plug):
+        return None
+    sources = _exact_incoming_sources(plug)
+    if len(sources) == 1:
+        node, attribute = sources[0].split(".", 1)
+        if cmds.nodeType(node) == EVAL_NODE_TYPE and attribute.startswith("base"):
+            return sources[0]
+    return None
+
+
+def _copy_input_drivers(source, destination, size):
+    """Preserve parent or component animation when a base changes owner."""
+    for old, new in zip(_expanded_plugs(source, size), _expanded_plugs(destination, size)):
+        for driver in _exact_incoming_sources(old):
+            _connect_if_needed(driver, new, force=True)
+
+
+def _release_authored_proxies(shader):
+    """Restore stored values/drivers before the last material evaluator retires."""
+    for attribute in _AUTHORED_MATERIAL_ATTRIBUTES.values():
+        if not cmds.attributeQuery(attribute, node=shader, exists=True):
+            continue
+        authored = f"{shader}.{attribute}"
+        base = _authored_proxy_source(authored)
+        if not base:
+            continue
+        value = cmds.getAttr(authored)
+        size = len(_scalar_leaf_attrs(shader, attribute, require_writable=False, include_locked=True))
+        for plug in _expanded_plugs(authored, size):
+            for source in _exact_incoming_sources(plug):
+                cmds.disconnectAttr(source, plug)
+        for plug in _expanded_plugs(authored, size):
+            maya_proxy_attribute.set_proxy(plug, False)
+        _set_plug_value(authored, value, cmds.getAttr(authored, type=True))
+        _copy_input_drivers(base, authored, size)
 
 
 def bind_native_material_alpha(
@@ -960,6 +1048,8 @@ def _native_evaluator_plugs(
     edge_alpha: bool = False,
 ) -> List[str]:
     leaves = _scalar_leaf_attrs(evaluator, attr_name, require_writable=False)
+    if size == 4 and len(leaves) == 3 and attr_name in {"baseDiffuse", "baseEdgeColor"}:
+        leaves.append(attr_name + "A")
     if edge_alpha and len(leaves) != 1:
         leaves = _scalar_leaf_attrs(evaluator, "outputEdgeColor" if attr_name.startswith("output") else "baseEdgeColor", require_writable=False)
         if len(leaves) >= 4:
@@ -1411,6 +1501,7 @@ def _scalar_leaf_attrs(
     *,
     max_depth: int = 4,
     require_writable: bool = True,
+    include_locked: bool = False,
 ) -> List[str]:
     """Flatten nested Maya compounds to writable scalar leaves in declared order."""
     result: List[str] = []
@@ -1437,7 +1528,7 @@ def _scalar_leaf_attrs(
             locked = cmds.getAttr(plug, lock=True)
         except Exception:
             return
-        if (writable or not require_writable) and not locked and attr_type in {
+        if (writable or not require_writable) and (include_locked or not locked) and attr_type in {
             "double", "float", "long", "short"
         }:
             result.append(current)
@@ -1460,6 +1551,8 @@ def _expand_route_bindings(
         shader_leaves = _scalar_leaf_attrs(shader, shader_name)
         output_leaves = _scalar_leaf_attrs(node, output_name, require_writable=False)
         base_leaves = _scalar_leaf_attrs(node, base_name) if base_name else []
+        if size == 4 and len(base_leaves) == 3 and base_name in {"baseDiffuse", "baseEdgeColor"}:
+            base_leaves.append(base_name + "A")
         if len(shader_leaves) != size or len(output_leaves) != size or (
             base_name and len(base_leaves) < size
         ):
@@ -1597,6 +1690,7 @@ def _snapshot_plug(plug: str) -> Dict[str, Any]:
     """Capture value/type and incoming connections for transaction rollback."""
     snapshot: Dict[str, Any] = {"sources": _exact_incoming_sources(plug)}
     try:
+        snapshot["proxy"] = maya_proxy_attribute.is_proxy(plug)
         snapshot["type"] = cmds.getAttr(plug, type=True)
         snapshot["value"] = cmds.getAttr(plug)
         node, attr = plug.split(".", 1)
@@ -1622,6 +1716,10 @@ def _restore_plug_snapshots(snapshots: Dict[str, Dict[str, Any]]) -> None:
     # exact child snapshots and intentionally skipped.
     for plug in reversed(list(snapshots)):
         original = snapshots[plug]
+        if "proxy" in original:
+            maya_proxy_attribute.set_proxy(
+                plug, original["proxy"], original["sources"][0] if original["sources"] else None,
+            )
         value = original.get("value")
         if value is not None and not original["sources"] and not original.get("has_children"):
             try:
@@ -1825,7 +1923,7 @@ def _reroute_shader_color(shader: str, node: str, route: Optional[ShaderColorRou
     if _is_connected(output_attr, shader_attr):
         return True
 
-    # Copy current colour and alpha to the RGBA baseDiffuse compound.  Maya does
+    # Copy current colour and alpha to the RGB base and separate alpha. Maya does
     # not guarantee that setAttr(type="double3") is accepted by a four-child
     # compound, so write every child explicitly.
     try:

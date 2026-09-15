@@ -396,6 +396,111 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
 
         return root, mesh, shader, material_nodes, graph
 
+    def test_standard_proxy_migration_undo_redo_and_component_edit(self):
+        from maya.api import OpenMaya as om
+        from mmd_tools.core import maya_proxy_attribute
+
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.diffuse = (1.0, 1.0, 1.0, 1.0)
+        converter = MeshConverter("")
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        root, _, shader, morphs, _ = self._create_scene_with_shader(
+            shader=shader, build_graph=False,
+        )
+        consumer = cmds.createNode("multiplyDivide")
+        cmds.connectAttr(shader + ".specular_color", consumer + ".input1")
+        cmds.undoInfo(openChunk=True)
+        try:
+            self.assertTrue(build_material_morph_graph(root)["success"])
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        authored = shader + ".diffuse_color"
+        self.assertTrue(maya_proxy_attribute.is_proxy(authored))
+        self.assertTrue(cmds.isConnected(shader + ".specular_color", consumer + ".input1"))
+        cmds.undo()
+        self.assertFalse(maya_proxy_attribute.is_proxy(authored))
+        cmds.redo()
+        self.assertTrue(maya_proxy_attribute.is_proxy(authored))
+        cmds.setAttr(authored, 0.2, 0.3, 0.4, type="double3")
+        selection = om.MSelectionList()
+        selection.add(authored)
+        selection.getPlug(0).child(1).setDouble(0.6)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorG"), 0.6)
+        cmds.setAttr(morphs[0] + ".weight", 0.5)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
+        self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.2)
+
+    def test_standard_proxy_animation_survives_rebuild_and_last_morph_removal(self):
+        from mmd_tools.core import maya_proxy_attribute
+
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.diffuse = (1.0, 1.0, 1.0, 1.0)
+        converter = MeshConverter("")
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"])
+        authored = shader + ".diffuse_color"
+        child = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
+        base = cmds.connectionInfo(shader + "." + child, sourceFromDestination=True)
+        driver = cmds.createNode("animCurveTU")
+        cmds.setKeyframe(driver, time=1, value=0.25)
+        cmds.connectAttr(driver + ".output", base)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.25)
+        cmds.delete(morphs)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        self.assertFalse(maya_proxy_attribute.is_proxy(authored))
+        self.assertTrue(cmds.isConnected(driver + ".output", shader + "." + child))
+        self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.25)
+
+    def test_standard_custom_rgb_definition_keeps_legacy_binding(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+        from mmd_tools.core import maya_proxy_attribute
+
+        converter = MeshConverter("")
+        material = PmxMaterial()
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        child = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
+        cmds.addAttr(shader + "." + child, edit=True, defaultValue=0.25, minValue=0.0)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        self.assertFalse(maya_proxy_attribute.is_proxy(shader + ".diffuse_color"))
+        self.assertEqual(cmds.attributeQuery(child, node=shader, listDefault=True), [0.25])
+        cmds.setAttr(shader + ".diffuse_color", 0.2, 0.3, 0.4, type="double3")
+        cmds.setAttr(morphs[0] + ".weight", 0.5)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+
+    def test_standard_locked_rgb_child_keeps_legacy_binding(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+        from mmd_tools.core import maya_proxy_attribute
+
+        converter = MeshConverter("")
+        material = PmxMaterial()
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        child = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
+        cmds.setAttr(shader + "." + child, 0.2)
+        cmds.setAttr(shader + "." + child, lock=True)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        self.assertFalse(maya_proxy_attribute.is_proxy(shader + ".diffuse_color"))
+        self.assertTrue(cmds.getAttr(shader + "." + child, lock=True))
+        cmds.setAttr(morphs[0] + ".weight", 0.5)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+
     def test_standard_preview_rebuild_and_reload_preserve_authored_material(self):
         """Evaluated RGB/alpha must never become the persisted PMX base."""
         import tempfile
