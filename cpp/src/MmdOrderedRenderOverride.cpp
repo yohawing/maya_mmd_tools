@@ -285,6 +285,17 @@ public:
         return hasSelection_ ? &selection_ : nullptr;
     }
 
+    MUint64 getObjectTypeExclusions() override
+    {
+        MUint64 excluded = MSceneRender::getObjectTypeExclusions();
+        // An explicit object set can draw curves even in a shaded-only pass.
+        // Leave them to the post-scene UI pass to avoid duplicate line/depth writes.
+        if ((filter_ & MHWRender::MSceneRender::kRenderShadedItems) != 0) {
+            excluded |= MHWRender::MFrameContext::kExcludeNurbsCurves;
+        }
+        return excluded;
+    }
+
 private:
     MHWRender::MSceneRender::MSceneFilterOption filter_;
     MSelectionList selection_;
