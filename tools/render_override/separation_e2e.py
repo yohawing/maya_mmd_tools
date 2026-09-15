@@ -21,14 +21,14 @@ from tools.render_override.render_override_visual_gate import read_png_rgb, writ
 MARKER = "MMD RENDER SEPARATION FINISHED"
 
 
-def run_probe(output, plugin, split=False, migrate_legacy=False, textured=False):
+def run_probe(output, plugin, split=False, textured=False):
     # Each user operation returns to Maya's event loop before the next capture.
     # A monolithic commandPort call suppresses deferred DG/VP2 notifications.
     try:
         from PySide6.QtCore import QTimer
     except ImportError:
         from PySide2.QtCore import QTimer
-    steps = _probe_steps(output, plugin, split, migrate_legacy, textured)
+    steps = _probe_steps(output, plugin, split, textured)
     initializing = True
 
     def advance():
@@ -51,7 +51,7 @@ def run_probe(output, plugin, split=False, migrate_legacy=False, textured=False)
     cmds.evalDeferred(advance, lowestPriority=True)
 
 
-def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=False):
+def _probe_steps(output, plugin, split=False, textured=False):
     from maya import cmds
     from mmd_tools.converters import MorphConverter
     from mmd_tools.converters.export_scene_collector import _collect_mmd_material_dict
@@ -293,12 +293,6 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=Fal
         yield
         material_changed = capture("material_morph")
         report["materialMorphPixels"] = changed(initial, material_changed)
-        if migrate_legacy:
-            from tools.render_override.migration_checks import check_legacy_migration
-
-            report["migration"] = check_legacy_migration(cmds, root, proxies, sources, shaders, out)
-            yield
-            assert capture("migrated") == material_changed, "migration changed either preview"
         assert build_material_morph_graph(root)["success"]
         yield
         assert capture("material_rebuild") == material_changed
@@ -383,7 +377,6 @@ def main():
     parser.add_argument("--port", type=int, default=7741)
     parser.add_argument("--evaluation", choices=("off", "serial", "parallel"))
     parser.add_argument("--split-materials", action="store_true")
-    parser.add_argument("--migrate-legacy", action="store_true")
     parser.add_argument("--textured", action="store_true")
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -396,7 +389,7 @@ def main():
                   if args.evaluation else "") +
                  "from tools.render_override.separation_e2e import run_probe\n"
                  f"run_probe({str(out)!r}, {str(plugin)!r}, {args.split_materials!r}, "
-                 f"{args.migrate_legacy!r}, {args.textured!r})"),
+                 f"{args.textured!r})"),
         marker=MARKER, send_label="mmd-render-separation",
         stale_paths=(out / "probe.log", out / "report.json"),
         env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11", "MMD_TOOLS_CPP_PLUGIN": str(plugin),

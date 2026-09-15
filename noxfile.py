@@ -1888,7 +1888,7 @@ def render_override_authoring(session: nox.Session) -> None:
     session.run(
         sys.executable,
         "tools/render_override/separation_e2e.py",
-        "--textured", "--migrate-legacy",
+        "--textured",
         *session.posargs,
         external=True,
     )
