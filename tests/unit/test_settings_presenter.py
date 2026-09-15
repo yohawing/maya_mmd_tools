@@ -439,6 +439,7 @@ class TestLanguageChange(unittest.TestCase):
         ):
             self.presenter.on_language_changed()
 
+        self.assertEqual(self.presenter.settings_service.get("ui.general.language"), "en")
         self.view.retranslate_all_tabs.assert_called_once_with()
         other_window.retranslateUi.assert_called_once_with()
         other_window.refresh_for_language_change.assert_called_once_with()
