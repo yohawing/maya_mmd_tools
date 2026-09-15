@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -182,6 +183,98 @@ class TestBoneMorphRuntime(MayaTestBase):
                 "outputWeight[7]",
             },
         )
+
+    @staticmethod
+    def _morph_controller_dag_sinks():
+        """Connect sparse outputs to DAG consumers evaluated by Maya's graph."""
+        controller = cmds.createNode("mmdMorphController")
+        cmds.setAttr(controller + ".groupTopology", '{"2":[[4,0.5]],"7":[[2,0.25],[4,0.125]]}', type="string")
+        cmds.setAttr(controller + ".inputWeight[9]", 0.3)
+        sinks = {}
+        for index in (2, 4, 7, 9):
+            sink = cmds.createNode("transform", name="morphSink%d" % index)
+            cmds.connectAttr("%s.outputWeight[%d]" % (controller, index), sink + ".tx")
+            sinks[index] = sink
+        return controller, sinks
+
+    def test_morph_controller_real_dirty_keeps_unrelated_sinks_clean(self):
+        """Exercise Maya propagation, including static attributeAffects edges."""
+        previous = cmds.evaluationManager(query=True, mode=True)[0]
+        try:
+            for mode in ("off", "serial", "parallel"):
+                with self.subTest(mode=mode):
+                    cmds.file(new=True, force=True)
+                    cmds.evaluationManager(mode=mode)
+                    controller, sinks = self._morph_controller_dag_sinks()
+                    for sink in sinks.values():
+                        cmds.getAttr(sink + ".worldMatrix[0]")
+                    dirty = set()
+                    callbacks = []
+                    try:
+                        for index, sink in sinks.items():
+                            selection = om.MSelectionList()
+                            selection.add(sink)
+                            callbacks.append(
+                                om.MNodeMessage.addNodeDirtyPlugCallback(
+                                    selection.getDependNode(0),
+                                    lambda node, plug, data, i=index: dirty.add(i),
+                                )
+                            )
+                        cmds.setAttr(controller + ".inputWeight[4]", 0.8)
+                        # Observe before any read can clean or recompute a sink.
+                        self.assertEqual(dirty, {2, 4, 7})
+                        expected = {2: 0.4, 4: 0.8, 7: 0.1, 9: 0.3}
+                        for index, value in expected.items():
+                            self.assertAlmostEqual(cmds.getAttr(sinks[index] + ".tx"), value)
+                    finally:
+                        for callback in callbacks:
+                            om.MMessage.removeCallback(callback)
+        finally:
+            cmds.evaluationManager(mode=previous)
+
+    def test_morph_controller_animation_topology_and_reload(self):
+        """Check cold/warm evaluation, frame jumps, and edited Group dependencies."""
+        previous = cmds.evaluationManager(query=True, mode=True)[0]
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                for mode in ("off", "serial", "parallel"):
+                    with self.subTest(mode=mode):
+                        cmds.file(new=True, force=True)
+                        cmds.evaluationManager(mode=mode)
+                        controller, sinks = self._morph_controller_dag_sinks()
+                        for index, first, last in ((4, 0.0, 0.8), (2, 0.2, 0.4)):
+                            plug = "%s.inputWeight[%d]" % (controller, index)
+                            cmds.setKeyframe(plug, time=1, value=first)
+                            cmds.setKeyframe(plug, time=10, value=last)
+                            cmds.keyTangent(plug, inTangentType="linear", outTangentType="linear")
+                        for reloaded in (False, True):
+                            for edited in (False, True):
+                                topology = '{"9":[[4,0.25]]}' if edited else '{"2":[[4,0.5]],"7":[[2,0.25],[4,0.125]]}'
+                                cmds.setAttr(controller + ".groupTopology", topology, type="string")
+                                for frame in (1, 10, 5, 10, 1):
+                                    cmds.currentTime(frame)
+                                    a = 0.8 * (frame - 1) / 9
+                                    b = 0.2 + 0.2 * (frame - 1) / 9
+                                    expected = (
+                                        {2: b, 4: a, 7: 0.0, 9: 0.3 + 0.25 * a}
+                                        if edited
+                                        else {2: b + 0.5 * a, 4: a, 7: 0.25 * b + 0.125 * a, 9: 0.3}
+                                    )
+                                    for index, value in expected.items():
+                                        self.assertAlmostEqual(
+                                            cmds.getAttr(sinks[index] + ".tx"),
+                                            value,
+                                            places=6,
+                                            msg=str((mode, reloaded, edited, frame, index)),
+                                        )
+                            if not reloaded:
+                                path = os.path.join(directory, "morph.ma")
+                                cmds.file(rename=path)
+                                cmds.file(save=True, type="mayaAscii")
+                                cmds.file(new=True, force=True)
+                                cmds.file(path, open=True, force=True)
+        finally:
+            cmds.evaluationManager(mode=previous)
 
     def test_morph_controller_local_dirty_does_not_create_unconnected_outputs(self):
         """Cached direct and Group targets are limited to existing output elements."""

@@ -154,7 +154,8 @@ def initialize():
     numeric.storable = False
     N.addAttribute(N.aOutputWeight)
 
-    N.attributeAffects(N.aInputWeight, N.aOutputWeight)
+    # Weight dependencies are element-specific in setDependentsDirty. A static
+    # array-to-array edge also dirties every unrelated morph and its consumers.
     N.attributeAffects(N.aTopologyVersion, N.aOutputWeight)
     N.attributeAffects(N.aGroupTopology, N.aOutputWeight)
 
