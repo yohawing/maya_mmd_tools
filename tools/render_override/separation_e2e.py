@@ -192,6 +192,35 @@ def _probe_steps(output, plugin, split=False, migrate_legacy=False, textured=Fal
         assert capture("source_shape_hide_undo") == initial
         shader = shaders[0]
         authored_before = _collect_mmd_material_dict(shader)
+        # Legacy stage materials may omit the optional edge_flag mirror.
+        from dataclasses import replace
+        from mmd_tools.adapters.maya_material_authoring import MayaMaterialAuthoring
+        from mmd_tools.core.model_authoring_spec import MmdMaterialSpec
+
+        had_edge_flag = cmds.attributeQuery("edge_flag", node=shader, exists=True)
+        if had_edge_flag:
+            cmds.deleteAttr(shader + ".edge_flag")
+        flags = cmds.getAttr(shader + ".mmd_draw_flags")
+        old_material = MmdMaterialSpec("shadow_flag_probe", draw_flags=flags)
+        new_material = replace(old_material, draw_flags=flags ^ 0x04)
+        updates = MayaMaterialAuthoring._material_value_updates(
+            None, shader, old_material, new_material,
+        )
+        report["shadowFlagWithoutEdge"] = json.loads(cmds.mmdAuthoringSetMaterialValues(payload=json.dumps({
+            "version": 1, "root": cmds.ls(root, long=True)[0], "shader": shader,
+            "material_index": 0, "updates": updates,
+        })))
+        assert report["shadowFlagWithoutEdge"]["ok"], report["shadowFlagWithoutEdge"]
+        assert cmds.getAttr(shader + ".mmd_draw_flags") == flags ^ 0x04
+        assert not cmds.attributeQuery("edge_flag", node=shader, exists=True)
+        cmds.undo()
+        assert cmds.getAttr(shader + ".mmd_draw_flags") == flags
+        cmds.redo()
+        assert cmds.getAttr(shader + ".mmd_draw_flags") == flags ^ 0x04
+        cmds.undo()
+        if had_edge_flag:
+            cmds.undo()  # Restore only the test's attribute deletion.
+        assert _collect_mmd_material_dict(shader) == authored_before
         report["materialAuthoring"] = json.loads(cmds.mmdAuthoringSetMaterialValues(payload=json.dumps({
             "version": 1, "root": cmds.ls(root, long=True)[0], "shader": shader,
             "material_index": 0, "updates": [

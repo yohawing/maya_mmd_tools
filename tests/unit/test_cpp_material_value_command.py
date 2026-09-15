@@ -92,6 +92,19 @@ def test_python_expands_n1_n4_n8_to_only_intended_write_fields():
     }
 
 
+@pytest.mark.parametrize("bit", [0x01, 0x02, 0x04, 0x08])
+@pytest.mark.parametrize("flags", [0, 0x1F])
+def test_shadow_and_culling_flags_do_not_write_unchanged_edge_flag(bit, flags):
+    old = replace(_material(), draw_flags=flags)
+    new = replace(old, draw_flags=flags ^ bit)
+    assert _updates(old, new) == [{"field": "draw_flags", "value": new.draw_flags}]
+    authoring = object.__new__(MayaMaterialAuthoring)
+    writes = []
+    authoring._set_attr = lambda *args: writes.append(args)
+    authoring._write_material_value_attrs("shader", old, new)
+    assert writes == [("shader", "mmd_draw_flags", new.draw_flags, "long")]
+
+
 def test_textured_standard_surface_keeps_viewport_route_out_of_write_set():
     authoring = object.__new__(MayaMaterialAuthoring)
     authoring._cmds = _NodeType("standardSurface")

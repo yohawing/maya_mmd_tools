@@ -576,7 +576,8 @@ class MayaMaterialAuthoring:
             add("ambient", list(new.ambient))
         if "draw_flags" in changed:
             add("draw_flags", new.draw_flags)
-            add("edge_flag", bool(new.draw_flags & 0x10))
+            if (old.draw_flags ^ new.draw_flags) & 0x10:
+                add("edge_flag", bool(new.draw_flags & 0x10))
         if "edge_color" in changed:
             add("edge_color", list(new.edge_color[:3]))
             add("edge_alpha", new.edge_color[3])
@@ -715,7 +716,8 @@ class MayaMaterialAuthoring:
             self._set_attr(shader, ATTR_MMD_AMBIENT_COLOR, new.ambient, "double3")
         if "draw_flags" in changed:
             self._set_attr(shader, ATTR_MMD_DRAW_FLAGS, new.draw_flags, "long")
-            self._set_attr(shader, ATTR_MMD_EDGE_FLAG, bool(new.draw_flags & 0x10), "bool")
+            if (old.draw_flags ^ new.draw_flags) & 0x10:
+                self._set_attr(shader, ATTR_MMD_EDGE_FLAG, bool(new.draw_flags & 0x10), "bool")
         if "edge_color" in changed:
             self._set_attr(shader, ATTR_MMD_EDGE_COLOR, new.edge_color[:3], "double3")
             self._set_attr(shader, ATTR_MMD_EDGE_ALPHA, new.edge_color[3], "double")
