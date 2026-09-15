@@ -181,7 +181,6 @@
     "authoring_selection_required": "请先选择项目",
     "vpd_not_implemented": "VPD 姿势导入尚未实现",
     "use_namespace": "为每个模型创建Maya命名空间，避免名称冲突",
-    "create_mmd_shaders": "使用dx11Shader/glslShader重现MMD材质。禁用时回退到standardSurface",
     "auto_resolve_textures": "自动修复含非ASCII字符的贴图路径，创建ASCII缓存副本",
     "bake_mode": "将所有帧烘焙为关键帧。不创建IK/附加绑定",
     "native_physics_bake": "使用原生运行时烘焙 PMX 物理。需要烘焙动作",
@@ -193,9 +192,7 @@
     "vmd_fps": "VMD文件的帧率。MMD标准为30fps",
     "separate_meshes": "按材质分割网格",
     "import_physics": "从 PMX 物理数据创建刚体和关节",
-    "disable_backface_culling": "禁用背面剔除以实现双面渲染",
-    "use_cpp_fast_load": "使用编译后的 C++ PMX 导入器代替 Python 导入器",
-    "use_cpp_vp2_ownership": "使用 MMD Render 绘制。需要 C++ Fast Load 和 DirectX 11。"
+    "disable_backface_culling": "禁用背面剔除以实现双面渲染"
   },
   "messages": {
     "ready": "准备就绪",
@@ -371,7 +368,6 @@
     "vmd_export_light": "灯光",
     "use_namespace": "使用命名空间",
     "import_models": "导入模型",
-    "create_mmd_shaders": "创建MMD着色器",
     "separate_meshes": "按材质分离网格",
     "joint_name_conversion": "将关节名称转换为英文",
     "disable_backface_culling": "禁用背面剔除",
@@ -382,8 +378,6 @@
     "reduce_bake_keys": "减少烘焙关键帧",
     "create_mmd_control_rig": "创建 MMD Control Rig",
     "vmd_rotation_time_curve": "保留VMD旋转时间曲线（实验性）",
-    "use_cpp_fast_load": "使用 C++ Fast Load",
-    "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride",
     "new_file": "新建文件",
     "enable_ik": "启用IK",
     "invert_value": "反转值",

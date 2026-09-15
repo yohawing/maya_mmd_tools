@@ -15,7 +15,6 @@ from tests.common.maya_stub import install_headless_ui_stubs
 install_headless_ui_stubs()
 
 from mmd_tools.core.settings import Settings  # noqa: E402
-from mmd_tools.core import settings_keys  # noqa: E402
 from mmd_tools.ui.presenters.settings_presenter import SettingsPresenter  # noqa: E402
 
 
@@ -185,10 +184,6 @@ class _FakeView:
         self.command_port_spin = _FakeSpinBox()
         self.file_history_limit_spin = _FakeSpinBox(20)
         self.dev_tools_group = _FakeGroup()
-        self.advanced_native_group = _FakeGroup()
-        self.use_cpp_fast_load_check = _FakeCheckBox(False)
-        self.use_cpp_vp2_ownership_check = _FakeCheckBox(False)
-        self.use_cpp_rig_nodes_check = _FakeCheckBox(False)
         self.save_settings_btn = _FakeButton()
         self.reset_settings_btn = _FakeButton()
         self.export_settings_btn = _FakeButton()
@@ -410,45 +405,10 @@ class TestLoadSettings(unittest.TestCase):
         settings.set("ui.general.development_mode", False)
         self.presenter.load_settings()
         self.assertFalse(self.view.dev_tools_group.visible)
-        self.assertTrue(self.view.advanced_native_group.visible)
-        self.assertFalse(self.view.use_cpp_rig_nodes_check.visible)
 
         settings.set("ui.general.development_mode", True)
         self.presenter.load_settings()
         self.assertTrue(self.view.dev_tools_group.visible)
-        self.assertTrue(self.view.advanced_native_group.visible)
-
-    def test_advanced_native_settings_load_and_persist_from_settings_view(self):
-        """Advanced の3つの native 設定は Settings view にロード・保存される。"""
-        from mmd_tools.core.settings import settings
-
-        settings.set(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, True)
-        settings.set(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
-        settings.set(settings_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, True)
-        settings.set(settings_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, True)
-
-        self.presenter.load_settings()
-
-        self.assertTrue(self.view.use_cpp_fast_load_check.isChecked())
-        self.assertTrue(self.view.use_cpp_vp2_ownership_check.isChecked())
-        self.assertTrue(self.view.use_cpp_rig_nodes_check.isChecked())
-        self.assertTrue(self.view.use_cpp_vp2_ownership_check.isEnabled())
-
-        self.view.use_cpp_rig_nodes_check.setChecked(False)
-        self.assertFalse(settings.get(settings_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES))
-
-    def test_vp2_ownership_is_disabled_and_cleared_without_fast_load(self):
-        """Fast Load OFF では VP2 ownership を無効化し、保存値も false にする。"""
-        from mmd_tools.core.settings import settings
-
-        settings.set(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
-        settings.set(settings_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, True)
-
-        self.presenter.load_settings()
-
-        self.assertFalse(self.view.use_cpp_vp2_ownership_check.isChecked())
-        self.assertFalse(self.view.use_cpp_vp2_ownership_check.isEnabled())
-        self.assertFalse(settings.get(settings_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP))
 
 
 class TestLanguageChange(unittest.TestCase):

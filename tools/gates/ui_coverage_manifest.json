@@ -230,15 +230,6 @@
       "reason": "Import models is always enabled; the legacy checkbox is intentionally hidden."
     },
     {
-      "id": "import_export.create_mmd_shaders",
-      "tab": "import_export",
-      "kind": "check",
-      "attribute": "create_mmd_shaders_check",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
-    },
-    {
       "id": "import_export.create_mmd_control_rig",
       "tab": "import_export",
       "kind": "check",
@@ -291,33 +282,6 @@
       "disposition": "qt_case",
       "case_id": "headless.authoring_ui_surface_matrix",
       "expected_handler": "mmd_tools.ui.presenters.import_export_presenter.ImportExportPresenter.import_file"
-    },
-    {
-      "id": "settings.cpp_fast_load",
-      "tab": "settings",
-      "kind": "check",
-      "attribute": "use_cpp_fast_load_check",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.settings_presenter.SettingsPresenter._on_native_setting_changed"
-    },
-    {
-      "id": "settings.cpp_vp2_ownership",
-      "tab": "settings",
-      "kind": "check",
-      "attribute": "use_cpp_vp2_ownership_check",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.settings_presenter.SettingsPresenter._on_native_setting_changed"
-    },
-    {
-      "id": "settings.cpp_rig_nodes",
-      "tab": "settings",
-      "kind": "check",
-      "attribute": "use_cpp_rig_nodes_check",
-      "disposition": "qt_case",
-      "case_id": "headless.authoring_ui_surface_matrix",
-      "expected_handler": "mmd_tools.ui.presenters.settings_presenter.SettingsPresenter._on_native_setting_changed"
     },
     {
       "id": "import_export.vmd_fps",

@@ -214,7 +214,6 @@ def _configure_route_settings(route, config):
 def _configure_import_controls(view, config):
     """Set the ordinary Import tab controls through their production widgets."""
     view.scale_spin.setValue(float(config.get("scale", 1.0)))
-    view.create_mmd_shaders_check.setChecked(True)
     view.create_mmd_control_rig_check.setChecked(False)
     view.separate_meshes_check.setChecked(bool(config.get("split", False)))
     view.import_physics_check.setChecked(bool(config.get("physics", False)))
@@ -254,10 +253,7 @@ def _ui_witness(window, route, out):
             "vmdPath": view.vmd_path_edit.objectName() or type(view.vmd_path_edit).__name__,
             "vmdButton": view.import_vmd_button.objectName() or type(view.import_vmd_button).__name__,
             "settingsDevelopmentMode": bool(window.settings_presenter.view.development_mode_check.isChecked()),
-            "settingsCppFastLoad": bool(window.settings_presenter.view.use_cpp_fast_load_check.isChecked()),
-            "settingsCppVp2Ownership": bool(window.settings_presenter.view.use_cpp_vp2_ownership_check.isChecked()),
             "scale": float(view.scale_spin.value()),
-            "createMmdShaders": bool(view.create_mmd_shaders_check.isChecked()),
             "separateMeshes": bool(view.separate_meshes_check.isChecked()),
             "importPhysics": bool(view.import_physics_check.isChecked()),
             "importMorphs": bool(view.import_morphs_check.isChecked()),
@@ -302,7 +298,6 @@ def _validate_ui_import_options(window, route, config, options):
     view = window.import_export_tab
     expected = {
         "scale": float(view.scale_spin.value()),
-        "create_mmd_shaders": bool(view.create_mmd_shaders_check.isChecked()),
         "create_mmd_control_rig": bool(view.create_mmd_control_rig_check.isChecked()),
         "separate_meshes_by_material": bool(view.separate_meshes_check.isChecked()),
         "import_physics": bool(view.import_physics_check.isChecked()),

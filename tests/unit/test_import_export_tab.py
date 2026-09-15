@@ -306,11 +306,12 @@ class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
 
 
 class TestImportExportTabCppFastLoadVisibility(unittest.TestCase):
-    def test_native_controls_are_owned_by_settings_advanced(self):
+    def test_obsolete_import_controls_are_absent(self):
         source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
         self.assertNotIn("self.use_cpp_fast_load_check =", source)
         self.assertNotIn("self.use_cpp_vp2_ownership_check =", source)
         self.assertNotIn("self.use_cpp_rig_nodes_check =", source)
+        self.assertNotIn("self.create_mmd_shaders_check =", source)
 
 
 class TestImportExportTabReducedBakeVisibility(unittest.TestCase):
