@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-17
+
 ### Added
 - Added panel-local MMD Render for DirectX 11, including PMX material ordering, outlines, material morphs, and self-shadow modes and material flags. Standard VP2 editing panels can remain open alongside the MMD preview.
 - Added compact MMD Render settings backed by the scene MMD light, and imported VMD self-shadow mode and distance tracks.
