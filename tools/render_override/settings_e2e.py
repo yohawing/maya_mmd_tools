@@ -57,7 +57,16 @@ def _probe_steps(output, plugin):
                       pluginSha256=hashlib.sha256(loaded.read_bytes()).hexdigest())
         panels = {p: cmds.modelEditor(p, q=True, rendererOverrideName=True)
                   for p in cmds.getPanel(type="modelPanel")}
+        # Reproduce an already-open window built by the old unnamed layout.
+        cmds.window(render_settings.WINDOW, title="MMD Render", widthHeight=(300, 116))
+        legacy_layout = cmds.columnLayout(parent=render_settings.WINDOW)
+        legacy_button = cmds.button(label="MMDライトを作成")
+        cmds.showWindow(render_settings.WINDOW)
+        legacy_window = int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW))
         render_settings.show()
+        assert not cmds.layout(legacy_layout, exists=True)
+        assert not cmds.control(legacy_button, exists=True)
+        assert int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW)) == legacy_window
         original_window = int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW))
         yield
         cmds.undoInfo(openChunk=True)
@@ -137,6 +146,20 @@ def _probe_steps(output, plugin):
         cmds.file(str(out / "settings.ma"), open=True, force=True)
         mel.eval("mmdOrderedOptionBox()")
         assert cmds.getAttr(light + ".mmd_self_shadow_mode") == 2
+        cmds.delete(light)
+        yield
+        pointer = OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW)
+        window = wrapInstance(int(pointer), QtWidgets.QWidget)
+        create_button = next(button for button in window.findChildren(QtWidgets.QPushButton)
+                             if button.text() == "MMDライトを作成" and button.isVisible())
+        create_button.click()
+        yield
+        assert int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW)) == int(pointer)
+        assert cmds.control("mmdRenderShadowMode", exists=True)
+        assert not any(button.text() == "MMDライトを作成" and button.isVisible()
+                       for button in window.findChildren(QtWidgets.QPushButton))
+        window.grab().save(str(out / "created-from-button.png"))
+        report["createButtonRefresh"] = True
         cmds.createNode("transform", name="queuedRenderSettingsRefresh")
         cmds.deleteUI(render_settings.WINDOW)
         yield

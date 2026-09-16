@@ -63,8 +63,11 @@ def show():
     """Open scene-wide render settings without changing viewport preferences."""
     if cmds.window(WINDOW, exists=True):
         window = WINDOW
-        if cmds.formLayout(CONTENT, exists=True):
-            cmds.deleteUI(CONTENT)
+        # Older versions used unnamed layouts. Clear every direct child of
+        # this window, including those left by an in-session module reload.
+        for layout in cmds.lsUI(controlLayouts=True, long=True) or []:
+            if layout.rpartition("|")[0] == window:
+                cmds.deleteUI(layout, layout=True)
     else:
         window = cmds.window(WINDOW, title="MMD Render", widthHeight=(300, 116),
                              sizeable=False, retain=False)
