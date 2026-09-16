@@ -19,6 +19,25 @@ MARKER = "MMD RENDER SETTINGS FINISHED"
 
 
 def run_probe(output, plugin):
+    """Return to Maya's event loop between edits so scriptJobs can run."""
+    from maya import cmds
+    try:
+        from PySide6.QtCore import QTimer
+    except ImportError:
+        from PySide2.QtCore import QTimer
+    steps = _probe_steps(output, plugin)
+
+    def advance():
+        try:
+            next(steps)
+        except StopIteration:
+            return
+        cmds.evalDeferred(lambda: QTimer.singleShot(100, advance), lowestPriority=True)
+
+    cmds.evalDeferred(advance, lowestPriority=True)
+
+
+def _probe_steps(output, plugin):
     from maya import cmds, mel, OpenMayaUI
     from mmd_tools.converters.light_converter import create_mmd_light_controller
     from mmd_tools.ui import render_settings
@@ -38,7 +57,29 @@ def run_probe(output, plugin):
                       pluginSha256=hashlib.sha256(loaded.read_bytes()).hexdigest())
         panels = {p: cmds.modelEditor(p, q=True, rendererOverrideName=True)
                   for p in cmds.getPanel(type="modelPanel")}
-        light = create_mmd_light_controller()
+        render_settings.show()
+        original_window = int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW))
+        yield
+        cmds.undoInfo(openChunk=True)
+        try:
+            light = create_mmd_light_controller()
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        yield
+        assert cmds.control("mmdRenderShadowMode", exists=True), "light creation did not refresh UI"
+        assert int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW)) == original_window
+        render_settings.show()
+        assert int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW)) == original_window
+        cmds.undo()
+        yield
+        assert not cmds.control("mmdRenderShadowMode", exists=True)
+        cmds.redo()
+        yield
+        assert cmds.control("mmdRenderShadowMode", exists=True)
+        assert int(OpenMayaUI.MQtUtil.findWindow(render_settings.WINDOW)) == original_window
+        report["automaticRefresh"] = {"create": True, "undo": True, "redo": True,
+                                      "sameWindow": True}
+
         assert mel.eval('exists "mmdOrderedOptionBox"')
         panel = next(iter(panels))
         names = cmds.modelEditor(panel, q=True, rendererOverrideList=True)
@@ -96,6 +137,10 @@ def run_probe(output, plugin):
         cmds.file(str(out / "settings.ma"), open=True, force=True)
         mel.eval("mmdOrderedOptionBox()")
         assert cmds.getAttr(light + ".mmd_self_shadow_mode") == 2
+        cmds.createNode("transform", name="queuedRenderSettingsRefresh")
+        cmds.deleteUI(render_settings.WINDOW)
+        yield
+        assert not cmds.window(render_settings.WINDOW, exists=True), "closed window reopened"
         report["status"] = "pass"
     except Exception:
         report["error"] = traceback.format_exc()

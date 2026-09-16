@@ -10,6 +10,7 @@ from mmd_tools.converters.light_converter import (
 )
 
 WINDOW = "mmdRenderSettingsWindow"
+CONTENT = "mmdRenderSettingsContent"
 
 
 def install():
@@ -24,20 +25,57 @@ def _prepare_light(light=None):
     show()
 
 
+def _light_state():
+    """Describe only the scene changes that affect available controls."""
+    return tuple(sorted(
+        (node, all(cmds.attributeQuery(attr, node=node, exists=True)
+                   for attr in (MMD_SELF_SHADOW_MODE_ATTR, MMD_SELF_SHADOW_DISTANCE_ATTR)))
+        for node in (cmds.ls("*.mmd_light", objectsOnly=True, long=True) or [])
+        if cmds.nodeType(node) == "transform" and cmds.getAttr(node + ".mmd_light")
+    ))
+
+
+def _watch_lights(state, parent):
+    """Coalesce scene notifications and release watchers with the window."""
+    pending = False
+    jobs = []
+
+    def refresh():
+        nonlocal pending
+        pending = False
+        if jobs and cmds.scriptJob(exists=jobs[0]) and _light_state() != state:
+            show()
+
+    def queue_refresh(*_):
+        nonlocal pending
+        if not pending:
+            pending = True
+            # A new transform receives its MMD attributes later in the command.
+            cmds.evalDeferred(refresh, lowestPriority=True)
+
+    for event in ("DagObjectCreated", "Undo", "Redo", "SceneOpened", "NewSceneOpened"):
+        jobs.append(cmds.scriptJob(event=[event, queue_refresh], parent=parent))
+    for light, _ready in state:
+        cmds.scriptJob(nodeDeleted=[light, queue_refresh], parent=parent)
+
+
 def show():
     """Open scene-wide render settings without changing viewport preferences."""
     if cmds.window(WINDOW, exists=True):
-        cmds.deleteUI(WINDOW)
-    window = cmds.window(WINDOW, title="MMD Render", widthHeight=(300, 116),
-                         sizeable=False, retain=False)
-    frame = cmds.formLayout()
+        window = WINDOW
+        if cmds.formLayout(CONTENT, exists=True):
+            cmds.deleteUI(CONTENT)
+    else:
+        window = cmds.window(WINDOW, title="MMD Render", widthHeight=(300, 116),
+                             sizeable=False, retain=False)
+    frame = cmds.formLayout(CONTENT, parent=window)
     content = cmds.columnLayout(adjustableColumn=True, rowSpacing=8)
     cmds.formLayout(frame, edit=True, attachForm=[
         (content, "top", 12), (content, "left", 12), (content, "right", 12),
         (content, "bottom", 12),
     ])
-    lights = [node for node in (cmds.ls("*.mmd_light", objectsOnly=True, long=True) or [])
-              if cmds.nodeType(node) == "transform" and cmds.getAttr(node + ".mmd_light")]
+    state = _light_state()
+    lights = [node for node, _ready in state]
     if len(lights) == 1:
         light = lights[0]
         if all(cmds.attributeQuery(attr, node=light, exists=True)
@@ -61,4 +99,5 @@ def show():
     cmds.button(label="再読込", command=lambda *_: show())
     cmds.window(WINDOW, edit=True, resizeToFitChildren=True)
     cmds.showWindow(window)
+    _watch_lights(state, frame)
     return window
