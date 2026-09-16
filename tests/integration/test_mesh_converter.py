@@ -1,6 +1,7 @@
 import json
 import re
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from maya import cmds
 from maya.api import OpenMaya as om
@@ -188,7 +189,8 @@ class TestMeshConverter(MayaTestBase):
         root_group = cmds.group(empty=True, name="test_uv_weld_root")
 
         converter = MeshConverter(pmx_file_path)
-        _mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+        with patch.object(cmds, "mmdWeldUvSeamVertices", None, create=True):
+            _mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
         self.assertEqual(
             int(cmds.polyEvaluate(mesh_name, vertex=True)),
             len(pmx_data.vertices),
