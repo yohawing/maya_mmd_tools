@@ -397,7 +397,7 @@ def _run_release_gate_tier2_parallel(
 
     def generated_visual_diff_pair_end(index: int, name: str) -> int | None:
         """Return the end of the exact visual-diff and bundled-smoke pair."""
-        if name != "tier2:generated-pmx-glsl-dx11-diff":
+        if name != "tier2:generated-pmx-maya-version-diff":
             return None
         pair_end = index + 1
         if pair_end >= len(tier2_commands) or pair_end in lane_indexes:

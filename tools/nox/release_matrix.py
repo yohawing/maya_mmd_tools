@@ -128,58 +128,44 @@ def tier2_commands(
             ]
         )
 
-    for maya_version, shader_backend, vp2_device in viewport_matrix:
-        commands.append(
-            (
-                f"tier2:viewport-{shader_backend}-{maya_version}",
-                [
-                    "uvx", "nox", "-s", "maya_static_render", "--",
-                    "--maya", maya_version,
-                    "--shader",
-                    "--shader-backend", shader_backend,
-                    "--vp2-device", vp2_device,
-                    "--out",
-                    f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.png",
-                    "--diagnostics-out",
-                    f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.json",
-                ],
-            )
-        )
+    for maya_version, render_path, _device in viewport_matrix:
+        if (render_path, _device) not in (("standard", "glcore"), ("ordered", "dx11")):
+            raise ValueError(f"Unsupported release render path: {render_path}/{_device}")
+        session = "render_stock_preview" if render_path == "standard" else "render_override_authoring"
+        commands.append((f"tier2:viewport-{render_path}-{maya_version}", [
+            "uvx", "nox", "-s", session, "--", "--maya", maya_version,
+            "--port", visual_ports[maya_version], "--out-dir",
+            f"build/release-gate/viewport/maya{maya_version}-{render_path}",
+        ]))
+        if render_path == "ordered":
+            commands.append((f"tier2:viewport-ordered-split-{maya_version}", [
+                "uvx", "nox", "-s", session, "--", "--maya", maya_version,
+                "--split-materials", "--port", visual_ports[maya_version], "--out-dir",
+                f"build/release-gate/viewport/maya{maya_version}-ordered-split",
+            ]))
 
     if visual_manifest.is_file():
-        visual_outputs: dict[str, str] = {}
-        for maya_version, shader_backend, vp2_device in viewport_matrix:
-            output = f"build/release-gate/visual/maya{maya_version}-{shader_backend}"
-            visual_outputs[shader_backend] = output
-            command = [
-                "uvx", "nox", "-s", "maya_visual_regression", "--",
-                "--maya", maya_version,
-                "--port", visual_ports[maya_version],
-                "--shader-backend", shader_backend,
-                "--vp2-device", vp2_device,
-                "--manifest", str(visual_manifest),
-                "--out", output,
-            ]
-            for case in visual_cases(shader_backend):
+        visual_outputs = {}
+        for maya_version, render_path, _device in viewport_matrix:
+            if render_path != "ordered":
+                continue
+            output = f"build/release-gate/visual/maya{maya_version}-ordered"
+            visual_outputs[maya_version] = output
+            command = ["uvx", "nox", "-s", "release_render_capture", "--",
+                       "--maya", maya_version, "--port", visual_ports[maya_version],
+                       "--manifest", str(visual_manifest), "--out-dir", output]
+            for case in visual_cases(render_path):
                 command.extend(["--case", case])
-            commands.append((f"tier2:generated-pmx-visual-{shader_backend}-{maya_version}", command))
-        commands.append(
-            (
-                "tier2:generated-pmx-glsl-dx11-diff",
-                [
-                    sys.executable,
-                    "tests/viewport/visual_regression_compare.py",
-                    "--reference-capture-report",
-                    f"{visual_outputs['dx11']}/visual-regression-report.json",
-                    "--capture-report",
-                    f"{visual_outputs['glsl']}/visual-regression-report.json",
-                    "--out",
-                    "build/release-gate/visual/glsl-dx11-comparison.json",
-                    "--default-threshold",
-                    "0.12",
-                ],
-            )
-        )
+            commands.append((f"tier2:generated-pmx-visual-ordered-{maya_version}", command))
+        if set(visual_outputs) != {"2024", "2026"}:
+            raise ValueError("MMD Render comparison requires Maya 2024 and 2026")
+        commands.append(("tier2:generated-pmx-maya-version-diff", [
+            sys.executable, "tests/viewport/visual_regression_compare.py",
+            "--reference-capture-report", f"{visual_outputs['2024']}/visual-regression-report.json",
+            "--capture-report", f"{visual_outputs['2026']}/visual-regression-report.json",
+            "--out", "build/release-gate/visual/maya-version-comparison.json",
+            "--default-threshold", "0.12",
+        ]))
 
     commands.extend(
         [

@@ -46,18 +46,18 @@ class ReleaseGateContractTest(unittest.TestCase):
     def test_release_visual_ports_do_not_reuse_development_command_port(self):
         ports = noxfile.DEFAULT_RELEASE_VISUAL_PORTS
 
-        self.assertEqual(set(ports), {"2025", "2026"})
+        self.assertEqual(set(ports), {"2024", "2025", "2026"})
         self.assertEqual(len(set(ports.values())), len(ports))
         self.assertNotIn("7721", ports.values())
 
-    def test_release_visual_matrix_excludes_unreachable_outline_case(self):
-        outline = "fixture-render-generated-visual-mmd-outline-normal-silhouette"
-        self.assertNotIn(outline, noxfile._release_visual_cases("dx11"))
-        self.assertNotIn(outline, noxfile._release_visual_cases("glsl"))
-        self.assertEqual(
-            set(noxfile._release_visual_cases("dx11")),
-            set(noxfile._release_visual_cases("glsl")),
-        )
+    def test_release_visual_matrix_uses_current_paths_and_includes_outline(self):
+        self.assertEqual(noxfile.DEFAULT_RELEASE_VIEWPORT_MATRIX, (
+            ("2025", "standard", "glcore"),
+            ("2024", "ordered", "dx11"),
+            ("2026", "ordered", "dx11"),
+        ))
+        self.assertIn("fixture-render-generated-visual-mmd-outline-normal-silhouette",
+                      noxfile._release_visual_cases("ordered"))
 
     def test_cpp_verify_mayapy_processes_skip_user_setup(self):
         class FakeSession:

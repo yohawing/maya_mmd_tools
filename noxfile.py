@@ -157,10 +157,12 @@ DEFAULT_RELEASE_MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
 DEFAULT_CMAKE_CONFIG = "Debug"
 DEFAULT_CPP_VERIFY_MAYA_VERSIONS = DEFAULT_RELEASE_MAYA_VERSIONS
 DEFAULT_RELEASE_VIEWPORT_MATRIX = (
-    ("2025", "glsl", "glcore"),
-    ("2026", "dx11", "dx11"),
+    ("2025", "standard", "glcore"),
+    ("2024", "ordered", "dx11"),
+    ("2026", "ordered", "dx11"),
 )
 DEFAULT_RELEASE_VISUAL_PORTS = {
+    "2024": "7824",
     "2025": "7825",
     "2026": "7826",
 }
@@ -171,6 +173,7 @@ RELEASE_VISUAL_CASES = (
     "fixture-render-generated-visual-mmd-texture-uv-orientation-plane",
     "fixture-render-generated-visual-mmd-sphere-texture-add",
     "fixture-render-generated-visual-mmd-alpha-blend-overlap",
+    "fixture-render-generated-visual-mmd-outline-normal-silhouette",
 )
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
@@ -1843,6 +1846,13 @@ def maya_visual_regression(session: nox.Session) -> None:
         require_build_path=_require_build_path,
         python_executable=sys.executable,
     )
+
+
+@nox.session(venv_backend="none")
+def release_render_capture(session: nox.Session) -> None:
+    """Capture generated PMX fixtures using the current native MMD Render path."""
+    session.run(sys.executable, "tools/render_override/release_capture.py",
+                *session.posargs, external=True)
 
 
 @nox.session(venv_backend="none")

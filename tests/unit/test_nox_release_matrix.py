@@ -117,9 +117,9 @@ class ReleaseMatrixTest(unittest.TestCase):
             cpp_versions=["2026"],
             cpp_config="Release",
             release_maya_versions=("2024",),
-            viewport_matrix=(("2025", "glsl", "glcore"), ("2026", "dx11", "dx11")),
+            viewport_matrix=(("2025", "standard", "glcore"), ("2024", "ordered", "dx11"), ("2026", "ordered", "dx11")),
             visual_manifest=Path("missing-render-manifest.json"),
-            visual_ports={"2025": "7825", "2026": "7826"},
+            visual_ports={"2024": "7824", "2025": "7825", "2026": "7826"},
             visual_cases=lambda _shader_backend: (),
             include_cpp=True,
             verbose=True,
@@ -131,8 +131,8 @@ class ReleaseMatrixTest(unittest.TestCase):
                 "tier2:cpp-debug-prerequisite-2024",
                 "tier2:mayapy-unit-2024",
                 "tier2:mayapy-integration-2024",
-                "tier2:viewport-glsl-2025",
-                "tier2:viewport-dx11-2026",
+                "tier2:viewport-standard-2025",
+                "tier2:viewport-ordered-2024",
             ],
         )
         self.assertEqual(
@@ -159,19 +159,41 @@ class ReleaseMatrixTest(unittest.TestCase):
                 cpp_versions=[],
                 cpp_config="Debug",
                 release_maya_versions=(),
-                viewport_matrix=(("2025", "glsl", "glcore"), ("2026", "dx11", "dx11")),
+                viewport_matrix=(("2025", "standard", "glcore"), ("2024", "ordered", "dx11"), ("2026", "ordered", "dx11")),
                 visual_manifest=manifest,
-                visual_ports={"2025": "7825", "2026": "7826"},
+                visual_ports={"2024": "7824", "2025": "7825", "2026": "7826"},
                 visual_cases=lambda shader_backend: (f"case-{shader_backend}",),
                 include_cpp=False,
                 verbose=False,
             )
         commands_by_name = dict(commands)
-        self.assertIn("tier2:generated-pmx-visual-glsl-2025", commands_by_name)
-        self.assertIn("tier2:generated-pmx-visual-dx11-2026", commands_by_name)
-        self.assertIn("tier2:generated-pmx-glsl-dx11-diff", commands_by_name)
-        self.assertIn("case-glsl", commands_by_name["tier2:generated-pmx-visual-glsl-2025"])
-        self.assertIn("case-dx11", commands_by_name["tier2:generated-pmx-visual-dx11-2026"])
+        self.assertIn("tier2:generated-pmx-visual-ordered-2024", commands_by_name)
+        self.assertIn("tier2:generated-pmx-visual-ordered-2026", commands_by_name)
+        self.assertIn("tier2:generated-pmx-maya-version-diff", commands_by_name)
+        self.assertIn("case-ordered", commands_by_name["tier2:generated-pmx-visual-ordered-2024"])
+        self.assertIn("case-ordered", commands_by_name["tier2:generated-pmx-visual-ordered-2026"])
+        stock = commands_by_name["tier2:viewport-standard-2025"]
+        self.assertIn("render_stock_preview", stock)
+        for version in ("2024", "2026"):
+            self.assertIn("render_override_authoring", commands_by_name[f"tier2:viewport-ordered-{version}"])
+            self.assertIn("--split-materials", commands_by_name[f"tier2:viewport-ordered-split-{version}"])
+        self.assertFalse(any("maya_visual_regression" in command or "--shader-backend" in command
+                             for command in commands_by_name.values()))
+        comparison = commands_by_name["tier2:generated-pmx-maya-version-diff"]
+        self.assertIn("build/release-gate/visual/maya2024-ordered/visual-regression-report.json", comparison)
+        self.assertIn("build/release-gate/visual/maya2026-ordered/visual-regression-report.json", comparison)
+
+    def test_visual_matrix_cannot_silently_drop_ordered_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "render.json"
+            manifest.write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "requires Maya 2024 and 2026"):
+                tier2_commands(
+                    version="2024", cpp_versions=[], cpp_config="Release",
+                    release_maya_versions=(), viewport_matrix=(),
+                    visual_manifest=manifest, visual_ports={},
+                    visual_cases=lambda _path: (), include_cpp=False, verbose=False,
+                )
 
     def test_tier3_preserves_result_reports_and_strict_local(self):
         with tempfile.TemporaryDirectory() as directory:
