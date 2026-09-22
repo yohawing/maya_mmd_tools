@@ -1964,6 +1964,20 @@ MStatus MmdRenderQueueReindexCommand::doIt(const MArgList& args)
     nodeHandle_ = MObjectHandle(node);
     firstIndex_ = static_cast<std::size_t>(firstIndex);
     secondIndex_ = static_cast<std::size_t>(secondIndex);
+
+    MmdRenderShape* shape = MmdRenderShape::fromMObject(node, &status);
+    if (status && shape && shape->geometry().queueInputs.empty()) {
+        // A reopened scene may not have drawn this shape yet. Its queue is
+        // transient, and the caller has already swapped the DG material
+        // indices. Restore from those current indices instead of swapping
+        // them a second time. Subsequent undo/redo swap the restored cache.
+        shape->updateEvaluatedData();
+        if (!shape->geometry().queueInputs.empty()) {
+            MHWRender::MRenderer::setGeometryDrawDirty(node, true);
+            setResult(mStringFromUtf8(shape->renderItemWitness()));
+            return MS::kSuccess;
+        }
+    }
     return applySwap();
 }
 
