@@ -1,5 +1,6 @@
 {
     "animation_picker": {
+        "left_eye": "Left Eye", "right_eye": "Right Eye",
         "head": "Head", "neck": "Neck", "upper_body": "Upper Body", "upper_body_2": "Upper Body 2", "lower_body": "Lower Body",
         "left_shoulder": "Left Shoulder", "left_upper_arm": "Left Arm", "left_lower_arm": "Left Elbow", "left_wrist": "Left Wrist",
         "right_shoulder": "Right Shoulder", "right_upper_arm": "Right Arm", "right_lower_arm": "Right Elbow", "right_wrist": "Right Wrist",

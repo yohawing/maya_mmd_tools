@@ -1,5 +1,6 @@
 {
     "animation_picker": {
+        "left_eye": "左目", "right_eye": "右目",
         "head": "頭", "neck": "首", "upper_body": "上半身", "upper_body_2": "上半身2", "lower_body": "下半身",
         "left_shoulder": "左肩", "left_upper_arm": "左腕", "left_lower_arm": "左ひじ", "left_wrist": "左手首",
         "right_shoulder": "右肩", "right_upper_arm": "右腕", "right_lower_arm": "右ひじ", "right_wrist": "右手首",
