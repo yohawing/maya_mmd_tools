@@ -807,26 +807,21 @@ class TestMaterialPresenter(unittest.TestCase):
 
     def test_history_callbacks_are_removed_with_the_view(self):
         presenter, _ = self._make_authoring_presenter()
-        presenter._history_jobs = []
-        jobs = Mock(side_effect=[101, 102])
-        presenter.maya_adapter._cmds.scriptJob = jobs
-        with patch("mmd_tools.ui.presenters.material_presenter.QTimer") as timer:
+        presenter._history_callbacks = []
+        with patch("mmd_tools.ui.presenters.material_presenter.om") as api, patch(
+            "mmd_tools.ui.presenters.material_presenter.QTimer"
+        ) as timer:
+            api.MEventMessage.addEventCallback.side_effect = [101, 102]
             presenter._install_history_sync()
-            callbacks = [c.kwargs["event"] for c in jobs.call_args_list]
+            callbacks = [c.args for c in api.MEventMessage.addEventCallback.call_args_list]
             self.assertEqual([c[0] for c in callbacks], ["Undo", "Redo"])
-            callbacks[0][1]()
+            callbacks[0][1](None)
             timer.return_value.start.assert_called_once_with(0)
             presenter.view.destroyed.connect.assert_called_with(presenter._dispose_history_sync)
-        jobs.side_effect = None
-        jobs.return_value = True
-        jobs.reset_mock()
-        presenter._dispose_history_sync()
-        self.assertEqual(jobs.call_args_list, [
-            call(exists=101), call(kill=101, force=True),
-            call(exists=102), call(kill=102, force=True),
-        ])
-        presenter._dispose_history_sync()
-        self.assertEqual(len(jobs.call_args_list), 4)
+            presenter._dispose_history_sync()
+            self.assertEqual(api.MMessage.removeCallback.call_args_list, [call(101), call(102)])
+            presenter._dispose_history_sync()
+            self.assertEqual(api.MMessage.removeCallback.call_count, 2)
 
     def test_history_refreshes_selected_material_even_with_pending_edits(self):
         presenter, _ = self._make_authoring_presenter()

@@ -7,6 +7,8 @@ import os
 from pathlib import Path, PureWindowsPath
 from typing import Protocol
 
+from maya.api import OpenMaya as om
+
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ...core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
@@ -92,7 +94,7 @@ class MaterialPresenter:
         self._pending_refresh_generation = None
         self._last_refresh_generation = None
         self._material_list_projection = None
-        self._history_jobs = []
+        self._history_callbacks = []
         self._history_timer = None
         self.connect_signals()
         self._install_history_sync()
@@ -113,16 +115,13 @@ class MaterialPresenter:
 
     def _install_history_sync(self):
         """Read scene values after Maya finishes Undo/Redo, with view-owned cleanup."""
-        cmds = getattr(self.maya_adapter, "_cmds", None)
-        if not callable(getattr(cmds, "scriptJob", None)):
-            return
         try:
             self._history_timer = QTimer(self.view)
             self._history_timer.setSingleShot(True)
             self._history_timer.timeout.connect(self._sync_history)
             for event in ("Undo", "Redo"):
-                self._history_jobs.append(cmds.scriptJob(
-                    event=[event, lambda: self._history_timer.start(0)], protected=True
+                self._history_callbacks.append(om.MEventMessage.addEventCallback(
+                    event, lambda *_: self._history_timer.start(0)
                 ))
             self.view.destroyed.connect(self._dispose_history_sync)
         except Exception:
@@ -130,12 +129,10 @@ class MaterialPresenter:
             logger.debug("Could not install material history callbacks", exc_info=True)
 
     def _dispose_history_sync(self, *_):
-        cmds = getattr(self.maya_adapter, "_cmds", None)
-        jobs, self._history_jobs = self._history_jobs, []
-        for job in jobs:
+        callbacks, self._history_callbacks = self._history_callbacks, []
+        for callback in callbacks:
             try:
-                if cmds.scriptJob(exists=job):
-                    cmds.scriptJob(kill=job, force=True)
+                om.MMessage.removeCallback(callback)
             except Exception:
                 logger.debug("Could not remove material history callback", exc_info=True)
 
