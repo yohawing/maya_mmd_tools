@@ -1,5 +1,6 @@
 """Focused tests for the selected-material value patch transaction."""
 
+from copy import deepcopy
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
@@ -42,6 +43,74 @@ from tests.unit.test_maya_material_authoring import (  # noqa: E402
 from tests.unit.test_maya_model_authoring_coordinator import _coordinator  # noqa: E402
 from tests.unit.test_maya_scene_metadata_backend import _material as _backend_material  # noqa: E402
 from tests.unit.test_maya_scene_metadata_backend import _writable_scene  # noqa: E402
+from tests.unit.test_maya_scene_metadata_backend import FakeCmds  # noqa: E402
+
+
+@pytest.mark.parametrize("kind", ["value", "binding"])
+@pytest.mark.parametrize("write_before_failure", [False, True])
+def test_failed_material_redo_cannot_revive_writes_or_consume_prior_undo(
+    kind, write_before_failure
+) -> None:
+    class HistoryCmds(FakeCmds):
+        def __init__(self):
+            super().__init__()
+            self.past = []
+            self.future = []
+            self.chunk_written = False
+
+        def undo_info(self, **kwargs):
+            result = super().undo_info(**kwargs)
+            if kwargs.get("openChunk"):
+                self.chunk_written = False
+            if kwargs.get("closeChunk") and self.chunk_written:
+                self.past.append((self.undo_snapshot, deepcopy(self.attrs)))
+            return result
+
+        def set_attr(self, *args, **kwargs):
+            super().set_attr(*args, **kwargs)
+            self.chunk_written = True
+            self.future.clear()
+
+        def undo(self):
+            before, after = self.past.pop()
+            self.attrs = deepcopy(before)
+            self.future.append((before, after))
+
+        def redo(self):
+            before, after = self.future.pop()
+            self.attrs = deepcopy(after)
+            self.past.append((before, after))
+
+    original_cmds, _, _ = _writable_scene()
+    cmds = HistoryCmds()
+    cmds.attrs = deepcopy(original_cmds.attrs)
+    cmds.attrs[("mat", "baseColor")] = [(0.1, 0.2, 0.3)]
+    cmds.node_types = dict(original_cmds.node_types)
+    backend = MayaSceneMetadataBackend(cmds)
+    backend._registry_material_members = lambda _root: ["mat"]
+    original_name = cmds.get_attr("mat.mmd_material_name_en")
+    cmds.undo_info(openChunk=True, chunkName="Prior successful edit")
+    cmds.set_attr("mat.mmd_material_name_en", "prior success", type="string")
+    cmds.undo_info(closeChunk=True)
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, name_english="failed edit")
+    getattr(backend, f"begin_material_{kind}_patch")("|root", "mat", old, new)
+    if write_before_failure:
+        cmds.set_attr("mat.mmd_material_name_en", "failed edit", type="string")
+    backend.rollback_write("|root")
+
+    assert backend._write_transaction is None
+    assert cmds.get_attr("mat.mmd_material_name_en") == "prior success"
+    if write_before_failure:
+        cmds.redo()
+        assert cmds.get_attr("mat.mmd_material_name_en") == "prior success"
+        cmds.undo()  # Undo the harmless Redo fence.
+    else:
+        assert not cmds.future
+    cmds.undo()  # The successful edit before the failure remains available.
+    assert cmds.get_attr("mat.mmd_material_name_en") == original_name
+    cmds.redo()
+    assert cmds.get_attr("mat.mmd_material_name_en") == "prior success"
 
 
 def test_classifier_routes_noop_value_binding_and_mixed_changes() -> None:
