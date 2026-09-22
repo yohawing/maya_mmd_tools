@@ -1912,6 +1912,13 @@ def render_profile(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_normal_seams(session: nox.Session) -> None:
+    """Compare unified/split normals under small joint rotations in Maya GUI."""
+    session.run(sys.executable, "tools/render_override/normal_seams_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_scene_profile(session: nox.Session) -> None:
     """Measure an existing scene in an isolated Maya 2026 GUI."""
     session.run(sys.executable, "tools/render_override/scene_profile.py",

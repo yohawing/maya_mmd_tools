@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <utility>
@@ -712,7 +713,8 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     const std::vector<std::vector<uint32_t>>& submeshIndices,
     const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
     double scale,
-    const std::vector<std::vector<uint32_t>>& submeshSourceIndices)
+    const std::vector<std::vector<uint32_t>>& submeshSourceIndices,
+    const std::vector<std::vector<uint32_t>>& submeshSourceCorners)
 {
     auto reject = [](const std::string& reason) {
         MGlobal::displayError(
@@ -725,7 +727,9 @@ bool MmdRenderShape::setMaterialSplitGeometry(
         submeshPositions.size() != submeshUvs.size() ||
         submeshPositions.size() != submeshIndices.size() ||
         (!submeshSourceIndices.empty() &&
-         submeshPositions.size() != submeshSourceIndices.size())) {
+         submeshPositions.size() != submeshSourceIndices.size()) ||
+        (!submeshSourceCorners.empty() &&
+         submeshPositions.size() != submeshSourceCorners.size())) {
         return reject("invalid scale, empty queue, or mismatched submesh buffers");
     }
 
@@ -790,6 +794,33 @@ bool MmdRenderShape::setMaterialSplitGeometry(
     }
 
     GeometryData next;
+    // FastLoad supplies triangles in source PMX material/face order. Their
+    // Maya winding is reversed by buildMesh. Preserve a corner for each
+    // authored render vertex even when UV welding shares its source position.
+    // Scene restoration supplies explicit corners for arbitrary Maya polygons.
+    auto sourceCorners = submeshSourceCorners;
+    if (sourceCorners.empty()) {
+        sourceCorners.resize(submeshPositions.size());
+        uint32_t cornerOffset = 0U;
+        for (std::size_t group = 0; group < submeshPositions.size(); ++group) {
+            auto& corners = sourceCorners[group];
+            corners.assign(submeshPositions[group].size() / 3U,
+                           std::numeric_limits<uint32_t>::max());
+            const auto& indices = submeshIndices[group];
+            for (std::size_t i = 0; i < indices.size(); ++i) {
+                if (indices[i] >= corners.size()) return reject("invalid source corner vertex");
+                if (corners[indices[i]] == std::numeric_limits<uint32_t>::max()) {
+                    corners[indices[i]] = cornerOffset + static_cast<uint32_t>(
+                        (i / 3U) * 3U + 2U - i % 3U);
+                }
+            }
+            cornerOffset += static_cast<uint32_t>(indices.size());
+        }
+    }
+    for (std::size_t group = 0; group < sourceCorners.size(); ++group) {
+        if (sourceCorners[group].size() != submeshPositions[group].size() / 3U)
+            return reject("mismatched source-corner data");
+    }
     next.queueInputs = queueInputs;
     next.renderQueue = renderQueue;
     next.queueGeometry.reserve(renderQueue.size());
@@ -836,6 +867,7 @@ bool MmdRenderShape::setMaterialSplitGeometry(
                 sourceIndices && !sourceIndices->empty()
                     ? (*sourceIndices)[i / 3U]
                     : fallbackSourceOffset + static_cast<uint32_t>(i / 3U));
+            next.sourceCornerIndices.push_back(sourceCorners[entry.submeshIndex][i / 3U]);
 
             if (normals.empty()) {
                 next.normals.push_back(0.0F);
@@ -1002,15 +1034,18 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
     MFnMesh mesh(sourceMesh, &status);
     if (!status) return false;
     MObjectArray sets;
-    MIntArray faceShaders, triangleCounts, triangleVertices;
+    MIntArray faceShaders, triangleCounts, triangleVertices, normalCounts, normalIds;
     MPointArray points;
     if (!mesh.getConnectedShaders(0, sets, faceShaders) ||
         !mesh.getTriangles(triangleCounts, triangleVertices) ||
-        !mesh.getPoints(points, MSpace::kObject)) return false;
+        !mesh.getPoints(points, MSpace::kObject) ||
+        !mesh.getNormalIds(normalCounts, normalIds)) return false;
     if (faceShaders.length() != triangleCounts.length()) return false;
+    if (normalCounts.length() != triangleCounts.length()) return false;
 
     std::vector<std::vector<float>> positions(sets.length()), normals(sets.length()), uvs(sets.length());
     std::vector<std::vector<uint32_t>> indices(sets.length()), sources(sets.length());
+    std::vector<std::vector<uint32_t>> sourceCorners(sets.length());
     // Share only identical corners of the same source vertex and material.
     // UV seams and authored face normals must remain distinct after reload.
     std::vector<std::unordered_map<uint32_t, std::vector<uint32_t>>> sharedVertices(sets.length());
@@ -1030,11 +1065,14 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
         inputs.push_back(input);
     }
     unsigned int triangleOffset = 0;
+    unsigned int cornerOffset = 0;
     for (unsigned int face = 0; face < triangleCounts.length(); ++face) {
         const int group = faceShaders[face];
         if (group < 0 || static_cast<unsigned int>(group) >= sets.length()) return false;
         MIntArray faceVertices;
         if (!mesh.getPolygonVertices(face, faceVertices)) return false;
+        if (normalCounts[face] != static_cast<int>(faceVertices.length()) ||
+            cornerOffset + faceVertices.length() > normalIds.length()) return false;
         for (int triangle = 0; triangle < triangleCounts[face]; ++triangle) {
             if (triangleOffset + 3 > triangleVertices.length()) return false;
             // The initializer converts PMX winding/coordinates to Maya space.
@@ -1044,12 +1082,15 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
                 MVector normal;
                 if (!mesh.getFaceVertexNormal(face, vertex, normal, MSpace::kObject)) return false;
                 float u = 0.0F, v = 0.0F;
+                unsigned int sourceCorner = normalIds.length();
                 for (unsigned int local = 0; local < faceVertices.length(); ++local) {
                     if (faceVertices[local] == vertex) {
+                        sourceCorner = cornerOffset + local;
                         mesh.getPolygonUV(face, local, u, v);
                         break;
                     }
                 }
+                if (sourceCorner >= normalIds.length()) return false;
                 const MPoint& point = points[vertex];
                 const float nx = static_cast<float>(normal.x);
                 const float ny = static_cast<float>(normal.y);
@@ -1057,7 +1098,8 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
                 const float flippedV = 1.0F - v;
                 auto& candidates = sharedVertices[group][static_cast<uint32_t>(vertex)];
                 const auto existing = std::find_if(candidates.begin(), candidates.end(), [&](uint32_t index) {
-                    return normals[group][index * 3U] == nx &&
+                    return normalIds[sourceCorners[group][index]] == normalIds[sourceCorner] &&
+                           normals[group][index * 3U] == nx &&
                            normals[group][index * 3U + 1U] == ny &&
                            normals[group][index * 3U + 2U] == nz &&
                            uvs[group][index * 2U] == u &&
@@ -1075,11 +1117,14 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
                 uvs[group].insert(uvs[group].end(), {u, flippedV});
                 indices[group].push_back(static_cast<uint32_t>(sources[group].size()));
                 sources[group].push_back(static_cast<uint32_t>(vertex));
+                sourceCorners[group].push_back(sourceCorner);
             }
             triangleOffset += 3;
         }
+        cornerOffset += faceVertices.length();
     }
-    return setMaterialSplitGeometry(positions, normals, uvs, indices, inputs, 1.0, sources);
+    return setMaterialSplitGeometry(positions, normals, uvs, indices, inputs, 1.0, sources,
+                                    sourceCorners);
 }
 
 bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
@@ -1120,7 +1165,8 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
 
     const std::size_t renderVertexCount = geometry_.positions.size() / 3U;
     if (geometry_.positions.empty() || geometry_.positions.size() % 3U != 0U ||
-        geometry_.sourceVertexIndices.size() != renderVertexCount) {
+        geometry_.sourceVertexIndices.size() != renderVertexCount ||
+        geometry_.sourceCornerIndices.size() != renderVertexCount) {
         return reject("static geometry has no complete source mapping");
     }
 
@@ -1144,16 +1190,24 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         return reject("could not read object-space positions");
     }
     MFloatVectorArray normals;
+    MIntArray normalCounts, normalIds, faceCounts, faceVertices;
     if (![&] {
             MProfilingScope fetchProfile(mmdRenderProfileCategory(), MProfiler::kColorE_L1,
                                          "MMD.GetVertexNormals");
-            return meshFn.getVertexNormals(true, normals, MSpace::kObject);
+            return meshFn.getNormals(normals, MSpace::kObject) &&
+                   meshFn.getNormalIds(normalCounts, normalIds) &&
+                   meshFn.getVertices(faceCounts, faceVertices);
         }()) {
-        return reject("could not read object-space vertex normals");
+        return reject("could not read object-space face-corner normals");
     }
     if (static_cast<std::size_t>(points.length()) < expectedSourceVertexCount ||
-        normals.length() != points.length()) {
+        normalIds.length() != faceVertices.length() ||
+        normalCounts.length() != faceCounts.length()) {
         return reject("input mesh vertex/normal count does not match source topology");
+    }
+    for (unsigned int face = 0; face < faceCounts.length(); ++face) {
+        if (normalCounts[face] != faceCounts[face])
+            return reject("input mesh normal corners do not match source topology");
     }
 
     // Maya can expose a zero or non-finite vertex normal for a degenerate
@@ -1180,7 +1234,18 @@ bool MmdRenderShape::updateEvaluatedMesh(const MObject& meshObject)
         }
 
         const MPoint& point = points[sourceIndex];
-        const MFloatVector& inputNormal = normals[sourceIndex];
+        const uint32_t sourceCorner = geometry_.sourceCornerIndices[renderVertex];
+        // Unreferenced import vertices have no corner and are never drawn.
+        MFloatVector inputNormal(0.0F, 0.0F, 0.0F);
+        if (sourceCorner != std::numeric_limits<uint32_t>::max()) {
+            if (sourceCorner >= normalIds.length() ||
+                faceVertices[sourceCorner] != static_cast<int>(sourceIndex))
+                return reject("source corner no longer matches input mesh topology");
+            const int normalId = normalIds[sourceCorner];
+            if (normalId < 0 || static_cast<unsigned int>(normalId) >= normals.length())
+                return reject("source corner has an invalid normal index");
+            inputNormal = normals[normalId];
+        }
         if (!hasFinitePoint(point)) {
             return reject("input mesh contains a non-finite position");
         }

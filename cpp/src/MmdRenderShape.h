@@ -99,7 +99,8 @@ public:
         const std::vector<std::vector<uint32_t>>& submeshIndices,
         const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
         double scale,
-        const std::vector<std::vector<uint32_t>>& submeshSourceIndices);
+        const std::vector<std::vector<uint32_t>>& submeshSourceIndices,
+        const std::vector<std::vector<uint32_t>>& submeshSourceCorners = {});
 
     /**
      * Replace only the flattened position/normal streams with an evaluated
@@ -157,6 +158,9 @@ public:
         // One source mesh vertex index per flattened render vertex.  Material
         // seams may therefore repeat the same source index in this stream.
         std::vector<uint32_t> sourceVertexIndices;
+        // Flattened source face-corner index, independent of shared positions.
+        // Resolve its normal ID on each update: deformers may renumber normals.
+        std::vector<uint32_t> sourceCornerIndices;
         std::vector<mmd::MmdRenderQueueInput> queueInputs;
         std::vector<mmd::MmdRenderQueueEntry> renderQueue;
         std::vector<QueueGeometry> queueGeometry;

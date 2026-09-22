@@ -116,7 +116,11 @@ def test_update_dg_reads_evaluated_mesh_and_fails_closed():
 
     assert "bool MmdRenderShape::updateEvaluatedMesh" in shape
     assert "getPoints(points, MSpace::kObject)" in shape
-    assert "getVertexNormals(true, normals, MSpace::kObject)" in shape
+    assert "getVertexNormals(" not in shape
+    assert "getNormals(normals, MSpace::kObject)" in shape
+    assert "getNormalIds(normalCounts, normalIds)" in shape
+    assert "sourceCornerIndices" in shape
+    assert "source corner no longer matches input mesh topology" in shape
     assert "normalRepairRenderVertices" in shape
     assert "import-time static fallback" in shape
     assert "evaluatedNormalRepairWarningEmitted_" in shape
