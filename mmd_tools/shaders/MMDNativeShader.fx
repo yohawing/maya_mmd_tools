@@ -198,7 +198,9 @@ technique11 MMDNativeOutline
         SetPixelShader(CompileShader(ps_5_0, NativeEdgePS()));
         SetRasterizerState(CullBack);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EdgeDepthReadOnly, 0);
+        // Preserve the hull against later materials (for example, neck behind
+        // chin). Opaque outlines precede their body in the ordered draw plan.
+        SetDepthStencilState(EnableDepth, 0);
     }
 }
 
@@ -215,7 +217,7 @@ technique11 MMDNativeOutlineDoubleSided
         SetPixelShader(CompileShader(ps_5_0, NativeEdgePS()));
         SetRasterizerState(CullBack);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EdgeDepthReadOnly, 0);
+        SetDepthStencilState(EnableDepth, 0);
     }
 }
 
