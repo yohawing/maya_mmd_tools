@@ -832,9 +832,41 @@ class TestMaterialPresenter(unittest.TestCase):
         presenter, _ = self._make_authoring_presenter()
         presenter.current_material = "shader"
         presenter.has_unsaved_changes = True
-        presenter.load_material_properties = Mock()
+        presenter.load_materials = Mock()
+        presenter._select_projected_binding = Mock(return_value=True)
+        presenter.on_search_text_changed = Mock()
         presenter._sync_history()
-        presenter.load_material_properties.assert_called_once_with("shader")
+        presenter.load_materials.assert_called_once_with()
+        presenter._select_projected_binding.assert_called_once_with("shader")
+        self.assertFalse(presenter.has_unsaved_changes)
+
+    def test_history_clears_deleted_selection_after_reloading_list(self):
+        presenter, _ = self._make_authoring_presenter()
+        presenter.current_material = "deleted_shader"
+        presenter.current_material_index = 31
+        presenter.load_materials = Mock()
+        presenter._select_projected_binding = Mock(return_value=False)
+        presenter.on_search_text_changed = Mock()
+        presenter._sync_history()
+        presenter.load_materials.assert_called_once_with()
+        self.assertIsNone(presenter.current_material)
+        self.assertIsNone(presenter.current_material_index)
+        self.mock_view._set_details_enabled.assert_called_with(False)
+
+    def test_unedited_edge_and_alpha_preserve_source_values(self):
+        self._configure_apply_inputs()
+        self.presenter.material_data.update(edge_size_view=3.25, transparency_view=0.876543)
+        self.mock_view.edge_size_spin.value.return_value = 3.25
+        self.mock_view.transparency_spin.value.return_value = 0.876543
+        prior = MmdMaterialSpec("Material", edge_size=3.25, diffuse=(1.0, 1.0, 1.0, 0.1234567))
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.edge_size, 3.25)
+        self.assertEqual(result.diffuse[3], prior.diffuse[3])
+        self.mock_view.edge_size_spin.value.return_value = 4.5
+        self.mock_view.transparency_spin.value.return_value = 0.25
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.edge_size, 4.5)
+        self.assertEqual(result.diffuse[3], 0.75)
 
     def test_selected_detail_projection_renders_semantics_provenance_and_preview(self):
         presenter, coordinator = self._make_authoring_presenter()
@@ -889,6 +921,12 @@ class TestMaterialPresenter(unittest.TestCase):
             "C:/model/sphere.spa"
         )
         self.mock_view.shader_outline_check.setChecked.assert_called_with(False)
+        self.mock_view.shader_outline_check.setEnabled.assert_called_with(True)
+        detail = coordinator.read_material_detail_projection.return_value
+        from dataclasses import replace
+        presenter._render_material_detail(replace(detail, preview=MaterialPreviewState("standardSurface", False)))
+        self.mock_view.shader_outline_check.setEnabled.assert_called_with(False)
+        self.assertIn("legacy DX11", self.mock_view.shader_outline_check.setToolTip.call_args.args[0])
         self.assertEqual(
             presenter.material_data["original_pmx_texture_path"],
             "textures/body.png",

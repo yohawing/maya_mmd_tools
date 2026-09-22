@@ -176,7 +176,7 @@ class MaterialTab(BaseTab):
         self.transparency_spin.setRange(0.0, 1.0)
         self.transparency_spin.setKeyboardTracking(False)
         self.transparency_spin.setSingleStep(0.01)
-        self.transparency_spin.setDecimals(2)
+        self.transparency_spin.setDecimals(6)
         self.transparency_slider = QSlider(Qt.Horizontal)
         self.transparency_slider.setRange(0, 100)
         self.transparency_slider.setValue(100)
@@ -345,9 +345,10 @@ class MaterialTab(BaseTab):
         edge_layout.addWidget(self.edge_size_label, 1, 0)
         self.edge_size_spin = QDoubleSpinBox()
         self.edge_size_spin.setObjectName("materialEdgeSizeSpin")
-        self.edge_size_spin.setRange(0.0, 2.0)
+        self.edge_size_spin.setRange(0.0, 3.402823466e38)
+        self.edge_size_spin.setKeyboardTracking(False)
         self.edge_size_spin.setSingleStep(0.05)
-        self.edge_size_spin.setDecimals(2)
+        self.edge_size_spin.setDecimals(6)
         edge_layout.addWidget(self.edge_size_spin, 1, 1, 1, 2)
 
         # Maya viewport outline. This is intentionally separate from the PMX

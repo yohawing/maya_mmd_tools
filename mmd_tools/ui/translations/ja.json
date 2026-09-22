@@ -166,6 +166,7 @@
     "humanik_none": "(なし)"
   },
   "tooltips": {
+    "shader_outline_requires_dx11": "シェーダーアウトラインは旧DX11シェーダー専用です。この材質では「エッジ描画」を使用してください。",
     "morph_runtime_unsupported": "このモーフ種別は現在のランタイムでは未対応です",
     "import_file": "PMD/PMX/VMDファイルをインポートします",
     "export_file": "選択したオブジェクトをPMXファイルとしてエクスポートします",

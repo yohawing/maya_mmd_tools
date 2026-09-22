@@ -141,8 +141,13 @@ class MaterialPresenter:
 
     def _sync_history(self):
         """History is authoritative, including when stale edits remain in the panel."""
-        if self.current_material:
-            self.load_material_properties(self.current_material)
+        binding = self.current_material
+        self.has_unsaved_changes = False
+        self.load_materials()
+        if not binding or not self._select_projected_binding(binding):
+            self._clear_material_selection()
+            self.view._show_placeholder()
+        self.on_search_text_changed(self.view.search_edit.text())
 
     def connect_signals(self):
         # ApplicationStateのシグナル
@@ -692,7 +697,6 @@ class MaterialPresenter:
             "edge_color": material.edge_color[:3],
             "edge_alpha": material.edge_color[3],
             "edge_size": material.edge_size,
-            "edge_size_view": max(0.0, min(2.0, material.edge_size)),
             "shader_outline_enabled": detail.preview.outline_enabled,
             "shader_type": detail.preview.shader_type,
             "_authoring_material": material.to_mapping(),
@@ -703,6 +707,7 @@ class MaterialPresenter:
         self._update_color_widget(self.view.specular_color_widget, material.specular)
         self._update_color_widget(self.view.ambient_color_widget, material.ambient)
         self.view.transparency_spin.setValue(self.material_data["transparency"])
+        self.material_data["transparency_view"] = self.view.transparency_spin.value()
         self.view.specular_coefficient_spin.setValue(
             material.specular_coefficient
         )
@@ -777,8 +782,16 @@ class MaterialPresenter:
         ):
             control.setChecked(bool(material.draw_flags & mask))
         self.view.shader_outline_check.setChecked(detail.preview.outline_enabled)
+        outline_supported = detail.preview.shader_type == "dx11Shader"
+        self.view.shader_outline_check.setEnabled(outline_supported)
+        self.view.shader_outline_check.setToolTip(
+            "" if outline_supported else UITranslator.instance().translate(
+                "shader_outline_requires_dx11", "tooltips"
+            )
+        )
         self._update_color_widget(self.view.edge_color_widget, material.edge_color)
-        self.view.edge_size_spin.setValue(self.material_data["edge_size_view"])
+        self.view.edge_size_spin.setValue(material.edge_size)
+        self.material_data["edge_size_view"] = self.view.edge_size_spin.value()
 
     def _set_texture_provenance_fields(self, original_path):
         """Update read-only texture provenance fields when the view provides them."""
@@ -1064,7 +1077,13 @@ class MaterialPresenter:
         if specular_coefficient == self.material_data.get("specular_coefficient_view"):
             specular_coefficient = prior.specular_coefficient
         edge_size = self._authoring_number(self.view.edge_size_spin.value(), "edge_size")
-        diffuse_alpha = 1.0 - transparency
+        if edge_size == self.material_data.get("edge_size_view"):
+            edge_size = prior.edge_size
+        diffuse_alpha = (
+            prior.diffuse[3]
+            if transparency == self.material_data.get("transparency_view")
+            else 1.0 - transparency
+        )
 
         texture_source, resolved_texture = self._authoring_main_texture_paths(prior)
         sphere_source, resolved_sphere = self._authoring_aux_texture_paths(

@@ -166,6 +166,7 @@
     "humanik_none": "(none)"
   },
   "tooltips": {
+    "shader_outline_requires_dx11": "Shader Outline is only supported by the legacy DX11 shader. Use Edge Drawing for this material.",
     "morph_runtime_unsupported": "This morph type is not supported by the current runtime",
     "import_file": "Import PMD/PMX/VMD files",
     "export_file": "Export selected objects as PMX file",
