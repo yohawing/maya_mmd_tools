@@ -784,6 +784,58 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.select_fast.assert_called_once_with(["material1"], replace=True)
         self.mock_maya_adapter.select.assert_not_called()
 
+    def test_unchanged_coefficient_preserves_source_precision(self):
+        self._configure_apply_inputs()
+        self.presenter.material_data["specular_coefficient_view"] = 0.75
+        prior = MmdMaterialSpec("Material", specular_coefficient=0.75000003)
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.specular_coefficient, prior.specular_coefficient)
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.8
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.specular_coefficient, 0.8)
+
+    def test_slider_rounding_cannot_feed_back_into_spinbox(self):
+        slider = Mock()
+        slider.minimum.return_value = 0
+        slider.maximum.return_value = 12800
+        slider.blockSignals.return_value = False
+        MaterialPresenter._sync_slider(slider, 81.256)
+        self.assertEqual(slider.method_calls, [
+            call.blockSignals(True), call.minimum(), call.maximum(),
+            call.setValue(8126), call.blockSignals(False),
+        ])
+
+    def test_history_callbacks_are_removed_with_the_view(self):
+        presenter, _ = self._make_authoring_presenter()
+        presenter._history_jobs = []
+        jobs = Mock(side_effect=[101, 102])
+        presenter.maya_adapter._cmds.scriptJob = jobs
+        with patch("mmd_tools.ui.presenters.material_presenter.QTimer") as timer:
+            presenter._install_history_sync()
+            callbacks = [c.kwargs["event"] for c in jobs.call_args_list]
+            self.assertEqual([c[0] for c in callbacks], ["Undo", "Redo"])
+            callbacks[0][1]()
+            timer.return_value.start.assert_called_once_with(0)
+            presenter.view.destroyed.connect.assert_called_with(presenter._dispose_history_sync)
+        jobs.side_effect = None
+        jobs.return_value = True
+        jobs.reset_mock()
+        presenter._dispose_history_sync()
+        self.assertEqual(jobs.call_args_list, [
+            call(exists=101), call(kill=101, force=True),
+            call(exists=102), call(kill=102, force=True),
+        ])
+        presenter._dispose_history_sync()
+        self.assertEqual(len(jobs.call_args_list), 4)
+
+    def test_history_refreshes_selected_material_even_with_pending_edits(self):
+        presenter, _ = self._make_authoring_presenter()
+        presenter.current_material = "shader"
+        presenter.has_unsaved_changes = True
+        presenter.load_material_properties = Mock()
+        presenter._sync_history()
+        presenter.load_material_properties.assert_called_once_with("shader")
+
     def test_selected_detail_projection_renders_semantics_provenance_and_preview(self):
         presenter, coordinator = self._make_authoring_presenter()
         assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)
@@ -804,6 +856,7 @@ class TestMaterialPresenter(unittest.TestCase):
             sphere_texture_path="textures/sphere.spa",
             resolved_sphere_texture_path="C:/model/sphere.spa",
             draw_flags=0x10,
+            specular_coefficient=81.25,
         )
         coordinator.read_material_detail_projection.return_value = MaterialDetailProjection(
             "|model_root",
@@ -830,6 +883,7 @@ class TestMaterialPresenter(unittest.TestCase):
         coordinator.read_material_detail_projection.assert_called_once_with(
             "|model_root", 0, "shader", assignment
         )
+        self.mock_view.specular_coefficient_spin.setValue.assert_called_with(81.25)
         self.mock_view.texture_path_edit.setText.assert_called_with("C:/model/body.png")
         self.mock_view.sphere_map_path_edit.setText.assert_called_with(
             "C:/model/sphere.spa"

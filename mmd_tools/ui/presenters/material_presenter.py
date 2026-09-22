@@ -18,7 +18,7 @@ from ...core.material_read_projection import (
     normalize_material_list_projection,
 )
 from ...core.material_authoring import classify_material_change
-from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
+from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt, QTimer
 from ..translations import UITranslator
 from .list_presenter_helpers import (
     apply_list_filter,
@@ -92,12 +92,57 @@ class MaterialPresenter:
         self._pending_refresh_generation = None
         self._last_refresh_generation = None
         self._material_list_projection = None
+        self._history_jobs = []
+        self._history_timer = None
         self.connect_signals()
+        self._install_history_sync()
         self._update_authoring_actions()
 
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
             self.load_materials()
+
+    @staticmethod
+    def _sync_slider(slider, value):
+        """Update the coarse slider without feeding its rounded value back."""
+        blocked = slider.blockSignals(True)
+        try:
+            slider.setValue(max(slider.minimum(), min(slider.maximum(), round(value * 100))))
+        finally:
+            slider.blockSignals(blocked)
+
+    def _install_history_sync(self):
+        """Read scene values after Maya finishes Undo/Redo, with view-owned cleanup."""
+        cmds = getattr(self.maya_adapter, "_cmds", None)
+        if not callable(getattr(cmds, "scriptJob", None)):
+            return
+        try:
+            self._history_timer = QTimer(self.view)
+            self._history_timer.setSingleShot(True)
+            self._history_timer.timeout.connect(self._sync_history)
+            for event in ("Undo", "Redo"):
+                self._history_jobs.append(cmds.scriptJob(
+                    event=[event, lambda: self._history_timer.start(0)], protected=True
+                ))
+            self.view.destroyed.connect(self._dispose_history_sync)
+        except Exception:
+            self._dispose_history_sync()
+            logger.debug("Could not install material history callbacks", exc_info=True)
+
+    def _dispose_history_sync(self, *_):
+        cmds = getattr(self.maya_adapter, "_cmds", None)
+        jobs, self._history_jobs = self._history_jobs, []
+        for job in jobs:
+            try:
+                if cmds.scriptJob(exists=job):
+                    cmds.scriptJob(kill=job, force=True)
+            except Exception:
+                logger.debug("Could not remove material history callback", exc_info=True)
+
+    def _sync_history(self):
+        """History is authoritative, including when stale edits remain in the panel."""
+        if self.current_material:
+            self.load_material_properties(self.current_material)
 
     def connect_signals(self):
         # ApplicationStateのシグナル
@@ -154,13 +199,13 @@ class MaterialPresenter:
 
         # Slider connections for transparency and specular coefficient
         self.view.transparency_slider.valueChanged.connect(lambda v: self.view.transparency_spin.setValue(v / 100.0))
-        self.view.transparency_spin.valueChanged.connect(lambda v: self.view.transparency_slider.setValue(int(v * 100)))
+        self.view.transparency_spin.valueChanged.connect(lambda v: self._sync_slider(self.view.transparency_slider, v))
 
         self.view.specular_coefficient_slider.valueChanged.connect(
             lambda v: self.view.specular_coefficient_spin.setValue(v / 100.0)
         )
         self.view.specular_coefficient_spin.valueChanged.connect(
-            lambda v: self.view.specular_coefficient_slider.setValue(int(v * 100))
+            lambda v: self._sync_slider(self.view.specular_coefficient_slider, v)
         )
 
         # Check boxes
@@ -659,8 +704,9 @@ class MaterialPresenter:
         self._update_color_widget(self.view.ambient_color_widget, material.ambient)
         self.view.transparency_spin.setValue(self.material_data["transparency"])
         self.view.specular_coefficient_spin.setValue(
-            max(0.0, min(1.0, material.specular_coefficient))
+            material.specular_coefficient
         )
+        self.material_data["specular_coefficient_view"] = self.view.specular_coefficient_spin.value()
 
         texture_by_slot = {texture.slot: texture for texture in detail.textures}
         main = texture_by_slot.get(MaterialTextureSlot.MAIN)
@@ -1014,6 +1060,9 @@ class MaterialPresenter:
         specular_coefficient = self._authoring_number(
             self.view.specular_coefficient_spin.value(), "specular_coefficient"
         )
+        # Preserve source precision when only another material field was edited.
+        if specular_coefficient == self.material_data.get("specular_coefficient_view"):
+            specular_coefficient = prior.specular_coefficient
         edge_size = self._authoring_number(self.view.edge_size_spin.value(), "edge_size")
         diffuse_alpha = 1.0 - transparency
 
