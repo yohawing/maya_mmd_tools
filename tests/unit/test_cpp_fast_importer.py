@@ -622,6 +622,19 @@ class TestFastImportMetadata(unittest.TestCase):
                 self.assertIsNone(fast_import("model.pmx", mesh_only=False))
                 author.assert_not_called()
 
+    def test_vp2_command_failure_preserves_original_error(self):
+        """Required VP2 imports must surface the command's actual rejection."""
+        for mesh_only in (False, True):
+            with self.subTest(mesh_only=mesh_only), patch.object(
+                cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]
+            ), patch.object(Path, "exists", return_value=True), patch.object(
+                cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
+            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=object()), patch.object(
+                cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+            ), patch("maya.cmds.mmdFastLoad", create=True, side_effect=RuntimeError("non-finite normal")):
+                with self.assertRaisesRegex(RuntimeError, "non-finite normal"):
+                    fast_import("model.pmx", mesh_only=mesh_only, vp2_ownership=True)
+
     def test_failed_full_import_removes_separated_proxy_owner(self):
         with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]), patch.object(
             Path, "exists", return_value=True

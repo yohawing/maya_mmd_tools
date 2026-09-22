@@ -275,6 +275,8 @@ def fast_import(
         try:
             native_mesh = cmds.mmdFastLoad(**command_args)
         except RuntimeError as exc:
+            if vp2_ownership:
+                raise
             logger.debug("Fast native geometry unavailable: %s", exc)
             return None
         expected = 1 if split else (3 if vp2_ownership else 2)
@@ -338,6 +340,8 @@ def fast_import(
             command_args["vp2Ownership"] = True
         result = cmds.mmdFastLoad(**command_args)
     except RuntimeError as exc:
+        if vp2_ownership:
+            raise
         logger.debug("mmdFastLoad failed: %s – falling back to Python importer.", exc)
         return None
 

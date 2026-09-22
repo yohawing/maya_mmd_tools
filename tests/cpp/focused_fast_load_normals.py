@@ -81,6 +81,37 @@ def _assert_unused_material_split(cmds):
                 raise RuntimeError("Unused material split Undo left its group")
 
 
+def _assert_zero_authored_normals(cmds, om):
+    """Missing authored normals retain Maya's geometric fallback in VP2."""
+    import tempfile
+    from mmd_tools.core.mmd_parser import parse_pmx_file
+
+    pmx = parse_pmx_file(str(SPLIT_FIXTURE), use_native_pmx_parse=False)
+    for vertex in pmx.vertices:
+        vertex.normal = (0.0, 0.0, 0.0)
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = Path(directory) / "zero-normals.pmx"
+        pmx.write_file(str(fixture))
+        for split in (False, True):
+            result = cmds.mmdFastLoad(
+                f=str(fixture), n="zero_normals", sp=split, mo=False, vp2Ownership=True
+            )
+            group = result[0]
+            meshes = cmds.listRelatives(group, allDescendents=True, type="mesh", fullPath=True) or []
+            proxies = cmds.listRelatives(group, allDescendents=True, type="mmdRenderShape") or []
+            if not meshes or len(proxies) != len(meshes):
+                raise RuntimeError("Zero normals prevented VP2 ownership")
+            for mesh in meshes:
+                _assert_vertex_normals_are_finite_and_nonzero(om, _mesh_fn(om, mesh))
+            cmds.undo()
+            if cmds.objExists(group):
+                raise RuntimeError("Zero-normal import Undo left its group")
+            cmds.redo()
+            if not cmds.objExists(group):
+                raise RuntimeError("Zero-normal import Redo lost its group")
+            cmds.delete(group)
+
+
 def _plugin_path() -> Path:
     """Resolve the built C++ plugin for the selected Maya/config pair."""
     explicit = os.environ.get("MMD_TOOLS_CPP_PLUGIN")
@@ -243,6 +274,7 @@ def main() -> int:
                 raise RuntimeError("split source mapping lost its absent-vertex sentinel")
         cmds.delete(split_group)
         _assert_unused_material_split(cmds)
+        _assert_zero_authored_normals(cmds, om)
         print("OK: focused mmdFastLoad authored normals (single + split + unused material)")
         return 0
     finally:

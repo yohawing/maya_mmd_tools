@@ -879,13 +879,16 @@ bool MmdRenderShape::setMaterialSplitGeometry(
                 const double nz = static_cast<double>(normals[i + 2U]);
                 const double length = std::sqrt(nx * nx + ny * ny + nz * nz);
                 if (!std::isfinite(nx) || !std::isfinite(ny) ||
-                    !std::isfinite(nz) || !std::isfinite(length) ||
-                    length <= 0.0) {
-                    return reject("non-finite or zero-length normal");
+                    !std::isfinite(nz) || !std::isfinite(length)) {
+                    return reject("non-finite normal");
                 }
-                next.normals.push_back(static_cast<float>(nx / length));
-                next.normals.push_back(static_cast<float>(ny / length));
-                next.normals.push_back(static_cast<float>(-nz / length));
+                // A zero authored normal is missing data, as in buildMesh.
+                // Seed the same default as an absent normal stream; the
+                // connected source mesh supplies Maya's geometric corner
+                // normal on evaluation. Keep valid authored normals intact.
+                next.normals.push_back(length > 0.0 ? static_cast<float>(nx / length) : 0.0F);
+                next.normals.push_back(length > 0.0 ? static_cast<float>(ny / length) : 1.0F);
+                next.normals.push_back(length > 0.0 ? static_cast<float>(-nz / length) : 0.0F);
             }
 
             if (uvs.empty()) {

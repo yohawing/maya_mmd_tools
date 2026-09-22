@@ -58,7 +58,7 @@ def _raise_native_vp2_failure(options: Dict[str, Any], reason: str, error: Optio
     message = (
         "C++ Fast Load with VP2 ownership was requested, but mmdRenderShape "
         f"could not be created ({reason}). Python mesh fallback is blocked. "
-        "Check the loaded mmd_tools_cpp plugin and reload it before importing again."
+        "Check the reported cause and the preceding Script Editor errors."
     )
     if error is None:
         raise MMDImportException(message)
