@@ -1972,7 +1972,14 @@ MStatus MmdRenderQueueReindexCommand::doIt(const MArgList& args)
         // indices. Restore from those current indices instead of swapping
         // them a second time. Subsequent undo/redo swap the restored cache.
         shape->updateEvaluatedData();
-        if (!shape->geometry().queueInputs.empty()) {
+        const auto& restoredInputs = shape->geometry().queueInputs;
+        const auto hasMaterial = [&](std::size_t index) {
+            return std::any_of(restoredInputs.begin(), restoredInputs.end(),
+                               [index](const mmd::MmdRenderQueueInput& input) {
+                                   return input.materialIndex == index;
+                               });
+        };
+        if (hasMaterial(firstIndex_) && hasMaterial(secondIndex_)) {
             MHWRender::MRenderer::setGeometryDrawDirty(node, true);
             setResult(mStringFromUtf8(shape->renderItemWitness()));
             return MS::kSuccess;
