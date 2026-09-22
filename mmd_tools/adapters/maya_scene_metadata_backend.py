@@ -1233,7 +1233,9 @@ class MayaSceneMetadataBackend:
         if shader != transaction["binding"] or material != transaction["target_material"]:
             raise MayaSceneMetadataError("material binding patch commit target mismatch")
         actual = self.read_material_value(model_root, shader, transaction["index"])
-        if actual != material:
+        if not self._material_value_attrs_equal(
+            actual.to_mapping(), material.to_mapping()
+        ):
             raise MayaSceneMetadataError(
                 f"material binding patch fingerprint mismatch: expected {material!r}, got {actual!r}"
             )

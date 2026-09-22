@@ -1306,6 +1306,46 @@ def test_backend_binding_patch_verifies_selected_material_and_rolls_back() -> No
     assert backend.read_material_value("|root", "mat", 0) == new
 
 
+def test_backend_binding_commit_accepts_maya_float32_round_trip_precision() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, edge_size=0.4)
+
+    backend.begin_material_binding_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_edge_size", 0.4000000059604645)
+    backend.commit_material_binding_patch("|root", "mat", new)
+
+    assert cmds.undo_chunk_open is False
+
+
+def test_backend_binding_commit_rejects_materially_different_numeric_value() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, edge_size=0.4)
+
+    backend.begin_material_binding_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_edge_size", 0.41)
+    with pytest.raises(MayaSceneMetadataError, match="fingerprint mismatch"):
+        backend.commit_material_binding_patch("|root", "mat", new)
+    backend.rollback_write("|root")
+
+    assert backend.read_material_value("|root", "mat", 0) == old
+
+
+def test_backend_binding_commit_rejects_non_numeric_value_mismatch() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, memo="edited")
+
+    backend.begin_material_binding_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_memo", "wrong", type="string")
+    with pytest.raises(MayaSceneMetadataError, match="fingerprint mismatch"):
+        backend.commit_material_binding_patch("|root", "mat", new)
+    backend.rollback_write("|root")
+
+    assert backend.read_material_value("|root", "mat", 0) == old
+
+
 def test_presenter_value_apply_uses_selected_row_without_full_reload() -> None:
     fixture = TestMaterialPresenter()
     fixture.setUp()
