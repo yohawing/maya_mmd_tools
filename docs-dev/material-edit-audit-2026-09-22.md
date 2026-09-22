@@ -1,6 +1,6 @@
 # 材質編集の追加実機監査（2026-09-22）
 
-対象コードは `077717e2`。YYB Hatsune Miku 10th v1.02を統合メッシュで読み込み、q202を主に確認した。Maya 2024 Release／2026 Debugの隔離した検証プロセスを使用し、ユーザーの作業中シーンは変更していない。今回は調査のみで、製品コードは修正していない。
+対象コードは `077717e2`。YYB Hatsune Miku 10th v1.02を統合メッシュで読み込み、q202を主に確認した。Maya 2024 Release／2026 Debugの隔離した検証プロセスを使用し、ユーザーの作業中シーンは変更していない。以下は修正前の監査記録。修正結果は末尾の「修正後の確認」を参照。
 
 ## 確認した不具合
 
@@ -76,3 +76,11 @@ standardSurface材質で「シェーダーアウトライン」をONにしApply�
 `tools/render_override/material_edit_audit.py` を隔離Maya内で読み込み、`install(window, output)` でヘルパーを作成した。編集はQtのクリック／キー入力で行い、ApplyやUndoのpresenterメソッドを直接呼んでいない。保存再オープンにはMayaのfileコマンドを使用した。範囲テストの初期値設定とcommit失敗注入は上記のとおり明示的な検証用操作。
 
 画像とJSONは `build/reports/material-audit/` に保存。Qt5の色ダイアログではHTML欄が無名だったため、最初の検証コードがnull対象へ入力してMaya 2024を2回終了させた。ヘルパーの対象特定を修正後、色編集は通過している。この終了は製品不具合に含めない。
+
+## 修正後の確認
+
+5件を修正し、Maya 2024／2026の通常Release DLLで実GUIを再確認した。未編集の輪郭サイズ・不透明度の保持、構造変更の一覧／詳細同期、保存再オープン後の並べ替え、書込み後失敗のrollbackとRedo抑止、直前の正常なUndo履歴の保持を確認。standardSurfaceのShader Outlineは非対応を明示して操作不可にした。
+
+追加で、Maya 2024のscriptJobによるUndo/Redo通知が届かないケースを確認し、MEventMessageと遅延UI更新へ置き換えた。ウィンドウ破棄時のcallback解除も両版で確認した。書込み前の失敗はUndoを消費せず、訂正用の未適用入力を残す。
+
+関連unit tests 336 pass、Ruff pass、独立レビュー指摘を解消。コミット: d615e7a8、a8ff07b2、f1fc51f1、94083992、de9976d0。詳細と検証条件は `build/reports/material-repair-final/report.md`、両版の集計は `summary.json`。稼働Mayaへの最終Pythonメソッド再ロードによる検証であり、全release gate完了ではない。
