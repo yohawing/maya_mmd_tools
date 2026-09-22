@@ -863,6 +863,44 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertEqual(result.edge_size, 4.5)
         self.assertEqual(result.diffuse[3], 0.75)
 
+    def test_apply_then_return_numeric_fields_to_initial_values(self):
+        """Returning to the selection's original values is a real second edit."""
+        self._configure_apply_inputs()
+        presenter = self.presenter
+        presenter.current_material_index = 0
+        presenter.app_state.current_model_root = "|model_root"
+        presenter.material_data.update(
+            transparency_view=0.0, edge_size_view=0.0, specular_coefficient_view=0.0
+        )
+        current = [MmdMaterialSpec(
+            "Material", index=0, binding_identity="test_material",
+            diffuse=(1.0, 0.5, 0.0, 1.0), edge_size=0.0, specular_coefficient=0.0,
+        )]
+
+        def apply(root, material):
+            current[0] = material
+            return material
+
+        coordinator = Mock(spec=[
+            "read_material_value", "apply_material_value_patch", "apply_material_binding_patch"
+        ])
+        coordinator.read_material_value.side_effect = lambda *args: current[0]
+        coordinator.apply_material_value_patch.side_effect = apply
+        coordinator.apply_material_binding_patch.side_effect = apply
+        presenter.authoring_coordinator = coordinator
+        presenter._apply_authoring_changes()
+        self.assertEqual(current[0].diffuse[3], 0.75)
+        self.assertEqual(current[0].edge_size, 1.5)
+        self.assertEqual(current[0].specular_coefficient, 0.75)
+
+        self.mock_view.transparency_spin.value.return_value = 0.0
+        self.mock_view.edge_size_spin.value.return_value = 0.0
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.0
+        presenter._apply_authoring_changes()
+        self.assertEqual(current[0].diffuse[3], 1.0)
+        self.assertEqual(current[0].edge_size, 0.0)
+        self.assertEqual(current[0].specular_coefficient, 0.0)
+
     def test_selected_detail_projection_renders_semantics_provenance_and_preview(self):
         presenter, coordinator = self._make_authoring_presenter()
         assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)

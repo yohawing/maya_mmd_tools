@@ -992,6 +992,10 @@ class MaterialPresenter:
             self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
         if outline_intent is not None:
             self.material_data["shader_outline_enabled"] = outline_intent
+        # Precision preservation must compare against the last successful
+        # Apply, otherwise returning to the initial value looks unedited.
+        for field in ("transparency", "specular_coefficient", "edge_size"):
+            self.material_data[f"{field}_view"] = getattr(self.view, f"{field}_spin").value()
         self.has_unsaved_changes = False
         self._update_selected_material_row(reloaded, replacement.binding_identity)
         self.app_state.emit_status(
