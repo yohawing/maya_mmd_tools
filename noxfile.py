@@ -1955,6 +1955,13 @@ def render_stock_preview(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_outline_face_capture(session: nox.Session) -> None:
+    """Capture a fixed PMX face for native outline depth image comparisons."""
+    session.run(sys.executable, "tools/render_override/outline_face_capture.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_override_self_shadow(session: nox.Session) -> None:
     """Verify Ordered shadow modes and flags using an explicit textured PMX."""
     session.run(

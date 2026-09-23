@@ -137,6 +137,16 @@ float4 NativeEdgePS(VS_OUTPUT input) : SV_TARGET
 // these single-pass techniques separate from the product shader's explicit
 // edge+body pass sequence so MPxGeometryOverride can bind body and outline
 // states to independent VP2 render items.
+// Opaque outlines write depth before their body. Permit the body to replace
+// an equal-depth hull (for example, a double-sided plane), while retaining
+// the hull's occlusion of later surfaces that are farther away.
+DepthStencilState NativeOpaqueBodyDepth
+{
+    DepthEnable = TRUE;
+    DepthWriteMask = ALL;
+    DepthFunc = LESS_EQUAL;
+};
+
 technique11 MMDNativeOpaque
 {
     pass MainPass
@@ -146,7 +156,7 @@ technique11 MMDNativeOpaque
         SetPixelShader(CompileShader(ps_5_0, NativeMainPS()));
         SetRasterizerState(CullFront);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
+        SetDepthStencilState(NativeOpaqueBodyDepth, 0);
     }
 }
 
@@ -172,7 +182,7 @@ technique11 MMDNativeOpaqueDoubleSided
         SetPixelShader(CompileShader(ps_5_0, NativeMainPS()));
         SetRasterizerState(CullNone);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
-        SetDepthStencilState(EnableDepth, 0);
+        SetDepthStencilState(NativeOpaqueBodyDepth, 0);
     }
 }
 
