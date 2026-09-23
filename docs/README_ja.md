@@ -132,16 +132,6 @@ UI項目はPMX Editorの構成を参考にしています。
 
 ※ MayaのHumanIKの機能を使うと、一部の動作でMMDのリグが壊れてしまうことがあります。
 
-## ビューポートの設定
-
-MMDのトゥーン表現を再現するシェーダーは、MMDシェーダーの作成オプションと、レンダリング環境に応じたシェーダープラグインを有効にすることで確認出来ます。Windows 環境では `dx11Shader` プラグイン、MacOS 環境では `glslShader`（GLSLShader）プラグインを使用します。
-また、インポート時に以下の設定が自動で適用されます。
-
-- **レンダリング空間** → `ACEScg`　→ `scene-linear Rec.709-sRGB`。
-- **ビュー変換（View Transform）** `ACES 1.0 SDR-video (sRGB)` → `Un-tone-mapped (sRGB)`
-
-いずれもMMDらしい色調（sRGBガンマ空間入出力）を再現する目的での適用になります。
-
 ## サポート
 
 問題が解決しない場合は、Maya／OSのバージョン、再現手順、エラー内容、可能であればスクリーンショットを添えて [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) で報告してください。

@@ -131,15 +131,6 @@ The UI follows PMX Editor conventions.
 
 Using Maya's HumanIK features directly can break the MMD rig in some workflows.
 
-## Viewport Setup
-
-To view the shader that reproduces the MMD toon look, enable the MMD shader creation option and the shader plug-in for your rendering environment. Use the `dx11Shader` plug-in on Windows and the `glslShader` (GLSLShader) plug-in on macOS. The following settings are also applied automatically on import:
-
-- **Rendering space** → `ACEScg` → `scene-linear Rec.709-sRGB`.
-- **View Transform** → `ACES 1.0 SDR-video (sRGB)` → `Un-tone-mapped (sRGB)`.
-
-Both are applied to reproduce the MMD-style color response (sRGB gamma-space input/output).
-
 ## Support
 
 If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the Maya and OS versions, reproduction steps, the error, and a screenshot when possible.
