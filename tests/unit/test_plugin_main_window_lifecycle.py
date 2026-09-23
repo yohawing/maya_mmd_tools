@@ -438,7 +438,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             self.plugin_main.cmds.menuItem.call_args_list,
         )
 
-    def test_install_menu_removes_stale_tools_submenu(self):
+    def test_install_menu_replaces_stale_tools_submenu(self):
         self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
             False if kwargs.get("exists") else ["MMDToolsSubMenu"] if kwargs.get("query") else "MMD"
         )
