@@ -20,8 +20,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | Feature | Status | Notes |
 |---|---|---|
 | Mesh | ℹ️ | SDEF/QDEF import is not supported; they are imported as BDEF4-equivalent weights. Additional UVs are retained as metadata. |
-| Materials & textures | ℹ️ | New imports use Standard Surface to approximate base color, main textures, and opacity in standard VP2. MMD attributes edited in MMD Editor remain the material source of truth. Use MMD Render to inspect toon, sphere, outlines, and material transparency order. |
-| MMD Render (RenderOverride) | 🧪 | DirectX 11 only. Select it from the Renderer menu of each preview panel; standard VP2 editing panels can remain open alongside it. Import does not switch other panels. The adjacent settings button edits scene-wide self-shadow modes. Shadow distance does not affect rendering yet, and MMD image parity remains unverified. |
+| Materials & textures | ℹ️ | MMD shading is implemented through RenderOverride (DirectX only). Select `Renderer > MMD Render` in the viewport to enable it. |
 | Maya name resolution | ✅ | Names are converted to safe English or hashed names. Non-English image paths are also resolved automatically to safe paths. |
 | Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Basic PMX 2.0 IK, append, axis, and after-physics deformation are supported. Complex rigs have known issues. |
 | Display frames (表示枠) | ✅ | Display-frame names, special-frame flags, and ordered bone/morph items can be edited. |
@@ -42,16 +41,6 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Control Rig | 🧪 | An optional Control Rig can be generated from the semi-standard bone layout. Restore and bake have known issues. |
 | Export | 🧪 | Supports VMD export for characters, cameras, and lights, as well as VPD export. Export is currently bake-only. Self-shadow is unsupported. |
-
-## Editing and MMD Preview
-
-Use standard VP2 for selection and component editing. Switch only the preview panel to `Renderer > MMD Render`. Keys 4, 5, and 6 select wireframe, untextured, and textured display respectively.
-
-Edit materials in MMD Editor. The MMD attributes on Standard Surface are the source for saved material data and PMX export; standard preview color and opacity are derived from them. Disconnecting and editing the derived plugs does not update MMD attributes. This is not a general Standard Surface-to-PMX converter.
-
-The settings button beside the Renderer entry controls scene-wide self-shadow modes stored on the MMD light. Material outline and shadow flags are edited in MMD Editor. Shadow distance can be saved but does not affect rendering yet.
-
-Re-import models with legacy DX11/GLSL materials from their source PMX/PMD files to use the current display setup. Existing scene edits and animation are not transferred to the newly imported model automatically.
 
 ## Known Limitations
 
@@ -91,8 +80,6 @@ The installer copies all Maya MMD Tools files into Maya's user `modules` folder,
 2. Open `Window > Settings/Preferences > Plug-in Manager`.
 3. Find `mmd_tools_plugin.py`.
 4. Check `Loaded`. If you want it to load automatically, also check `Auto load`.
-
-For MMD shading on DirectX 11, select `Renderer > MMD Render` in the preview panel.
 
 ## Verify Installation
 
