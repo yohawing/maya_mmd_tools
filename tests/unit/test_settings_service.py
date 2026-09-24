@@ -33,7 +33,7 @@ class _FakeSettingsStore:
                 "rig": {"add_semi_standard_bones": True, "bake_mode": False},
                 "native": {
                     "use_cpp_fast_load": True,
-                    "cpp_fast_load_mesh_only": False,
+                    "cpp_fast_load_mesh_only": True,
                     "use_cpp_vp2_ownership": True,
                     "use_cpp_rig_nodes": True,
                 },
@@ -220,6 +220,12 @@ class TestSettingsServiceJson(unittest.TestCase):
 
 class TestSettingsServiceImportOptions(unittest.TestCase):
     def setUp(self):
+        api_probe = patch(
+            "mmd_tools.converters.material_morph_runtime.detect_effective_vp2_draw_api",
+            return_value="directx11",
+        )
+        api_probe.start()
+        self.addCleanup(api_probe.stop)
         self.store = _FakeSettingsStore()
         self.service = SettingsService(self.store)
 
@@ -258,9 +264,9 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
-        self.assertFalse(options["use_cpp_fast_load"])
-        self.assertTrue(options["cpp_fast_load_mesh_only"])
-        self.assertFalse(options["use_cpp_vp2_ownership"])
+        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertFalse(options["cpp_fast_load_mesh_only"])
+        self.assertTrue(options["use_cpp_vp2_ownership"])
         self.assertFalse(options["use_native_pmx_parse"])
         self.assertFalse(options["require_native_pmx_parse"])
         self.assertFalse(options["use_cpp_rig_nodes"])
@@ -293,16 +299,40 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
 
-    def test_build_pmx_import_options_defaults_native_render_routes_off(self):
-        self.service.set("ui.general.development_mode", True)
+    def test_build_pmx_import_options_defaults_native_render_routes_on(self):
+        self.service.set("ui.general.development_mode", False)
         native = self.store.data["import"]["native"]
         native.pop("use_cpp_fast_load")
         native.pop("use_cpp_vp2_ownership")
 
         options = self.service.build_pmx_import_options()
 
+        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertTrue(options["use_cpp_vp2_ownership"])
+
+    def test_normal_mode_preserves_native_opt_out_and_dependency(self):
+        self.service.set("import.native.use_cpp_vp2_ownership", False)
+        options = self.service.build_pmx_import_options()
+        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertFalse(options["use_cpp_vp2_ownership"])
+        self.service.set("import.native.use_cpp_fast_load", False)
+        self.service.set("import.native.use_cpp_vp2_ownership", True)
+        options = self.service.build_pmx_import_options()
         self.assertFalse(options["use_cpp_fast_load"])
         self.assertFalse(options["use_cpp_vp2_ownership"])
+
+    def test_opengl_ui_uses_fast_load_without_render_override(self):
+        from mmd_tools.converters.material_morph_runtime import VP2_API_OPENGL, VP2_API_OPENGL_CORE
+
+        for api in (VP2_API_OPENGL, VP2_API_OPENGL_CORE):
+            with self.subTest(api=api), patch(
+                "mmd_tools.converters.material_morph_runtime.detect_effective_vp2_draw_api",
+                return_value=api,
+            ):
+                options = self.service.build_pmx_import_options()
+                self.assertTrue(options["use_cpp_fast_load"])
+                self.assertFalse(options["use_cpp_vp2_ownership"])
+                self.assertTrue(self.service.get("import.native.use_cpp_vp2_ownership"))
 
     def test_model_control_rig_setting_feeds_pmx_and_vmd_options(self):
         self.service.set("import.model.create_mmd_control_rig", True)

@@ -157,10 +157,12 @@ DEFAULT_RELEASE_MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
 DEFAULT_CMAKE_CONFIG = "Debug"
 DEFAULT_CPP_VERIFY_MAYA_VERSIONS = DEFAULT_RELEASE_MAYA_VERSIONS
 DEFAULT_RELEASE_VIEWPORT_MATRIX = (
-    ("2025", "glsl", "glcore"),
-    ("2026", "dx11", "dx11"),
+    ("2025", "standard", "glcore"),
+    ("2024", "ordered", "dx11"),
+    ("2026", "ordered", "dx11"),
 )
 DEFAULT_RELEASE_VISUAL_PORTS = {
+    "2024": "7824",
     "2025": "7825",
     "2026": "7826",
 }
@@ -171,6 +173,7 @@ RELEASE_VISUAL_CASES = (
     "fixture-render-generated-visual-mmd-texture-uv-orientation-plane",
     "fixture-render-generated-visual-mmd-sphere-texture-add",
     "fixture-render-generated-visual-mmd-alpha-blend-overlap",
+    "fixture-render-generated-visual-mmd-outline-normal-silhouette",
 )
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
@@ -1846,6 +1849,13 @@ def maya_visual_regression(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def release_render_capture(session: nox.Session) -> None:
+    """Capture generated PMX fixtures using the current native MMD Render path."""
+    session.run(sys.executable, "tools/render_override/release_capture.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_override_visual_gate(session: nox.Session) -> None:
     """Run the Plan 010 RO-0 GoldenOracle/FLIP/HTML harness."""
 
@@ -1858,14 +1868,152 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def render_override_native_ui_gallery(session: nox.Session) -> None:
-    """Capture Plan 010 cases through the settings-backed C++ UI route."""
-
+def fast_import_authoring(session: nox.Session) -> None:
+    """Compare GUI Fast Load animation and save/reopen with ordinary PMX import."""
     session.run(
         sys.executable,
-        "tools/render_override/render_override_native_gallery.py",
+        "tools/smoke/maya_fast_import_authoring.py",
         *session.posargs,
         external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def render_override_separation(session: nox.Session) -> None:
+    """Verify standard VP2 and MMD Render editing in two real GUI panels."""
+    session.run(sys.executable, "tools/render_override/separation_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_override_settings(session: nox.Session) -> None:
+    """Verify the official MMD Render option box in a real Maya GUI."""
+    session.run(sys.executable, "tools/render_override/settings_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_override_authoring(session: nox.Session) -> None:
+    """Verify standard mesh and MMD Render authoring in two GUI panels."""
+    session.run(
+        sys.executable,
+        "tools/render_override/separation_e2e.py",
+        "--textured",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def render_profile(session: nox.Session) -> None:
+    """Measure ordered-render CPU stages in an isolated Maya GUI."""
+    session.run(sys.executable, "tools/render_override/profile_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_normal_seams(session: nox.Session) -> None:
+    """Compare unified/split normals under small joint rotations in Maya GUI."""
+    session.run(sys.executable, "tools/render_override/normal_seams_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_scene_profile(session: nox.Session) -> None:
+    """Measure an existing scene in an isolated Maya 2026 GUI."""
+    session.run(sys.executable, "tools/render_override/scene_profile.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_vp2_native_geometry(session: nox.Session) -> None:
+    """Measure Maya-managed split meshes with the MMD DX11 effect."""
+    session.run(
+        sys.executable,
+        "tools/render_override/vp2_native_geometry_profile.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def render_vp2_transparency(session: nox.Session) -> None:
+    """Probe VP2 transparent ordering, face filtering, and two-panel contracts."""
+    session.run(
+        sys.executable,
+        "tools/render_override/vp2_transparency_checks.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def render_stock_preview(session: nox.Session) -> None:
+    """Verify standardSurface texture/color/alpha on OpenGL Core in Maya GUI."""
+    session.run(sys.executable, "tools/render_override/stock_preview_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_outline_face_capture(session: nox.Session) -> None:
+    """Capture a fixed PMX face for native outline depth image comparisons."""
+    session.run(sys.executable, "tools/render_override/outline_face_capture.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_override_self_shadow(session: nox.Session) -> None:
+    """Verify Ordered shadow modes and flags using an explicit textured PMX."""
+    session.run(
+        sys.executable,
+        "tools/render_override/effects_e2e.py",
+        *session.posargs,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def fast_import_parity(session: nox.Session) -> None:
+    """Compare Python PMX import with the C++ FastLoad VP2 scene contract."""
+    maya_version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    model = _option(session.posargs, "--model", "tests/data/test_morph_model.pmx")
+    report = _option(
+        session.posargs,
+        "--report",
+        f"build/reports/fast-import-parity/maya{maya_version}.json",
+    )
+    plugin = ROOT / "plug-ins" / maya_version / config / "mmd_tools_cpp.mll"
+    if not plugin.is_file():
+        session.error(f"C++ plugin missing: {plugin}")
+    mayapy = _mayapy(maya_version)
+    input_path = (
+        ROOT
+        / "build"
+        / "reports"
+        / "fast-import-parity"
+        / f"maya{maya_version}-input.json"
+    )
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_path.write_text(
+        json.dumps(
+            {
+                "model": str(Path(model).resolve()),
+                "plugin": str(plugin.resolve()),
+                "report": str(Path(report).resolve()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    _run_mayapy_probe(
+        session,
+        mayapy,
+        "tools/smoke/maya_fast_import_parity.py",
+        ["--input-json", str(input_path)],
+        {"--input-json"},
+        utf8=True,
     )
 
 

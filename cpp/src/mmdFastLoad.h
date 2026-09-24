@@ -25,8 +25,9 @@
  * Coordinate conversion: x→x, y→y, z→-z (MMD → Maya), V-flip on UV.
  * Polygon winding is reversed (PMX → Maya).
  *
- * Returns [transformName, meshName] (single mesh) or [groupName] (split) as a
- * string array result. Supports undo by deleting the created root node(s).
+ * Returns [transformName, meshName] (single mesh), [groupName] (split), or
+ * [transformName, sourceMeshName, renderShapeName] (VP2 ownership) as a string
+ * array result. Supports undo by deleting the created root node(s).
  * Depends on mmd-anim-ffi (mmd_runtime.h) for the PMX parse ABI.
  */
 

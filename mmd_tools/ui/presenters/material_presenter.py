@@ -7,6 +7,8 @@ import os
 from pathlib import Path, PureWindowsPath
 from typing import Protocol
 
+from maya.api import OpenMaya as om
+
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ...core.model_authoring_spec import MmdMaterialSpec, MmdModelAuthoringSpec
@@ -18,7 +20,7 @@ from ...core.material_read_projection import (
     normalize_material_list_projection,
 )
 from ...core.material_authoring import classify_material_change
-from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
+from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt, QTimer
 from ..translations import UITranslator
 from .list_presenter_helpers import (
     apply_list_filter,
@@ -92,12 +94,57 @@ class MaterialPresenter:
         self._pending_refresh_generation = None
         self._last_refresh_generation = None
         self._material_list_projection = None
+        self._history_callbacks = []
+        self._history_timer = None
         self.connect_signals()
+        self._install_history_sync()
         self._update_authoring_actions()
 
         # 既に選択されているモデルがある場合はロード
         if self.app_state.current_model_root:
             self.load_materials()
+
+    @staticmethod
+    def _sync_slider(slider, value):
+        """Update the coarse slider without feeding its rounded value back."""
+        blocked = slider.blockSignals(True)
+        try:
+            slider.setValue(max(slider.minimum(), min(slider.maximum(), round(value * 100))))
+        finally:
+            slider.blockSignals(blocked)
+
+    def _install_history_sync(self):
+        """Read scene values after Maya finishes Undo/Redo, with view-owned cleanup."""
+        try:
+            self._history_timer = QTimer(self.view)
+            self._history_timer.setSingleShot(True)
+            self._history_timer.timeout.connect(self._sync_history)
+            for event in ("Undo", "Redo"):
+                self._history_callbacks.append(om.MEventMessage.addEventCallback(
+                    event, lambda *_: self._history_timer.start(0)
+                ))
+            self.view.destroyed.connect(self._dispose_history_sync)
+        except Exception:
+            self._dispose_history_sync()
+            logger.debug("Could not install material history callbacks", exc_info=True)
+
+    def _dispose_history_sync(self, *_):
+        callbacks, self._history_callbacks = self._history_callbacks, []
+        for callback in callbacks:
+            try:
+                om.MMessage.removeCallback(callback)
+            except Exception:
+                logger.debug("Could not remove material history callback", exc_info=True)
+
+    def _sync_history(self):
+        """History is authoritative, including when stale edits remain in the panel."""
+        binding = self.current_material
+        self.has_unsaved_changes = False
+        self.load_materials()
+        if not binding or not self._select_projected_binding(binding):
+            self._clear_material_selection()
+            self.view._show_placeholder()
+        self.on_search_text_changed(self.view.search_edit.text())
 
     def connect_signals(self):
         # ApplicationStateのシグナル
@@ -154,13 +201,13 @@ class MaterialPresenter:
 
         # Slider connections for transparency and specular coefficient
         self.view.transparency_slider.valueChanged.connect(lambda v: self.view.transparency_spin.setValue(v / 100.0))
-        self.view.transparency_spin.valueChanged.connect(lambda v: self.view.transparency_slider.setValue(int(v * 100)))
+        self.view.transparency_spin.valueChanged.connect(lambda v: self._sync_slider(self.view.transparency_slider, v))
 
         self.view.specular_coefficient_slider.valueChanged.connect(
             lambda v: self.view.specular_coefficient_spin.setValue(v / 100.0)
         )
         self.view.specular_coefficient_spin.valueChanged.connect(
-            lambda v: self.view.specular_coefficient_slider.setValue(int(v * 100))
+            lambda v: self._sync_slider(self.view.specular_coefficient_slider, v)
         )
 
         # Check boxes
@@ -647,7 +694,6 @@ class MaterialPresenter:
             "edge_color": material.edge_color[:3],
             "edge_alpha": material.edge_color[3],
             "edge_size": material.edge_size,
-            "edge_size_view": max(0.0, min(2.0, material.edge_size)),
             "shader_outline_enabled": detail.preview.outline_enabled,
             "shader_type": detail.preview.shader_type,
             "_authoring_material": material.to_mapping(),
@@ -658,9 +704,11 @@ class MaterialPresenter:
         self._update_color_widget(self.view.specular_color_widget, material.specular)
         self._update_color_widget(self.view.ambient_color_widget, material.ambient)
         self.view.transparency_spin.setValue(self.material_data["transparency"])
+        self.material_data["transparency_view"] = self.view.transparency_spin.value()
         self.view.specular_coefficient_spin.setValue(
-            max(0.0, min(1.0, material.specular_coefficient))
+            material.specular_coefficient
         )
+        self.material_data["specular_coefficient_view"] = self.view.specular_coefficient_spin.value()
 
         texture_by_slot = {texture.slot: texture for texture in detail.textures}
         main = texture_by_slot.get(MaterialTextureSlot.MAIN)
@@ -731,8 +779,16 @@ class MaterialPresenter:
         ):
             control.setChecked(bool(material.draw_flags & mask))
         self.view.shader_outline_check.setChecked(detail.preview.outline_enabled)
+        outline_supported = detail.preview.shader_type == "dx11Shader"
+        self.view.shader_outline_check.setEnabled(outline_supported)
+        self.view.shader_outline_check.setToolTip(
+            "" if outline_supported else UITranslator.instance().translate(
+                "shader_outline_requires_dx11", "tooltips"
+            )
+        )
         self._update_color_widget(self.view.edge_color_widget, material.edge_color)
-        self.view.edge_size_spin.setValue(self.material_data["edge_size_view"])
+        self.view.edge_size_spin.setValue(material.edge_size)
+        self.material_data["edge_size_view"] = self.view.edge_size_spin.value()
 
     def _set_texture_provenance_fields(self, original_path):
         """Update read-only texture provenance fields when the view provides them."""
@@ -936,6 +992,10 @@ class MaterialPresenter:
             self.material_data["_authoring_fingerprint"] = reloaded.fingerprint()
         if outline_intent is not None:
             self.material_data["shader_outline_enabled"] = outline_intent
+        # Precision preservation must compare against the last successful
+        # Apply, otherwise returning to the initial value looks unedited.
+        for field in ("transparency", "specular_coefficient", "edge_size"):
+            self.material_data[f"{field}_view"] = getattr(self.view, f"{field}_spin").value()
         self.has_unsaved_changes = False
         self._update_selected_material_row(reloaded, replacement.binding_identity)
         self.app_state.emit_status(
@@ -1014,8 +1074,17 @@ class MaterialPresenter:
         specular_coefficient = self._authoring_number(
             self.view.specular_coefficient_spin.value(), "specular_coefficient"
         )
+        # Preserve source precision when only another material field was edited.
+        if specular_coefficient == self.material_data.get("specular_coefficient_view"):
+            specular_coefficient = prior.specular_coefficient
         edge_size = self._authoring_number(self.view.edge_size_spin.value(), "edge_size")
-        diffuse_alpha = 1.0 - transparency
+        if edge_size == self.material_data.get("edge_size_view"):
+            edge_size = prior.edge_size
+        diffuse_alpha = (
+            prior.diffuse[3]
+            if transparency == self.material_data.get("transparency_view")
+            else 1.0 - transparency
+        )
 
         texture_source, resolved_texture = self._authoring_main_texture_paths(prior)
         sphere_source, resolved_sphere = self._authoring_aux_texture_paths(

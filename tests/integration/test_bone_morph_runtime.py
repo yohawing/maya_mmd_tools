@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -75,6 +76,298 @@ class TestBoneMorphRuntime(MayaTestBase):
 
     def test_plugin_harness_uses_class_local_ownership(self):
         self.assertIsNot(type(self).plugins_loaded, MayaTestBase.plugins_loaded)
+
+    @staticmethod
+    def _morph_controller_dirty_callback(controller):
+        selection = om.MSelectionList()
+        selection.add(controller)
+        node_object = selection.getDependNode(0)
+        node_fn = om.MFnDependencyNode(node_object)
+        return node_fn, node_fn.userNode().setDependentsDirty
+
+    @staticmethod
+    def _affected_plug_names(callback, plug):
+        affected = []
+        callback(plug, affected)
+        return {
+            item.partialName(includeNodeName=False, useLongNames=True)
+            for item in affected
+        }
+
+    @staticmethod
+    def _connect_morph_controller_outputs(controller, indices):
+        sink = cmds.createNode("network")
+        for index in indices:
+            cmds.addAttr(sink, longName=f"weight{index}", attributeType="double")
+            cmds.connectAttr(
+                f"{controller}.outputWeight[{index}]", f"{sink}.weight{index}"
+            )
+        return sink
+
+    def test_morph_controller_input_dirty_initially_fans_out_to_existing_outputs(self):
+        """Before topology is computed, input dirtiness preserves full fan-out."""
+        controller = cmds.createNode("mmdMorphController")
+        self._connect_morph_controller_outputs(controller, (1, 3, 7))
+        node_fn, callback = self._morph_controller_dirty_callback(controller)
+        input_plug = node_fn.findPlug("inputWeight", False).elementByLogicalIndex(3)
+
+        self.assertEqual(
+            self._affected_plug_names(callback, input_plug),
+            {
+                "outputWeight",
+                "outputWeight[1]",
+                "outputWeight[3]",
+                "outputWeight[7]",
+            },
+        )
+
+    def test_morph_controller_input_dirty_targets_direct_and_flattened_dependents(self):
+        """A valid cache dirties only the direct output and flattened Group leaves."""
+        controller = cmds.createNode("mmdMorphController")
+        self._connect_morph_controller_outputs(controller, (2, 4, 7, 9))
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(
+            f"{controller}.groupTopology",
+            '{"2":[[4,0.5]],"7":[[2,0.25],[4,0.125]]}',
+            type="string",
+        )
+        cmds.getAttr(f"{controller}.outputWeight[2]")
+        node_fn, callback = self._morph_controller_dirty_callback(controller)
+        input_array = node_fn.findPlug("inputWeight", False)
+
+        self.assertEqual(
+            self._affected_plug_names(
+                callback, input_array.elementByLogicalIndex(4)
+            ),
+            {"outputWeight[2]", "outputWeight[4]", "outputWeight[7]"},
+        )
+        self.assertEqual(
+            self._affected_plug_names(
+                callback, input_array.elementByLogicalIndex(2)
+            ),
+            {"outputWeight[2]", "outputWeight[7]"},
+        )
+
+        cmds.setAttr(f"{controller}.inputWeight[4]", 0.8)
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{controller}.outputWeight[2]"), 0.4, places=6
+        )
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{controller}.outputWeight[7]"), 0.1, places=6
+        )
+        cmds.setAttr(f"{controller}.inputWeight[2]", 0.2)
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{controller}.outputWeight[2]"), 0.6, places=6
+        )
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{controller}.outputWeight[7]"), 0.15, places=6
+        )
+
+    def test_morph_controller_parent_input_dirty_fans_out_after_cache_build(self):
+        """A parent-array change remains fail-closed after topology is cached."""
+        controller = cmds.createNode("mmdMorphController")
+        self._connect_morph_controller_outputs(controller, (2, 4, 7))
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(f"{controller}.groupTopology", '{"2":[[4,0.5]]}', type="string")
+        cmds.getAttr(f"{controller}.outputWeight[2]")
+        node_fn, callback = self._morph_controller_dirty_callback(controller)
+
+        self.assertEqual(
+            self._affected_plug_names(
+                callback, node_fn.findPlug("inputWeight", False)
+            ),
+            {
+                "outputWeight",
+                "outputWeight[2]",
+                "outputWeight[4]",
+                "outputWeight[7]",
+            },
+        )
+
+    @staticmethod
+    def _morph_controller_dag_sinks():
+        """Connect sparse outputs to DAG consumers evaluated by Maya's graph."""
+        controller = cmds.createNode("mmdMorphController")
+        cmds.setAttr(controller + ".groupTopology", '{"2":[[4,0.5]],"7":[[2,0.25],[4,0.125]]}', type="string")
+        cmds.setAttr(controller + ".inputWeight[9]", 0.3)
+        sinks = {}
+        for index in (2, 4, 7, 9):
+            sink = cmds.createNode("transform", name="morphSink%d" % index)
+            cmds.connectAttr("%s.outputWeight[%d]" % (controller, index), sink + ".tx")
+            sinks[index] = sink
+        return controller, sinks
+
+    def test_morph_controller_real_dirty_keeps_unrelated_sinks_clean(self):
+        """Exercise Maya propagation, including static attributeAffects edges."""
+        previous = cmds.evaluationManager(query=True, mode=True)[0]
+        try:
+            for mode in ("off", "serial", "parallel"):
+                with self.subTest(mode=mode):
+                    cmds.file(new=True, force=True)
+                    cmds.evaluationManager(mode=mode)
+                    controller, sinks = self._morph_controller_dag_sinks()
+                    for sink in sinks.values():
+                        cmds.getAttr(sink + ".worldMatrix[0]")
+                    dirty = set()
+                    callbacks = []
+                    try:
+                        for index, sink in sinks.items():
+                            selection = om.MSelectionList()
+                            selection.add(sink)
+                            callbacks.append(
+                                om.MNodeMessage.addNodeDirtyPlugCallback(
+                                    selection.getDependNode(0),
+                                    lambda node, plug, data, i=index: dirty.add(i),
+                                )
+                            )
+                        cmds.setAttr(controller + ".inputWeight[4]", 0.8)
+                        # Observe before any read can clean or recompute a sink.
+                        self.assertEqual(dirty, {2, 4, 7})
+                        expected = {2: 0.4, 4: 0.8, 7: 0.1, 9: 0.3}
+                        for index, value in expected.items():
+                            self.assertAlmostEqual(cmds.getAttr(sinks[index] + ".tx"), value)
+                    finally:
+                        for callback in callbacks:
+                            om.MMessage.removeCallback(callback)
+        finally:
+            cmds.evaluationManager(mode=previous)
+
+    def test_morph_controller_animation_topology_and_reload(self):
+        """Check cold/warm evaluation, frame jumps, and edited Group dependencies."""
+        previous = cmds.evaluationManager(query=True, mode=True)[0]
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                for mode in ("off", "serial", "parallel"):
+                    with self.subTest(mode=mode):
+                        cmds.file(new=True, force=True)
+                        cmds.evaluationManager(mode=mode)
+                        controller, sinks = self._morph_controller_dag_sinks()
+                        for index, first, last in ((4, 0.0, 0.8), (2, 0.2, 0.4)):
+                            plug = "%s.inputWeight[%d]" % (controller, index)
+                            cmds.setKeyframe(plug, time=1, value=first)
+                            cmds.setKeyframe(plug, time=10, value=last)
+                            cmds.keyTangent(plug, inTangentType="linear", outTangentType="linear")
+                        for reloaded in (False, True):
+                            for edited in (False, True):
+                                topology = '{"9":[[4,0.25]]}' if edited else '{"2":[[4,0.5]],"7":[[2,0.25],[4,0.125]]}'
+                                cmds.setAttr(controller + ".groupTopology", topology, type="string")
+                                for frame in (1, 10, 5, 10, 1):
+                                    cmds.currentTime(frame)
+                                    a = 0.8 * (frame - 1) / 9
+                                    b = 0.2 + 0.2 * (frame - 1) / 9
+                                    expected = (
+                                        {2: b, 4: a, 7: 0.0, 9: 0.3 + 0.25 * a}
+                                        if edited
+                                        else {2: b + 0.5 * a, 4: a, 7: 0.25 * b + 0.125 * a, 9: 0.3}
+                                    )
+                                    for index, value in expected.items():
+                                        self.assertAlmostEqual(
+                                            cmds.getAttr(sinks[index] + ".tx"),
+                                            value,
+                                            places=6,
+                                            msg=str((mode, reloaded, edited, frame, index)),
+                                        )
+                            if not reloaded:
+                                path = os.path.join(directory, "morph.ma")
+                                cmds.file(rename=path)
+                                cmds.file(save=True, type="mayaAscii")
+                                cmds.file(new=True, force=True)
+                                cmds.file(path, open=True, force=True)
+        finally:
+            cmds.evaluationManager(mode=previous)
+
+    def test_morph_controller_local_dirty_does_not_create_unconnected_outputs(self):
+        """Cached direct and Group targets are limited to existing output elements."""
+        controller = cmds.createNode("mmdMorphController")
+        self._connect_morph_controller_outputs(controller, (4, 9))
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(f"{controller}.groupTopology", '{"2":[[4,0.5]]}', type="string")
+        cmds.getAttr(f"{controller}.outputWeight[4]")
+        node_fn, callback = self._morph_controller_dirty_callback(controller)
+        input_array = node_fn.findPlug("inputWeight", False)
+        output_array = node_fn.findPlug("outputWeight", False)
+        existing_before = set(output_array.getExistingArrayAttributeIndices())
+
+        self.assertEqual(
+            self._affected_plug_names(
+                callback, input_array.elementByLogicalIndex(4)
+            ),
+            {"outputWeight[4]"},
+        )
+        self.assertEqual(
+            self._affected_plug_names(
+                callback, input_array.elementByLogicalIndex(6)
+            ),
+            set(),
+        )
+        self.assertEqual(
+            set(output_array.getExistingArrayAttributeIndices()), existing_before
+        )
+
+    def test_morph_controller_topology_change_falls_back_then_rebuilds_dependencies(self):
+        """Topology edits fan out until a successful compute rebuilds the cache."""
+        controller = cmds.createNode("mmdMorphController")
+        self._connect_morph_controller_outputs(controller, (2, 4, 7, 9))
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(f"{controller}.groupTopology", '{"2":[[4,0.5]]}', type="string")
+        cmds.getAttr(f"{controller}.outputWeight[2]")
+        node_fn, callback = self._morph_controller_dirty_callback(controller)
+        input_plug = node_fn.findPlug("inputWeight", False).elementByLogicalIndex(4)
+
+        cmds.setAttr(f"{controller}.topologyVersion", 2)
+        self.assertEqual(
+            self._affected_plug_names(callback, input_plug),
+            {
+                "outputWeight",
+                "outputWeight[2]",
+                "outputWeight[4]",
+                "outputWeight[7]",
+                "outputWeight[9]",
+            },
+        )
+
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(f"{controller}.groupTopology", '{"9":[[4,0.75]]}', type="string")
+        self.assertEqual(
+            self._affected_plug_names(callback, input_plug),
+            {
+                "outputWeight",
+                "outputWeight[2]",
+                "outputWeight[4]",
+                "outputWeight[7]",
+                "outputWeight[9]",
+            },
+        )
+
+        cmds.getAttr(f"{controller}.outputWeight[9]")
+        self.assertEqual(
+            self._affected_plug_names(callback, input_plug),
+            {"outputWeight[4]", "outputWeight[9]"},
+        )
+
+    def test_morph_controller_malformed_topology_keeps_full_dirty_fallback(self):
+        """A failed topology parse must not leave the previous dependency cache active."""
+        controller = cmds.createNode("mmdMorphController")
+        self._connect_morph_controller_outputs(controller, (2, 4, 7))
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(f"{controller}.groupTopology", '{"2":[[4,0.5]]}', type="string")
+        cmds.getAttr(f"{controller}.outputWeight[2]")
+        node_fn, callback = self._morph_controller_dirty_callback(controller)
+        input_plug = node_fn.findPlug("inputWeight", False).elementByLogicalIndex(4)
+
+        cmds.setAttr(f"{controller}.groupTopology", "not-json", type="string")
+        # Maya reports MPxNode compute exceptions but getAttr can still return the
+        # output's previous/default value, so the dirty behavior is the oracle.
+        cmds.getAttr(f"{controller}.outputWeight[2]")
+        self.assertEqual(
+            self._affected_plug_names(callback, input_plug),
+            {
+                "outputWeight",
+                "outputWeight[2]",
+                "outputWeight[4]",
+                "outputWeight[7]",
+            },
+        )
 
     def test_plugin_load_failure_restores_environment_and_unloads_partial_load(self):
         previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")

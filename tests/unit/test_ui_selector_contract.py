@@ -254,9 +254,6 @@ def test_physics_settings_and_validation_selectors(qapp):
             ("log_level_combo", "settingsLogLevelCombo", QComboBox),
             ("log_file_path_edit", "settingsLogFilePathEdit", QLineEdit),
             ("log_file_browse_btn", "settingsLogFileBrowseButton", QPushButton),
-            ("use_cpp_fast_load_check", "settingsUseCppFastLoadCheck", QCheckBox),
-            ("use_cpp_vp2_ownership_check", "settingsUseCppVp2OwnershipCheck", QCheckBox),
-            ("use_cpp_rig_nodes_check", "settingsUseCppRigNodesCheck", QCheckBox),
         ),
     )
     validation = ValidationConsole()

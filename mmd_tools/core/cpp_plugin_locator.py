@@ -55,13 +55,14 @@ def plugin_configurations(maya_version: str) -> tuple[str, ...]:
     """Return config candidates with version-specific precedence.
 
     ``MMD_TOOLS_CPP_CONFIG_<version>`` wins over the generic variable.  The
-    selected configuration is followed by Release and Debug fallback builds,
+    Release is preferred when unspecified. The selected configuration is
+    followed by Release and Debug fallback builds,
     de-duplicated while preserving order.
     """
     selected = _first_non_empty_environment(
         f"MMD_TOOLS_CPP_CONFIG_{maya_version}" if maya_version else "",
         "MMD_TOOLS_CPP_CONFIG",
-    ) or "Debug"
+    ) or "Release"
     configs = []
     for config in (selected, "Release", "Debug"):
         if config not in configs:

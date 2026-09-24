@@ -106,7 +106,7 @@ class NoxReleaseTest(unittest.TestCase):
         ]
         commands.extend(
             [
-                ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+                ("tier2:generated-pmx-maya-version-diff", ["diff"]),
                 ("tier2:bundled-native-smoke", ["bundled-native-smoke"]),
             ]
         )
@@ -219,7 +219,7 @@ class NoxReleaseTest(unittest.TestCase):
                 ("tier2:viewport-dx11-2026", ["viewport", "2026"]),
                 ("tier2:generated-pmx-visual-glsl-2025", ["visual", "2025"]),
                 ("tier2:generated-pmx-visual-dx11-2026", ["visual", "2026"]),
-                ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+                ("tier2:generated-pmx-maya-version-diff", ["diff"]),
                 ("tier2:serial-first", ["serial", "first"]),
                 ("tier2:serial-second", ["serial", "second"]),
             ]
@@ -260,7 +260,7 @@ class NoxReleaseTest(unittest.TestCase):
                         completed_visuals += 1
                         if completed_visuals == 2:
                             visual_done.set()
-                elif name == "tier2:generated-pmx-glsl-dx11-diff":
+                elif name == "tier2:generated-pmx-maya-version-diff":
                     self.assertTrue(visual_done.is_set())
                     local_results.append(
                         {"name": name, "status": "pass", "duration_sec": 0.0, "command": command}
@@ -296,7 +296,7 @@ class NoxReleaseTest(unittest.TestCase):
         commands = [
             ("tier2:generated-pmx-visual-glsl-2025", ["visual", "2025"]),
             ("tier2:generated-pmx-visual-dx11-2026", ["visual", "2026"]),
-            ("tier2:generated-pmx-glsl-dx11-diff", ["diff"]),
+            ("tier2:generated-pmx-maya-version-diff", ["diff"]),
             ("tier2:bundled-native-smoke", ["bundled-native-smoke"]),
             ("tier2:native-physics-release-gate", ["native-physics-release-gate"]),
             ("tier2:pmx-roundtrip-v0_4", ["pmx-roundtrip"]),
@@ -327,7 +327,7 @@ class NoxReleaseTest(unittest.TestCase):
                         if completed_visuals == 2:
                             visuals_done.set()
                 elif name in {
-                    "tier2:generated-pmx-glsl-dx11-diff",
+                    "tier2:generated-pmx-maya-version-diff",
                     "tier2:bundled-native-smoke",
                 }:
                     self.assertTrue(visuals_done.is_set())
@@ -344,7 +344,7 @@ class NoxReleaseTest(unittest.TestCase):
                 local_results.append(
                     {
                         "name": name,
-                        "status": "fail" if name == "tier2:generated-pmx-glsl-dx11-diff" else "pass",
+                        "status": "fail" if name == "tier2:generated-pmx-maya-version-diff" else "pass",
                         "duration_sec": 0.0,
                         "command": command,
                     }
@@ -364,7 +364,7 @@ class NoxReleaseTest(unittest.TestCase):
         self.assertEqual(len(results), len(commands))
         self.assertEqual([result["name"] for result in results], [name for name, _ in commands])
         self.assertEqual(results[2]["status"], "fail")
-        self.assertGreater(seen.index("tier2:generated-pmx-glsl-dx11-diff"), seen.index("tier2:generated-pmx-visual-dx11-2026"))
+        self.assertGreater(seen.index("tier2:generated-pmx-maya-version-diff"), seen.index("tier2:generated-pmx-visual-dx11-2026"))
         self.assertGreater(seen.index("tier2:bundled-native-smoke"), seen.index("tier2:generated-pmx-visual-glsl-2025"))
 
     def test_release_gate_rejects_invalid_jobs(self):

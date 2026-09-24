@@ -269,12 +269,17 @@ def _canonical_offset(spec: MmdModelAuthoringSpec, morph_type: str, offset: Any,
         }
     if morph_type == "impulse":
         expected = {"rigid_body_index", "impulse", "torque"}
+        if "is_local" in value:
+            expected.add("is_local")
         _keys(value, expected, field=field)
-        return {
+        result = {
             "rigid_body_index": _integer(value["rigid_body_index"], field=f"{field}.rigid_body_index"),
             "impulse": _vector(value["impulse"], 3, field=f"{field}.impulse"),
             "torque": _vector(value["torque"], 3, field=f"{field}.torque"),
         }
+        if "is_local" in value:
+            result["is_local"] = _integer(value["is_local"], field=f"{field}.is_local", maximum=1)
+        return result
     raise MorphAuthoringError(f"unsupported morph type: {morph_type!r}")
 
 

@@ -9,7 +9,7 @@ from mmd_tools.core.import_strategy import (
 
 
 class TestModelImportStrategy(unittest.TestCase):
-    def test_development_mode_does_not_enable_fast_load_by_default(self):
+    def test_development_mode_enables_fast_load_by_default(self):
         def fake_settings(key, default=None):
             if key == "ui.general.development_mode":
                 return True
@@ -21,8 +21,18 @@ class TestModelImportStrategy(unittest.TestCase):
             settings_get=fake_settings,
         )
 
-        self.assertFalse(strategy.use_cpp_fast_load)
-        self.assertEqual(strategy.cpp_fast_load_reason, "disabled by option/settings")
+        self.assertTrue(strategy.use_cpp_fast_load)
+        self.assertEqual(strategy.cpp_fast_load_reason, "enabled by option/settings")
+
+    def test_direct_pmx_defaults_to_fast_load_and_honors_explicit_opt_out(self):
+        def settings_get(_key, default=None):
+            return default
+        self.assertTrue(resolve_model_import_strategy(
+            "model.pmx", {}, settings_get=settings_get
+        ).use_cpp_fast_load)
+        self.assertFalse(resolve_model_import_strategy(
+            "model.pmx", {"use_cpp_fast_load": False}, settings_get=settings_get
+        ).use_cpp_fast_load)
 
     def test_pmx_fast_load_enabled_by_option(self):
         strategy = resolve_model_import_strategy(
@@ -46,7 +56,7 @@ class TestModelImportStrategy(unittest.TestCase):
         self.assertFalse(strategy.use_cpp_fast_load)
         self.assertEqual(strategy.cpp_fast_load_reason, "disabled: suffix .pmd is not .pmx")
 
-    def test_native_defaults_are_ignored_outside_development_mode(self):
+    def test_fast_load_setting_is_used_outside_development_mode(self):
         def fake_settings(key, default=None):
             if key == "import.native.use_cpp_fast_load":
                 return True
@@ -56,7 +66,7 @@ class TestModelImportStrategy(unittest.TestCase):
 
         strategy = resolve_model_import_strategy("model.pmx", {}, settings_get=fake_settings)
 
-        self.assertFalse(strategy.use_cpp_fast_load)
+        self.assertTrue(strategy.use_cpp_fast_load)
         self.assertIsNone(strategy.use_native_pmx_parse)
         self.assertFalse(strategy.require_native_pmx_parse)
 

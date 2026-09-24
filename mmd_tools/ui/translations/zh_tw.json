@@ -1,5 +1,6 @@
 {
     "animation_picker": {
+        "left_eye": "左眼", "right_eye": "右眼",
         "head": "頭", "neck": "頸", "upper_body": "上半身", "upper_body_2": "上半身2", "lower_body": "下半身",
         "left_shoulder": "左肩", "left_upper_arm": "左臂", "left_lower_arm": "左肘", "left_wrist": "左手腕",
         "right_shoulder": "右肩", "right_upper_arm": "右臂", "right_lower_arm": "右肘", "right_wrist": "右手腕",
@@ -181,7 +182,6 @@
     "authoring_selection_required": "請先選取項目",
     "vpd_not_implemented": "VPD 姿勢匯入尚未實作",
     "use_namespace": "為每個模型建立 Maya 命名空間，避免名稱衝突",
-    "create_mmd_shaders": "使用 dx11Shader/glslShader 重現 MMD 材質。停用時回退為 standardSurface",
     "auto_resolve_textures": "自動修復非 ASCII 貼圖路徑，建立 ASCII 名稱的快取副本",
     "bake_mode": "將所有影格烘焙為關鍵影格。不建立 IK/附加綁定",
     "native_physics_bake": "使用原生執行階段烘焙 PMX 物理。需要烘焙動作",
@@ -193,9 +193,7 @@
     "vmd_fps": "VMD 檔案的影格率。MMD 標準為 30 fps",
     "separate_meshes": "依材質分割網格",
     "import_physics": "從 PMX 物理資料建立剛體與關節",
-    "disable_backface_culling": "停用背面剔除以啟用雙面算圖",
-    "use_cpp_fast_load": "使用編譯後的 C++ PMX 匯入器取代 Python 匯入器（實驗性）",
-    "use_cpp_vp2_ownership": "使用原生 mmdRenderShape 的 VP2 RenderOverride。需要啟用 C++ Fast Load，僅用於網格顯示（實驗性）"
+    "disable_backface_culling": "停用背面剔除以啟用雙面算圖"
   },
   "messages": {
     "ready": "準備就緒",
@@ -371,7 +369,6 @@
     "vmd_export_light": "燈光",
     "use_namespace": "使用命名空間",
     "import_models": "匯入模型",
-    "create_mmd_shaders": "建立MMD著色器",
     "separate_meshes": "按材質分離網格",
     "joint_name_conversion": "將關節名稱轉換為英文",
     "disable_backface_culling": "停用背面剔除",
@@ -382,8 +379,6 @@
     "reduce_bake_keys": "減少烘焙關鍵影格",
     "create_mmd_control_rig": "建立 MMD Control Rig",
     "vmd_rotation_time_curve": "保留VMD旋轉時間曲線（實驗性）",
-    "use_cpp_fast_load": "使用 C++ Fast Load（實驗性）",
-    "use_cpp_vp2_ownership": "使用 C++ VP2 RenderOverride（實驗性）",
     "new_file": "新建檔案",
     "enable_ik": "啟用IK",
     "invert_value": "反轉值",

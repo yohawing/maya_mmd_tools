@@ -13,10 +13,12 @@
 #pragma once
 
 #include <maya/MBoundingBox.h>
+#include <maya/MDataBlock.h>
 #include <maya/MObject.h>
 #include <maya/MObjectHandle.h>
 #include <maya/MPxCommand.h>
 #include <maya/MPxSurfaceShape.h>
+#include <maya/MPlugArray.h>
 #include <maya/MSelectionMask.h>
 #include <maya/MString.h>
 #include <maya/MTypeId.h>
@@ -24,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MmdRenderQueue.h"
@@ -33,6 +36,27 @@ public:
     static const MTypeId id;
     static const MString drawDbClassification;
     static const MString drawRegistrantId;
+    // Maya's evaluated source mesh.  The importer may leave this input
+    // unconnected while the static VP2 witness is used; a later authoring
+    // path can connect a standard mesh without changing the render queue.
+    static MObject aInputMesh;
+    // Optional authored/evaluated alpha values.  Array logical indices are
+    // PMX material indices; absent elements leave the queue's base alpha
+    // untouched.
+    static MObject aMaterialAlpha;
+    // Optional authored/evaluated material values.  Array logical indices are
+    // PMX material indices; absent elements leave the queue's base values
+    // untouched.
+    static MObject aMaterialValues;
+    static MObject aMaterialValueChildren[13];
+    static MObject aMaterialSettings;
+    static MObject aMaterialSettingChildren[7];
+    // Internal, non-persistent DG input.  VP2 publishes readiness here so
+    // Maya dirties and reevaluates the connected visibility output.
+    static MObject aProxyReady;
+    // Transient output driving the ordinary source mesh visibility.  It is
+    // true until a proxy has valid DG data and committed VP2 buffers.
+    static MObject aSourceVisibility;
 
     MmdRenderShape();
     ~MmdRenderShape() override;
@@ -41,8 +65,14 @@ public:
     static MStatus initialize();
     static MmdRenderShape* fromMObject(const MObject& object,
                                        MStatus* status = nullptr);
+    static bool prepareForPluginUnload();
 
     void postConstructor() override;
+    MStatus preEvaluation(const MDGContext& context,
+                          const MEvaluationNode& evaluationNode) override;
+    MStatus setDependentsDirty(const MPlug& plug,
+                               MPlugArray& plugArray) override;
+    MStatus compute(const MPlug& plug, MDataBlock& data) override;
     bool isBounded() const override;
     MBoundingBox boundingBox() const override;
     MSelectionMask getShapeSelectionMask() const override;
@@ -62,8 +92,47 @@ public:
         const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
         double scale);
 
-    /** Update one material's effective alpha and rebuild the ordered items. */
-    bool updateMaterialAlpha(std::size_t materialIndex, float diffuseAlpha);
+    bool setMaterialSplitGeometry(
+        const std::vector<std::vector<float>>& submeshPositions,
+        const std::vector<std::vector<float>>& submeshNormals,
+        const std::vector<std::vector<float>>& submeshUvs,
+        const std::vector<std::vector<uint32_t>>& submeshIndices,
+        const std::vector<mmd::MmdRenderQueueInput>& queueInputs,
+        double scale,
+        const std::vector<std::vector<uint32_t>>& submeshSourceIndices,
+        const std::vector<std::vector<uint32_t>>& submeshSourceCorners = {});
+
+    /**
+     * Replace only the flattened position/normal streams with an evaluated
+     * Maya mesh.  Queue order, UVs, and indices remain owned by the static
+     * material split.  No state is changed when validation fails.
+     */
+    /** Pull DG inputs once per dirty revision, independently of VP2 draw items. */
+    void updateEvaluatedData();
+    bool restoreGeometryFromSource(const MObject& sourceMesh);
+    bool updateEvaluatedMesh(const MObject& meshObject);
+
+    bool consumeMeshInputDirty()
+    {
+        const bool dirty = meshInputDirty_;
+        meshInputDirty_ = false;
+        return dirty;
+    }
+    std::uint64_t renderDataRevision() const { return renderDataRevision_; }
+    std::uint64_t geometryBufferRevision() const { return geometryBufferRevision_; }
+
+    /** Mark the static geometry usable after an absent input mesh. */
+    void useStaticGeometry();
+
+    /** Return false after an invalid connected input has failed closed. */
+    bool hasValidGeometry() const;
+
+    /** Pull present DG alpha elements and apply only changed effective values. */
+    bool updateEvaluatedMaterialAlpha();
+
+    /** Pull present DG material-value records without rebuilding vertex buffers. */
+    bool updateEvaluatedMaterialValues();
+    bool updateEvaluatedMaterialSettings();
 
     /** Swap two adjacent material indices without rebuilding geometry buffers. */
     bool reindexMaterialQueue(std::size_t firstIndex, std::size_t secondIndex);
@@ -82,117 +151,71 @@ public:
         std::vector<uint32_t> indices;
     };
 
-    /**
-     * Per-render-item native material binding evidence.
-     *
-     * This is intentionally diagnostic-only state.  It records requested
-     * material paths separately from handles/parameter calls that succeeded;
-     * it does not participate in queue ordering or shader math.
-     */
-    struct MaterialBindingDiagnostic {
-        std::size_t queueIndex = 0U;
-        std::size_t materialIndex = 0U;
-        std::size_t submeshIndex = 0U;
-        std::string renderItemName;
-        std::string pass;
-        bool outline = false;
-        std::string technique;
-        bool uvStreamAvailable = false;
-        float diffuseAlpha = 1.0F;
-        bool textureAlphaBlend = false;
-        bool effectiveTransparent = false;
-        bool selfShadowMap = false;
-        bool selfShadow = false;
-        bool casterEligible = false;
-        bool casterRenderFilterParticipation = false;
-        std::string renderItemType;
-        std::string casterExclusionReason;
-        std::string mainTexturePath;
-        std::string sphereTexturePath;
-        std::string toonTexturePath;
-        std::string toonTextureSource;
-        bool mainTextureRequested = false;
-        bool sphereTextureRequested = false;
-        bool toonTextureRequested = false;
-        bool mainTextureAcquired = false;
-        bool sphereTextureAcquired = false;
-        bool toonTextureAcquired = false;
-        bool scalarParameterBindingSuccess = false;
-        bool mainTextureBindingSuccess = false;
-        bool sphereTextureBindingSuccess = false;
-        bool toonTextureBindingSuccess = false;
-        bool switchParameterBindingSuccess = false;
-        bool shaderAvailable = false;
-        bool parameterBindingSuccess = false;
-        bool shaderAssignmentSuccess = false;
-        bool bindingSuccess = false;
-        int sphereMode = 0;
-    };
-
     struct GeometryData {
         std::vector<float> positions;
         std::vector<float> normals;
         std::vector<float> uvs;
+        // One source mesh vertex index per flattened render vertex.  Material
+        // seams may therefore repeat the same source index in this stream.
+        std::vector<uint32_t> sourceVertexIndices;
+        // Flattened source face-corner index, independent of shared positions.
+        // Resolve its normal ID on each update: deformers may renumber normals.
+        std::vector<uint32_t> sourceCornerIndices;
         std::vector<mmd::MmdRenderQueueInput> queueInputs;
         std::vector<mmd::MmdRenderQueueEntry> renderQueue;
         std::vector<QueueGeometry> queueGeometry;
     };
 
     const GeometryData& geometry() const;
-    bool hasPassGeometry(mmd::MmdDrawPass pass) const;
 
-    // The override records this after it has created the native render items.
-    // This is intentionally transient diagnostic state, not a parity claim.
-    void clearRenderItemWitness();
-    void clearMaterialBindingDiagnostics();
-    void recordRenderItemWitness(
-        const std::vector<mmd::MmdRenderQueueEntry>& entries);
-    void recordMaterialBindingDiagnostic(
-        const MaterialBindingDiagnostic& diagnostic);
-    void recordGeometryWitness(std::size_t vertexCount,
-                               std::size_t indexCount,
-                               const std::string& descriptorSummary);
+    /** Record a fallback reason and return true only when it changed. */
+    bool recordRenderFallbackReason(const std::string& reason);
     std::string renderItemWitness() const;
     std::string materialBindingDiagnosticsJson() const;
 
 private:
+    bool resyncMaterialQueue(
+        const std::vector<mmd::MmdRenderQueueInput>& nextInputs);
+
+    bool applyMaterialAlphaUpdates(
+        const std::vector<std::pair<std::size_t, float>>& updates);
+
     GeometryData geometry_;
+    // Immutable authored streams used when the optional input mesh is absent
+    // again after an evaluated update.
+    std::vector<float> staticPositions_;
+    std::vector<float> staticNormals_;
     MBoundingBox boundingBox_;
-    bool renderItemWitnessValid_ = false;
-    std::vector<mmd::MmdRenderQueueEntry> renderItemWitnessEntries_;
-    bool geometryWitnessValid_ = false;
-    std::size_t geometryWitnessVertexCount_ = 0U;
-    std::size_t geometryWitnessIndexCount_ = 0U;
-    std::string geometryWitnessDescriptorSummary_;
-    std::vector<MaterialBindingDiagnostic> materialBindingDiagnostics_;
+    MBoundingBox staticBoundingBox_;
+    bool geometryValid_ = true;
+    bool meshInputDirty_ = true;
+    bool materialInputsDirty_ = true;
+    std::uint64_t renderDataRevision_ = 1U;
+    // Changes when packed streams or queue index order change, not for color alone.
+    std::uint64_t geometryBufferRevision_ = 1U;
+    std::uint64_t geometryUpdateCount_ = 0U;
+    bool evaluatedGeometryActive_ = false;
+    // Number of transient render-vertex normal slots repaired for the current
+    // DG update.  This is diagnostic-only state; the repair is applied to the
+    // VP2 streams and never mutates the source Maya mesh.
+    std::size_t evaluatedNormalRepairCount_ = 0U;
+    std::size_t evaluatedNormalStaticFallbackCount_ = 0U;
+    // Maya may report the same invalid normal slots on every playback frame.
+    // Keep the first warning useful without flooding the Script Editor and
+    // stalling playback with repeated UI logging.
+    bool evaluatedNormalRepairWarningEmitted_ = false;
+    std::string renderFallbackReason_;
 };
 
 /**
  * Diagnostic command for commandPort/GUI smoke.
  *
- * ``mmdRenderWitness -node <shape>`` returns ``pending`` until the custom
- * geometry override has created its render items, then returns the pass order.
- * Add ``-json true`` for deterministic structured per-item material-binding
- * diagnostics while preserving the human-readable result by default.
+ * ``mmdRenderWitness -node <shape>`` reports whether source geometry is
+ * pending or has a transient fallback failure. Add ``-json true`` for the
+ * stable version-1 diagnostic schema; retired per-item details remain an
+ * empty array for compatibility.
  */
 class MmdRenderWitnessCommand : public MPxCommand {
-public:
-    static void* creator();
-    static MSyntax newSyntax();
-
-    MStatus doIt(const MArgList& args) override;
-    bool isUndoable() const override;
-};
-
-/**
- * Diagnostic/native queue update command.
- *
- * ``mmdRenderQueueUpdate -node <shape> -materialIndex <index> -alpha <value>``
- * applies a material alpha change to the opt-in shape and marks its VP2
- * geometry dirty.  This is the smallest live witness for morph-equivalent
- * queue changes; it does not alter the ordinary MFnMesh importer.
- */
-class MmdRenderQueueUpdateCommand : public MPxCommand {
 public:
     static void* creator();
     static MSyntax newSyntax();

@@ -979,8 +979,9 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(100, app_state.progress)
         self.assertEqual(recorded_history, ["model.pmx"])
 
-    def test_import_file_blocks_native_route_flags_in_normal_mode(self):
-        """Persisted native flags cannot escape their hidden normal-mode UI."""
+    @patch("mmd_tools.converters.material_morph_runtime.detect_effective_vp2_draw_api", return_value="directx11")
+    def test_import_file_forwards_native_route_flags_in_normal_mode(self, _api_probe):
+        """Normal mode forwards the persisted native route."""
         keys = (
             "ui.general.development_mode",
             "import.native.use_cpp_fast_load",
@@ -1004,16 +1005,17 @@ class TestImportExportPresenter(unittest.TestCase):
             presenter.import_file()
 
             options = action.requests[0].options
-            self.assertFalse(options["use_cpp_fast_load"])
-            self.assertTrue(options["cpp_fast_load_mesh_only"])
-            self.assertFalse(options["use_cpp_vp2_ownership"])
+            self.assertTrue(options["use_cpp_fast_load"])
+            self.assertFalse(options["cpp_fast_load_mesh_only"])
+            self.assertTrue(options["use_cpp_vp2_ownership"])
             self.assertFalse(options["use_native_pmx_parse"])
             self.assertFalse(options["require_native_pmx_parse"])
         finally:
             for key, value in saved.items():
                 settings.set(key, value)
 
-    def test_import_file_preserves_native_route_flags_in_development_mode(self):
+    @patch("mmd_tools.converters.material_morph_runtime.detect_effective_vp2_draw_api", return_value="directx11")
+    def test_import_file_preserves_native_route_flags_in_development_mode(self, _api_probe):
         """Development Mode forwards its explicitly persisted native route."""
         keys = (
             "ui.general.development_mode",
@@ -1039,7 +1041,7 @@ class TestImportExportPresenter(unittest.TestCase):
 
             options = action.requests[0].options
             self.assertTrue(options["use_cpp_fast_load"])
-            self.assertTrue(options["cpp_fast_load_mesh_only"])
+            self.assertFalse(options["cpp_fast_load_mesh_only"])
             self.assertTrue(options["use_cpp_vp2_ownership"])
             self.assertTrue(options["use_native_pmx_parse"])
         finally:

@@ -20,13 +20,13 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | Feature | Status | Notes |
 |---|---|---|
 | Mesh | ℹ️ | SDEF/QDEF import is not supported; they are imported as BDEF4-equivalent weights. Additional UVs are retained as metadata. |
-| Materials & textures | ℹ️ | MMD toon shaders are implemented for DX11 and OpenGL. Due to Viewport 2.0 limitations, outlines, edge flags, transparency, and self-shadow are not supported. |
+| Materials & textures | ℹ️ | MMD shading is implemented through RenderOverride (DirectX only). Select `Renderer > MMD Render` in the viewport to enable it. |
 | Maya name resolution | ✅ | Names are converted to safe English or hashed names. Non-English image paths are also resolved automatically to safe paths. |
 | Bones, skeleton & rig (IK / append / local axis) | ℹ️ | Basic PMX 2.0 IK, append, axis, and after-physics deformation are supported. Complex rigs have known issues. |
 | Display frames (表示枠) | ✅ | Display-frame names, special-frame flags, and ordered bone/morph items can be edited. |
 | Morphs (vertex / bone / material / group / UV) | ℹ️ | Vertex, bone, material, and group morphs are supported. PMX 2.0 UV/additional-UV morph metadata (types 3–7) is preserved through export and re-import, but is not applied to Maya UV sets. |
 | Physics (rigid bodies & joints) | ℹ️ | Performance and quality have known issues. Some editing operations remain unsupported. |
-| Export | 🧪 | Broadly supported, but there are likely still many bugs. Invalid data is rejected during validation with an explanation. |
+| Export | 🧪 | Export is experimental. Testing across a wide range of models is not yet complete. |
 
 ### Animation (VMD)
 
@@ -34,7 +34,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 |---|---|---|
 | Bone animation | ℹ️ | Basic MMD rigs are supported, but complex mechanisms are not. Bake Export uses [mmd-anim](https://github.com/yohawing/mmd-anim). |
 | VPD | ✅ | VPD files can be imported by drag-and-drop. |
-| Morph animation | ℹ️ | UV morphs are unverified. Material morphs work only with the DX11 or OpenGL shader. |
+| Morph animation | ℹ️ | UV morphs are unverified. Material morphs drive the standard material preview and MMD Render; the standard preview approximates color and opacity. |
 | Camera animation | ✅ | Creates and keys `mmd_camera`. Lighting drives the `mmd_light` controller. |
 | IK on/off frames | ℹ️ | Supported for import and bake. Runtime bake applies the state to the final pose; rig mode keys `mmdCcdIk.enabled`. |
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
@@ -45,9 +45,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 ## Known Limitations
 
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
-- **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are downgraded to BDEF4.** Their specialized deformation is not preserved, so meshes may appear thinner with some model and motion combinations.
-- **Export supports a bounded, validated scope.** Export depends on many features, and we have not yet tested it across a wide range of cases, so it likely still contains many bugs.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
 ## System Requirements
@@ -80,13 +78,7 @@ The installer copies all Maya MMD Tools files into Maya's user `modules` folder,
 2. Open `Window > Settings/Preferences > Plug-in Manager`.
 3. Find `mmd_tools_plugin.py`.
 4. Check `Loaded`. If you want it to load automatically, also check `Auto load`.
-5. For more MMD-like shading, also check `Create MMD Shader`; it is enabled by default.
-
-## Verify Installation
-
-### Check the Menu
-
-Confirm that `MMD > MMD Editor` appears in Maya's menu bar.
+5. Confirm that `MMD > MMD Editor` appears in Maya's menu bar.
 
 ## Quick Start
 
@@ -120,27 +112,6 @@ The UI follows PMX Editor conventions.
 2. In the Export tab, choose `Model` or `Animation`.
 3. Review validation, then export PMX or VMD.
 
-### Use HumanIK (Experimental)
-
-![HumanIK window](docs/assets/humanik.png)
-
-1. Select `MMD > HumanIK (Experimental)` from Maya's menu bar to open the standalone window.
-2. Select the MMD character's ModelRoot and click `Set Up Selected Model` to create its character definition.
-3. Import two characters and set up both. Choose the character that contains the motion from the SOURCE list to retarget its motion.
-4. The retargeted motion can be baked to a Control Rig.
-5. Use `Restore MMD Rig` to return from the Control Rig to the MMD rig state.
-
-Using Maya's HumanIK features directly can break the MMD rig in some workflows.
-
-## Viewport Setup
-
-To view the shader that reproduces the MMD toon look, enable the MMD shader creation option and the shader plug-in for your rendering environment. Use the `dx11Shader` plug-in on Windows and the `glslShader` (GLSLShader) plug-in on macOS. The following settings are also applied automatically on import:
-
-- **Rendering space** → `ACEScg` → `scene-linear Rec.709-sRGB`.
-- **View Transform** → `ACES 1.0 SDR-video (sRGB)` → `Un-tone-mapped (sRGB)`.
-
-Both are applied to reproduce the MMD-style color response (sRGB gamma-space input/output).
-
 ## Support
 
-If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the Maya and OS versions, reproduction steps, the error, and a screenshot when possible.
+If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the Maya and OS versions, reproduction steps, and error details. If possible, also include a link to the model's download page and a screenshot.

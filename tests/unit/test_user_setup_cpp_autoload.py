@@ -44,6 +44,23 @@ class TestUserSetupCppAutoload(unittest.TestCase):
     def setUp(self):
         self.cmds.about.return_value = "2026"
 
+    def test_default_prefers_release_but_explicit_debug_still_wins(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            builds = {}
+            for config in ("Release", "Debug"):
+                plugin = root / "plug-ins" / "2026" / config / "mmd_tools_cpp.mll"
+                plugin.parent.mkdir(parents=True)
+                plugin.write_bytes(b"plugin")
+                builds[config] = plugin
+            for explicit, expected in (("", "Release"), ("Debug", "Debug")):
+                with self.subTest(explicit=explicit), patch.dict(
+                    os.environ,
+                    {"MMD_TOOLS_CPP_PLUGIN_2026": "", "MMD_TOOLS_CPP_PLUGIN": "",
+                     "MMD_TOOLS_CPP_CONFIG_2026": "", "MMD_TOOLS_CPP_CONFIG": explicit},
+                ), patch.object(self.user_setup, "_mmd_tools_roots", return_value=[root]):
+                    self.assertEqual(self.user_setup._mmd_tools_cpp_plugin_path(), builds[expected])
+
     def test_version_specific_environment_path_has_priority(self):
         with tempfile.TemporaryDirectory() as directory:
             explicit = Path(directory) / "mmd_tools_cpp.mll"

@@ -24,6 +24,48 @@ from tools.nox import native
 
 
 class NoxNativeTest(unittest.TestCase):
+    def test_windows_console_isolation_also_covers_existing_vs_environment(self):
+        for skip, found in ((False, None), (True, Path("C:/VS/VsDevCmd.bat")), (False, Path("C:/VS/VsDevCmd.bat"))):
+            with self.subTest(skip=skip, found=found), mock.patch.dict(os.environ, {}, clear=True):
+                if skip:
+                    os.environ["MMD_TOOLS_SKIP_VSDEVCMD"] = "1"
+                startup = types.SimpleNamespace(dwFlags=0, wShowWindow=None)
+                with mock.patch.object(native, "_find_vsdevcmd", return_value=found), \
+                     mock.patch.object(native.subprocess, "STARTUPINFO", return_value=startup, create=True), \
+                     mock.patch.object(native.subprocess, "STARTF_USESHOWWINDOW", 1, create=True), \
+                     mock.patch.object(native.subprocess, "SW_HIDE", 0, create=True), \
+                     mock.patch.object(native.subprocess, "CREATE_NEW_CONSOLE", 16, create=True), \
+                     mock.patch.object(native.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout="")) as run:
+                    session = mock.Mock()
+                    native._run_in_vs_dev_cmd(session, Path("F:/repo"), ["cmake", "--version"])
+                command = run.call_args.args[0]
+                self.assertIn("chcp 65001 >nul && cmake --version", command)
+                self.assertEqual("VsDevCmd.bat" in command, bool(found and not skip))
+                self.assertEqual(run.call_args.kwargs["creationflags"], 16)
+                self.assertEqual(startup.wShowWindow, 0)
+                session.run.assert_not_called()
+
+    def test_utf8_migration_rebuilds_legacy_dependencies_once_and_retries_failure(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(native.platform, "system", return_value="Windows"), \
+             mock.patch.object(native, "_run_in_vs_dev_cmd") as run:
+            root = Path(directory)
+            session = mock.Mock()
+            native._cmake_configure(session, root, "2026", "Debug")
+            self.assertIn("--fresh", run.call_args.args[-1])
+            run.side_effect = RuntimeError("build failed")
+            with self.assertRaisesRegex(RuntimeError, "build failed"):
+                native._cmake_build(session, root, "2026", "Debug")
+            self.assertFalse(native._utf8_build_stamp(root, "2026").exists())
+            run.side_effect = None
+            native._cmake_build(session, root, "2026", "Debug")
+            self.assertIn("--clean-first", run.call_args.args[-1])
+            self.assertTrue(native._utf8_build_stamp(root, "2026").is_file())
+            native._cmake_configure(session, root, "2026", "Debug")
+            self.assertNotIn("--fresh", run.call_args.args[-1])
+            native._cmake_build(session, root, "2026", "Debug")
+            self.assertNotIn("--clean-first", run.call_args.args[-1])
+
     def test_native_paths_use_explicit_repository_root(self):
         root = Path("F:/repo")
 

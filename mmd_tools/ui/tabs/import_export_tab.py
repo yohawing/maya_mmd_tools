@@ -115,14 +115,6 @@ class ImportExportTab(BaseTab):
             "import_models", setting_keys.IMPORT_MODEL_IMPORT_MODELS, True, model_layout
         )
 
-        self.create_mmd_shaders_check = self._bind_checkbox(
-            "create_mmd_shaders",
-            setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS,
-            True,
-            model_layout,
-            tooltip_key="create_mmd_shaders",
-        )
-
         self.create_mmd_control_rig_check = self._bind_checkbox(
             "create_mmd_control_rig",
             setting_keys.IMPORT_MODEL_CREATE_MMD_CONTROL_RIG,
@@ -636,7 +628,6 @@ class ImportExportTab(BaseTab):
         self.custom_namespace_check.setText(self.tr("custom_namespace", "checkboxes"))
         self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
-        self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
         if hasattr(self, "auto_resolve_textures_check"):
             self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
@@ -660,7 +651,6 @@ class ImportExportTab(BaseTab):
         # Tooltips
         self.scale_spin.setToolTip(self.tr("import_scale", "tooltips"))
         self.use_namespace_check.setToolTip(self.tr("use_namespace", "tooltips"))
-        self.create_mmd_shaders_check.setToolTip(self.tr("create_mmd_shaders", "tooltips"))
         self.separate_meshes_check.setToolTip(self.tr("separate_meshes", "tooltips"))
         self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
         self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))

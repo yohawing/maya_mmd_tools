@@ -305,16 +305,25 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
+        opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
+        # UI imports always include ordinary PMX authoring.
+        opts["cpp_fast_load_mesh_only"] = False
+        opts["use_cpp_vp2_ownership"] = bool(
+            opts["use_cpp_fast_load"]
+            and self.get(setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, True)
+        )
+        if opts["use_cpp_vp2_ownership"]:
+            from ..converters.material_morph_runtime import (
+                VP2_API_OPENGL,
+                VP2_API_OPENGL_CORE,
+                detect_effective_vp2_draw_api,
+            )
+
+            # The ordinary UI must remain usable on OpenGL, including macOS.
+            # Explicit API requests retain the importer's strict DX11 check.
+            if detect_effective_vp2_draw_api() in {VP2_API_OPENGL, VP2_API_OPENGL_CORE}:
+                opts["use_cpp_vp2_ownership"] = False
         if is_dev:
-            opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
-            opts["cpp_fast_load_mesh_only"] = self.get(
-                setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY,
-                True,
-            )
-            opts["use_cpp_vp2_ownership"] = self.get(
-                setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP,
-                False,
-            )
             opts["use_native_pmx_parse"] = True
             opts["require_native_pmx_parse"] = self.get(
                 setting_keys.IMPORT_NATIVE_REQUIRE_NATIVE_PMX_PARSE,
@@ -325,14 +334,9 @@ class SettingsService:
                 False,
             )
         else:
-            # Native import is experimental. Hidden checkboxes are not a
-            # sufficient boundary because their persisted values can remain
-            # enabled after Development Mode is turned off.
+            # Keep the remaining diagnostic and rig options development-only.
             opts.update(
                 {
-                    "use_cpp_fast_load": False,
-                    "cpp_fast_load_mesh_only": True,
-                    "use_cpp_vp2_ownership": False,
                     "use_native_pmx_parse": False,
                     "require_native_pmx_parse": False,
                     "use_cpp_rig_nodes": False,

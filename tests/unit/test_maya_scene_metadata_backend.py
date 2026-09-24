@@ -474,7 +474,7 @@ def test_material_value_rollback_reads_back_partial_native_mutation_before_undo(
     cmds.set_attr("mat.mmd_material_name_en", "partial native", type="string")
     backend.rollback_write("|root")
 
-    assert cmds.undo_count == 1
+    assert cmds.undo_count == 2  # Failed edit, then harmless Redo fence.
     assert cmds.undo_chunk_open is False
     assert adapter.read_spec("|root").fingerprint() == original.fingerprint()
 
@@ -501,7 +501,7 @@ def test_material_outline_rollback_reads_back_partial_native_mutation_before_und
     cmds.set_attr("mat.mmd_shader_outline_enabled", True)
     backend.rollback_write("|root")
 
-    assert cmds.undo_count == 1
+    assert cmds.undo_count == 2  # Failed edit, then harmless Redo fence.
     assert cmds.attrs[("mat", "mmd_shader_outline_enabled")] is False
 
 

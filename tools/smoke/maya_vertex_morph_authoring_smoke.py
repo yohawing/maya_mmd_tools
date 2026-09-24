@@ -111,15 +111,14 @@ def main() -> int:
             {"vertexNode": new},
             [],
             controller_plan,
-            lambda _root: 2.0,
         )
         _apply_vertex_target_plan(adapter, "unusedController", plans)
 
         assert cmds.aliasAttr(face_plug, query=True) == "Move_Wide"
         assert cmds.aliasAttr(body_plug, query=True) == "Move_Wide"
         for blend_shape, target_index, expected in (
-            (face_bs, 3, (2.0, 4.0, -6.0, 1.0)),
-            (body_bs, 8, (-2.0, 1.0, 4.0, 1.0)),
+            (face_bs, 3, (1.0, 2.0, -3.0, 1.0)),
+            (body_bs, 8, (-1.0, 0.5, 2.0, 1.0)),
         ):
             item = f"{blend_shape}.inputTarget[0].inputTargetGroup[{target_index}].inputTargetItem[6000]"
             assert cmds.getAttr(f"{item}.inputComponentsTarget") == ["vtx[0]"]
@@ -140,8 +139,8 @@ def main() -> int:
         cmds.setAttr(
             f"{face_item}.inputPointsTarget",
             2,
-            (2.0, 4.0, -6.0, 1.0),
-            (0.0, 2.0, 0.0, 1.0),
+            (1.0, 2.0, -3.0, 1.0),
+            (0.0, 1.0, 0.0, 1.0),
             type="pointArray",
         )
         offsets = MayaSceneMetadataBackend(adapter)._morph_repository._read_vertex_blendshape_offsets(
@@ -162,7 +161,6 @@ def main() -> int:
             adapter,
             cmds.ls(root, long=True)[0],
             [empty],
-            lambda _root: 2.0,
         )
         _apply_vertex_target_plan(adapter, controller, tuple(create_plans))
         created_plugs = []
@@ -233,7 +231,6 @@ def main() -> int:
                     )
                 },
             },
-            None,
         )
         for plug in created_plugs:
             cmds.disconnectAttr(f"{controller}.outputWeight[1]", plug)
@@ -260,7 +257,6 @@ def main() -> int:
                     "controller": cmds.ls(controller, long=True)[0],
                     "outputs": {"vertexNode": (f"{face_bs}.weight[3]",)},
                 },
-                None,
             )
         except MayaMorphAuthoringError as exc:
             assert "stale_raw_name_mapping" in str(exc)
@@ -285,7 +281,6 @@ def main() -> int:
                         )
                     },
                 },
-                None,
             )
         except MayaMorphAuthoringError as exc:
             assert "duplicate_blendshape_candidate" in str(exc)
@@ -307,7 +302,6 @@ def main() -> int:
                     )
                 },
             },
-            None,
         )
         _apply_vertex_target_plan(adapter, controller, reindex_plans)
         for blend_shape, target_index in ((face_bs, 3), (body_bs, 8)):

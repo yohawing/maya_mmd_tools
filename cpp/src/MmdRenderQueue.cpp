@@ -32,6 +32,62 @@ int passRank(MmdDrawPass pass)
 
 }  // namespace
 
+bool sameMmdMaterialValues(const MmdRenderQueueInput& left,
+                           const MmdRenderQueueInput& right)
+{
+    return left.diffuseColor == right.diffuseColor &&
+           left.specularColor == right.specularColor &&
+           left.specularPower == right.specularPower &&
+           left.ambientColor == right.ambientColor &&
+           left.edgeColor == right.edgeColor &&
+           left.edgeAlpha == right.edgeAlpha &&
+           left.edgeSize == right.edgeSize &&
+           left.mainTextureMultiply == right.mainTextureMultiply &&
+           left.mainTextureAdd == right.mainTextureAdd &&
+           left.sphereTextureMultiply == right.sphereTextureMultiply &&
+           left.sphereTextureAdd == right.sphereTextureAdd &&
+           left.toonTextureMultiply == right.toonTextureMultiply &&
+           left.toonTextureAdd == right.toonTextureAdd;
+}
+
+void copyMmdMaterialValues(MmdRenderQueueInput& destination,
+                           const MmdRenderQueueInput& source)
+{
+    destination.diffuseColor = source.diffuseColor;
+    destination.specularColor = source.specularColor;
+    destination.specularPower = source.specularPower;
+    destination.ambientColor = source.ambientColor;
+    destination.edgeColor = source.edgeColor;
+    destination.edgeAlpha = source.edgeAlpha;
+    destination.edgeSize = source.edgeSize;
+    destination.mainTextureMultiply = source.mainTextureMultiply;
+    destination.mainTextureAdd = source.mainTextureAdd;
+    destination.sphereTextureMultiply = source.sphereTextureMultiply;
+    destination.sphereTextureAdd = source.sphereTextureAdd;
+    destination.toonTextureMultiply = source.toonTextureMultiply;
+    destination.toonTextureAdd = source.toonTextureAdd;
+}
+
+bool sameMmdRenderQueueInput(const MmdRenderQueueInput& left,
+                             const MmdRenderQueueInput& right)
+{
+    return left.materialIndex == right.materialIndex &&
+           left.submeshIndex == right.submeshIndex &&
+           left.transparencyMode == right.transparencyMode &&
+           left.diffuseAlpha == right.diffuseAlpha &&
+           sameMmdMaterialValues(left, right) &&
+           left.edgeDrawing == right.edgeDrawing &&
+           left.sphereMode == right.sphereMode &&
+           left.sharedToonIndex == right.sharedToonIndex &&
+           left.mainTexturePath == right.mainTexturePath &&
+           left.mainTextureAvailable == right.mainTextureAvailable &&
+           left.sphereTexturePath == right.sphereTexturePath &&
+           left.toonTexturePath == right.toonTexturePath &&
+           left.doubleSided == right.doubleSided &&
+           left.selfShadowMap == right.selfShadowMap &&
+           left.selfShadow == right.selfShadow;
+}
+
 MmdDrawPass classifyMmdDrawPass(const std::string& transparencyMode,
                                 float diffuseAlpha)
 {
@@ -51,6 +107,36 @@ MmdDrawPass classifyMmdDrawPass(const std::string& transparencyMode,
         return MmdDrawPass::Transparent;
     }
     return MmdDrawPass::Opaque;
+}
+
+MmdDrawPass classifyMmdDrawPass(const MmdRenderQueueInput& input)
+{
+    const std::string mode = normalizedMode(input.transparencyMode);
+    if (mode == "cutout" || mode == "alphatest" || mode == "alpha-test" ||
+        mode == "alpha_test" || mode == "transparent" ||
+        mode == "translucent" || mode == "blend") {
+        return classifyMmdDrawPass(mode, input.diffuseAlpha);
+    }
+
+    float effectiveAlpha = input.diffuseAlpha;
+    if (!input.mainTexturePath.empty() && input.mainTextureAvailable &&
+        std::isfinite(input.mainTextureMultiply[3]) &&
+        std::isfinite(input.mainTextureAdd[3])) {
+        // The native shader applies this factor to sampled texture alpha.  A
+        // texture classified opaque at import has alpha 1, so the queue must
+        // use the same effective alpha for a material-morph update.  The
+        // factor is meaningful only after the Maya texture handle exists.
+        effectiveAlpha *= input.mainTextureMultiply[3] +
+                          input.mainTextureAdd[3];
+    }
+    // "opaque" is the import-time default for a texture known to be opaque.
+    // Once a morph changes its alpha factor, classify that effective value
+    // instead of treating the import-time label as an explicit override.
+    if (mode == "opaque" && !input.mainTexturePath.empty() &&
+        input.mainTextureAvailable) {
+        return classifyMmdDrawPass("", effectiveAlpha);
+    }
+    return classifyMmdDrawPass(mode, effectiveAlpha);
 }
 
 const char* mmdDrawPassName(MmdDrawPass pass)
@@ -76,8 +162,7 @@ std::vector<MmdRenderQueueEntry> buildMmdRenderQueue(
         const MmdRenderQueueInput& input = inputs[inputIndex];
         queue.push_back({input.materialIndex,
                          input.submeshIndex,
-                         classifyMmdDrawPass(input.transparencyMode,
-                                             input.diffuseAlpha),
+                         classifyMmdDrawPass(input),
                          inputIndex});
     }
 

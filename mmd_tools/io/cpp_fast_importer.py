@@ -19,43 +19,39 @@ from pathlib import Path
 from typing import Optional
 
 from mmd_tools.core.constants import (
-    ATTR_MMD_BONE_INDEX,
-    ATTR_MMD_BONE_NAME,
-    ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_MATERIAL,
+    ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_BONE_PARENT_INDEX,
-    ATTR_MMD_PMX_REST_POSITION,
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_COLOR,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_PMX_SOFT_BODY_COUNT,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_SPECULAR_COLOR,
+    GEOMETRY_GROUP,
+    SCENE_ROOT_SUFFIX,
 )
-from mmd_tools.core import cpp_plugin_locator, maya_mesh_utils, maya_name_utils
-from mmd_tools.core.coordinate_transform import mmd_point_to_maya
+from mmd_tools.core import cpp_plugin_locator, maya_name_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_DIFFUSE_ALPHA,
+    ATTR_MMD_EDGE_ALPHA,
+)
 
 logger = get_logger(__name__)
 
 # Kept as a module attribute so tests can patch it without importing native code.
 MmdParsedModel = None
+_FAST_NATIVE_PMX_UNSET = object()
 
-
-class _FastSkinData:
-    """Parsed bone and skin data needed by the fast skeleton/skin path."""
-
-    def __init__(
-        self,
-        bones: list[dict],
-        skin_indices: list[tuple[int, int, int, int]],
-        skin_weights: list[tuple[float, float, float, float]],
-    ):
-        self.bones = bones
-        self.skin_indices = skin_indices
-        self.skin_weights = skin_weights
 
 # ---------------------------------------------------------------------------
 # Candidate discovery  (mirrors tests/cpp/smoke_runtime_node.py)
@@ -95,6 +91,70 @@ def _setup_plugin_directory(plugin_dir: Path) -> None:
     cpp_plugin_locator.prepare_plugin_directory(plugin_dir / "mmd_tools_cpp.mll")
 
 
+def _require_dx11_for_vp2_ownership(cmds) -> None:
+    """Reject a confirmed OpenGL VP2 device before native ownership import.
+
+    ``mmdRenderShape`` currently owns draw data only on DirectX 11.  Unknown
+    device information is deliberately allowed so non-Maya test doubles and
+    Maya sessions where ``ogs`` is unavailable retain the existing behavior.
+    """
+    ogs = getattr(cmds, "ogs", None)
+    if not callable(ogs):
+        return
+
+    try:
+        raw = ogs(deviceInformation=True)
+    except Exception:
+        return
+
+    if isinstance(raw, str):
+        device_lines = raw.splitlines()
+    elif isinstance(raw, (list, tuple)) and all(
+        isinstance(part, str) for part in raw
+    ):
+        device_lines = [
+            line for part in raw for line in part.splitlines()
+        ]
+    else:
+        # In particular, do not interpret MagicMock string representations as
+        # real Maya device diagnostics.
+        return
+
+    api_line = next(
+        (
+            line.strip()
+            for line in device_lines
+            if line.strip().lower().replace(" ", "").startswith("api:")
+        ),
+        "",
+    )
+    api_lowered = api_line.lower()
+    if any(
+        token in api_lowered
+        for token in ("directx v.11", "directx11", "direct3d11", "dx11", "d3d11")
+    ):
+        return
+    device_text = " ".join(device_lines)
+    if api_line or any(
+        token in device_text.lower()
+        for token in (
+            "opengl",
+            "open gl",
+            "openglcore",
+            "glcore",
+            "core profile",
+            "virtualdevicegl",
+        )
+    ):
+        active_api = (api_line or "OpenGL").rstrip(".")
+        raise RuntimeError(
+            "C++ VP2 RenderOverride requires DirectX 11, but Maya is using "
+            f"{active_api}. "
+            "In Maya Preferences, open Display > Viewport 2.0, set Rendering "
+            "engine to DirectX 11, then restart Maya before importing the model."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -107,6 +167,8 @@ def fast_import(
     mesh_only: bool = True,
     include_morphs: bool = True,
     vp2_ownership: bool = False,
+    options: Optional[dict] = None,
+    progress_callback=None,
 ) -> Optional[str]:
     """Attempt fast PMX import via the compiled C++ ``mmdFastLoad`` command.
 
@@ -120,17 +182,18 @@ def fast_import(
         Scale factor passed as ``s=`` to ``mmdFastLoad``.
     mesh_only:
         If True (default), only mesh geometry is imported.
-        If False, a basic Maya skeleton (joints) and skinCluster are
-        also created from the mmd-anim parsed metadata.
+        If False, native geometry uses the ordinary PMX authoring pipeline,
+        including skeleton, skin, morphs, physics and model metadata.
     include_morphs:
         If True, asks the C++ command to create PMX vertex morph
-        blendShape targets. Non-vertex morph types are not created by the
-        fast path.
+        blendShape targets. With VP2 ownership, the Python bridge also creates
+        material morph authoring nodes and binds native material values and
+        alpha through the existing evaluator.
     vp2_ownership:
         If True, asks the C++ command to create the opt-in ``mmdRenderShape``
-        and let the VP2 geometry override own the draw data. This is a
-        mesh-display path; it does not create a Maya mesh for skeleton or
-        blendShape post-processing.
+        alongside an ordinary source mesh and let the VP2 geometry override
+        own the draw data. Material, morph, and skeleton post-processing use
+        that source mesh while the proxy stays render-only.
 
     Returns
     -------
@@ -178,6 +241,90 @@ def fast_import(
         )
         return None
 
+    if vp2_ownership:
+        _require_dx11_for_vp2_ownership(cmds)
+
+    if not mesh_only:
+        # Keep the ordinary authoring contract in one place. Only geometry
+        # construction is replaced by mmdFastLoad; bones, morphs, physics and
+        # ownership use the same converters as a regular PMX import.
+        from mmd_tools.io.mmd_importer import (
+            _record_physics_compatibility_warnings,
+            _scoped_settings_override,
+        )
+        from mmd_tools.io.pmx_importer import import_pmx_file, _require_effective_import_scale
+        from mmd_tools.core import settings, settings_keys
+
+        scale = _require_effective_import_scale(scale)
+        try:
+            pmx = parse_pmx_native(filepath)
+        except Exception as exc:
+            logger.debug("Fast native PMX metadata unavailable: %s", exc)
+            return None
+        if pmx is None:
+            return None
+        command_args = {"f": filepath, "n": base_name, "s": scale, "mo": False}
+        split = bool((options or {}).get(
+            "separate_meshes_by_material",
+            settings.get(settings_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
+        ))
+        if split:
+            command_args["sp"] = True
+        if vp2_ownership:
+            command_args["vp2Ownership"] = True
+        try:
+            native_mesh = cmds.mmdFastLoad(**command_args)
+        except RuntimeError as exc:
+            if vp2_ownership:
+                raise
+            logger.debug("Fast native geometry unavailable: %s", exc)
+            return None
+        expected = 1 if split else (3 if vp2_ownership else 2)
+        if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
+            raise RuntimeError("mmdFastLoad returned an invalid geometry result")
+        if options is not None:
+            _record_physics_compatibility_warnings(pmx, options)
+        import_options = dict(options or {})
+        import_options.update({
+            "import_morphs": include_morphs,
+            "_cpp_fast_load_geometry": native_mesh,
+            "use_cpp_vp2_ownership": vp2_ownership,
+        })
+        native_identity = cmds.ls(native_mesh[0], uuid=True)
+        proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
+        if split:
+            # Split source transforms leave their temporary group during
+            # authoring; render shapes can then leave those source transforms.
+            sources = cmds.listRelatives(
+                native_mesh[0], children=True, type="transform", fullPath=True
+            ) or []
+            proxies = cmds.listRelatives(
+                native_mesh[0], allDescendents=True, type="mmdRenderShape", fullPath=True
+            ) or []
+            if sources:
+                native_identity.extend(cmds.ls(sources, uuid=True) or [])
+            if proxies:
+                proxy_identity = cmds.ls(proxies, uuid=True) or []
+        try:
+            with _scoped_settings_override(import_options):
+                return import_pmx_file(
+                    pmx, filepath, scale, import_options, progress_callback=progress_callback
+                )
+        except Exception:
+            # Preflight may reject the model before the ordinary pipeline adopts
+            # this geometry. UUIDs retain ownership even if authoring renamed it.
+            remaining = cmds.ls(native_identity, long=True) if native_identity else []
+            # The shared converter may already have moved the proxy into its
+            # own sibling transform. It remains owned by this failed import.
+            for proxy in (cmds.ls(proxy_identity, long=True) if proxy_identity else []):
+                remaining.extend(cmds.listRelatives(proxy, parent=True, fullPath=True) or [])
+            if remaining:
+                try:
+                    cmds.delete(list(dict.fromkeys(remaining)))
+                except RuntimeError:
+                    logger.warning("Failed to remove rejected Fast Load geometry", exc_info=True)
+            raise
+
     # --- run fast load ----------------------------------------------------
     try:
         command_args = {
@@ -193,6 +340,8 @@ def fast_import(
             command_args["vp2Ownership"] = True
         result = cmds.mmdFastLoad(**command_args)
     except RuntimeError as exc:
+        if vp2_ownership:
+            raise
         logger.debug("mmdFastLoad failed: %s – falling back to Python importer.", exc)
         return None
 
@@ -209,62 +358,333 @@ def fast_import(
         )
         return None
 
-    # result is [transform, mesh]  (smoke_runtime_node.py convention)
+    def _cleanup_vp2_result_root() -> None:
+        """Best-effort cleanup for a VP2 result that fails its ABI contract."""
+        try:
+            cmds.delete(str(result[0]))
+        except Exception as exc:
+            # The contract rejection is still the primary outcome; cleanup
+            # failures must not mask it or turn fallback into an exception.
+            logger.debug("Failed to clean up rejected VP2 root: %s", exc)
+
+    if vp2_ownership:
+        if len(result) != 3:
+            logger.debug(
+                "VP2 mmdFastLoad returned %d nodes; expected [root, sourceMesh, renderShape]",
+                len(result),
+            )
+            if result:
+                _cleanup_vp2_result_root()
+            return None
+        render_shape_result = str(result[2])
+        try:
+            render_shape_type = cmds.nodeType(render_shape_result)
+        except Exception as exc:
+            logger.debug(
+                "VP2 render shape node lookup failed for %s: %s",
+                render_shape_result,
+                exc,
+            )
+            _cleanup_vp2_result_root()
+            return None
+        if render_shape_type != "mmdRenderShape":
+            logger.debug(
+                "VP2 mmdFastLoad returned %s as render shape (expected mmdRenderShape)",
+                render_shape_type,
+            )
+            _cleanup_vp2_result_root()
+            return None
+
+    # Normal result is [transform, mesh].  VP2 uses [transform, sourceMesh,
+    # renderShape], so all existing post-processing continues to target the
+    # second element in both routes.
     transform_node = str(result[0])
     mesh_node = str(result[1]) if len(result) >= 2 else None
 
-    metadata = _apply_basic_materials(filepath, mesh_node, cmds) if mesh_node else None
-    _apply_fast_root_metadata(filepath, transform_node, metadata, cmds)
+    # Materials, hierarchy metadata and optional morphs share one parse.
+    try:
+        shared_native_pmx = parse_pmx_native(filepath)
+    except Exception as exc:
+        logger.debug("Fast shared native PMX parse unavailable: %s", exc)
+        shared_native_pmx = None
+    shared_native_kwargs = {"native_pmx": shared_native_pmx}
+
+    metadata = (
+        _apply_basic_materials(filepath, mesh_node, cmds, **shared_native_kwargs)
+        if mesh_node
+        else None
+    )
+    transform_node, mesh_node = _organize_fast_dag(
+        transform_node,
+        mesh_node,
+        metadata,
+        base_name,
+        cmds,
+        filepath=filepath,
+        render_shape=render_shape_result if vp2_ownership else None,
+        **shared_native_kwargs,
+    )
+    _apply_fast_root_metadata(
+        filepath, transform_node, metadata, cmds, **shared_native_kwargs
+    )
+    model_registry = None
     try:
         from mmd_tools.core.model_registry import ensure_model_registry
 
-        ensure_model_registry(transform_node)
+        registered = ensure_model_registry(transform_node)
+        if isinstance(registered, str):
+            model_registry = registered
     except Exception as exc:
         logger.warning("Fast import ownership registry unavailable for %s: %s", transform_node, exc)
+    blend_shape_nodes = []
     if include_morphs and mesh_node:
-        _apply_fast_morph_metadata(filepath, mesh_node, cmds)
-
-    if not mesh_only and mesh_node:
-        # attempt skeleton + skin; any failure falls back to mesh-only result
-        try:
-            _apply_fast_skeleton_skin(
-                filepath, mesh_node, transform_node, base_name, cmds, scale=scale
+        blend_shape_nodes = (
+            _apply_fast_morph_metadata(
+                filepath, mesh_node, cmds, **shared_native_kwargs
             )
-        except Exception as exc:
-            logger.debug("Fast skeleton/skin failed (%s); returning mesh root only", exc)
+            or []
+        )
+    if vp2_ownership and include_morphs and mesh_node:
+        runtime_result = _apply_fast_material_morph_runtime(
+            filepath,
+            transform_node,
+            model_registry=model_registry,
+            blend_shape_nodes=blend_shape_nodes,
+            **shared_native_kwargs,
+        )
+        if not isinstance(runtime_result, dict) or not runtime_result.get("success", False):
+            _cleanup_fast_vp2_runtime(transform_node, runtime_result, model_registry, cmds)
+            skipped = runtime_result.get("skipped", []) if isinstance(runtime_result, dict) else []
+            reason = "; ".join(str(item) for item in skipped) or "material morph runtime failed"
+            raise RuntimeError(f"Fast VP2 material morph runtime failed: {reason}")
 
     logger.debug("Fast import succeeded: transform node = %s", transform_node)
     return transform_node
 
 
-def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Optional[dict]:
-    """Assign materials and return the parsed metadata for root attributes."""
+def _organize_fast_dag(
+    source_transform: str,
+    source_mesh: Optional[str],
+    metadata: Optional[dict],
+    base_name: str,
+    cmds_module,
+    *,
+    filepath: Optional[str] = None,
+    render_shape: Optional[str] = None,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> tuple[str, Optional[str]]:
+    """Place a FastLoad mesh below the ordinary model/Geometry boundary.
+
+    ``mmdFastLoad`` deliberately creates just the source mesh transform so its
+    native command can own construction and undo.  The Python import contract,
+    however, exposes a model root with a direct ``Geometry`` child.  Add that
+    lightweight authoring boundary here, before root metadata and skeleton
+    post-processing run. The render-only proxy has a separate transform so
+    blendShape target duplication copies only the editable mesh hierarchy.
+
+    The command wrapper is also used by headless callers with deliberately
+    partial ``maya.cmds`` fakes.  If the returned transform cannot be resolved
+    to a real DAG node, preserve the historical result instead of making that
+    fallback path fail.
+    """
+    source_paths = cmds_module.ls(source_transform, long=True) or []
+    if not source_paths or not isinstance(source_paths[0], str):
+        return source_transform, source_mesh
+
+    model_name = _fast_model_scene_name(
+        metadata, base_name, filepath=filepath, native_pmx=native_pmx
+    )
+    root_group = cmds_module.group(
+        empty=True,
+        name=f"{model_name}{SCENE_ROOT_SUFFIX}",
+    )
+    geometry_group = cmds_module.group(
+        empty=True,
+        name=GEOMETRY_GROUP,
+        parent=root_group,
+    )
+    # This mirrors MeshConverter: Geometry is owned by the model root but
+    # does not inherit its transform a second time once skinning is present.
+    cmds_module.setAttr(f"{geometry_group}.inheritsTransform", False)
+
+    mesh_transform = cmds_module.rename(source_paths[0], f"{model_name}_mesh")
+    cmds_module.parent(mesh_transform, geometry_group, absolute=True)
+    if render_shape:
+        from mmd_tools.core.maya_mesh_utils import separate_render_proxy
+
+        separate_render_proxy(mesh_transform, geometry_group, cmds_module)
+    mesh_shapes = cmds_module.listRelatives(
+        mesh_transform,
+        shapes=True,
+        noIntermediate=True,
+        type="mesh",
+        fullPath=True,
+    ) or []
+    mesh_shape = str(mesh_shapes[0]) if mesh_shapes and isinstance(mesh_shapes[0], str) else source_mesh
+    return str(root_group), mesh_shape
+
+
+def _cleanup_fast_vp2_runtime(
+    root_node: str,
+    runtime_result: Optional[dict],
+    model_registry: Optional[str],
+    cmds_module,
+) -> None:
+    """Delete only the model-owned nodes from a failed VP2 fast import."""
+    owned_nodes = []
+    if isinstance(runtime_result, dict):
+        owned_nodes.extend(runtime_result.get("material_morph_nodes", []) or [])
+        graph = runtime_result.get("material_morph_graph")
+        if isinstance(graph, dict):
+            owned_nodes.extend(graph.get("evaluator_nodes", []) or [])
+        controller = runtime_result.get("morph_controller")
+        if controller:
+            owned_nodes.append(controller)
+
     try:
-        pmx_bytes = Path(filepath).read_bytes()
-        parsed_model_cls = _mmd_parsed_model_class()
-        parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
-        if parsed is None:
-            logger.debug("Native parsed-model metadata unavailable; skipping fast material assignment")
-            return None
+        controllers = cmds_module.listConnections(
+            f"{root_node}.mmd_morph_controller",
+            source=True,
+            destination=False,
+        ) or []
+        for controller in controllers:
+            if cmds_module.nodeType(controller) == "mmdMorphController":
+                owned_nodes.append(controller)
+    except Exception:
+        logger.debug("Failed to find failed-import morph controller for %s", root_node, exc_info=True)
+
+    if model_registry:
+        owned_nodes.append(model_registry)
+    owned_nodes.append(root_node)
+
+    seen = set()
+    for node in owned_nodes:
+        if not isinstance(node, str) or not node or node in seen:
+            continue
+        seen.add(node)
         try:
-            metadata_text = parsed.metadata_json
-            material_groups = parsed.material_groups or []
-        finally:
-            parsed.free()
+            if cmds_module.objExists(node):
+                cmds_module.delete(node)
+        except Exception:
+            logger.debug("Failed to clean failed VP2 import node %s", node, exc_info=True)
 
-        if not metadata_text or not material_groups:
-            logger.debug("No parsed material metadata/groups; skipping fast material assignment")
-            return json.loads(metadata_text) if metadata_text else None
 
-        metadata = json.loads(metadata_text)
+def _fast_model_scene_name(
+    metadata: Optional[dict],
+    fallback: str,
+    *,
+    filepath: Optional[str] = None,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> str:
+    """Return the same safe PMX header name used by the Python root builder."""
+    header = metadata.get("metadata") if isinstance(metadata, dict) else None
+    if isinstance(header, dict):
+        raw_name = header.get("englishName") or header.get("name")
+        if raw_name:
+            return maya_name_utils.sanitize_text(raw_name)
+    if filepath:
+        try:
+            pmx = (
+                parse_pmx_native(filepath)
+                if native_pmx is _FAST_NATIVE_PMX_UNSET
+                else native_pmx
+            )
+            header = getattr(pmx, "header", None)
+            raw_name = (
+                getattr(header, "model_name_english", "")
+                or getattr(header, "model_name", "")
+            )
+            if raw_name:
+                return maya_name_utils.sanitize_text(raw_name)
+        except Exception as exc:
+            logger.debug("Fast DAG header parse skipped: %s", exc)
+    return maya_name_utils.sanitize_text(fallback)
+
+
+def _apply_basic_materials(
+    filepath: str,
+    mesh_node: str,
+    cmds_module,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> Optional[dict]:
+    """Assign materials and return the parsed metadata for root attributes."""
+    metadata = None
+    material_groups = None
+    native_material_data = None
+    if (native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None
+            and getattr(native_pmx, "soft_body_loader", None) is None):
+        native_material_data = _load_native_fast_material_data(
+            filepath, native_pmx=native_pmx
+        )
+        if native_material_data is not None:
+            metadata, material_groups = native_material_data
+
+    if not metadata or not material_groups:
+        try:
+            pmx_bytes = Path(filepath).read_bytes()
+            parsed_model_cls = _mmd_parsed_model_class()
+            parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
+            if parsed is not None:
+                try:
+                    metadata_text = parsed.metadata_json
+                    material_groups = parsed.material_groups or []
+                finally:
+                    parsed.free()
+                if metadata_text:
+                    metadata = json.loads(metadata_text)
+            else:
+                logger.debug("Native parsed-model metadata unavailable; trying current native PMX parser")
+        except Exception as exc:
+            logger.debug("Parsed-model material metadata unavailable: %s", exc)
+
+    if not metadata or not material_groups:
+        if native_material_data is None:
+            native_material_data = _load_native_fast_material_data(
+                filepath, native_pmx=native_pmx
+            )
+        if native_material_data is not None:
+            metadata, material_groups = native_material_data
+
+    if not metadata or not material_groups:
+        logger.debug("Fast material metadata/groups unavailable; skipping material assignment")
+        return metadata
+
+    try:
         materials = metadata.get("materials") or []
         used_names = _scene_name_set(cmds_module)
+        converter = None
+        if (native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None
+                and len(getattr(native_pmx, "materials", ()) or ()) >= len(materials)):
+            from mmd_tools.converters.mesh_converter import MeshConverter
+            from mmd_tools.converters.material_morph_runtime import bind_standard_material
+
+            converter = MeshConverter(filepath)
+            converter._precompute_transparency_modes(
+                native_pmx.vertices, native_pmx.faces, native_pmx.materials, native_pmx.textures,
+            )
         for start_index, index_count, material_index in material_groups:
             if material_index >= len(materials) or index_count <= 0:
                 continue
 
             material = materials[material_index]
-            shader = _create_standard_material(material, material_index, cmds_module, used_names)
+            if converter is None:
+                shader = _create_standard_material(material, material_index, cmds_module, used_names)
+            else:
+                native_material = native_pmx.materials[material_index]
+                texture_index = native_material.texture_index
+                texture = native_pmx.textures[texture_index] if 0 <= texture_index < len(native_pmx.textures) else None
+                converter._material_name_by_index[material_index] = _allocate_fast_material_name(
+                    material.get("englishName") or material.get("name"), material_index, used_names,
+                )
+                shader = converter._create_material(
+                    native_material, texture_path=texture, all_textures=native_pmx.textures,
+                    material_index=material_index, original_texture_path=texture,
+                )
+                group = cmds_module.sets(renderable=True, noSurfaceShader=True, empty=True, name=f"{shader}SG")
+                cmds_module.connectAttr(f"{shader}.outColor", f"{group}.surfaceShader", force=True)
+                if not bind_standard_material(shader):
+                    raise RuntimeError(f"Could not bind fast material preview: {shader}")
             if not shader:
                 continue
 
@@ -280,7 +700,93 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> Option
         return None
 
 
-def _apply_fast_morph_metadata(filepath: str, mesh_node: str, cmds_module) -> None:
+def _load_native_fast_material_data(
+    filepath: str,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+):
+    """Build fast material metadata from the current native PMX parser ABI."""
+    try:
+        pmx = (
+            parse_pmx_native(filepath)
+            if native_pmx is _FAST_NATIVE_PMX_UNSET
+            else native_pmx
+        )
+        if pmx is None:
+            return None
+        header = getattr(pmx, "header", None)
+        native_materials = list(getattr(pmx, "materials", []) or [])
+        if not native_materials:
+            return None
+
+        materials = []
+        material_groups = []
+        start_index = 0
+        for material_index, native_material in enumerate(native_materials):
+            diffuse = tuple(getattr(native_material, "diffuse", (1.0, 1.0, 1.0, 1.0)))
+            specular = tuple(getattr(native_material, "specular", (0.5, 0.5, 0.5)))
+            materials.append(
+                {
+                    "name": str(getattr(native_material, "name", "") or ""),
+                    "englishName": str(getattr(native_material, "name_english", "") or ""),
+                    "diffuse": list(diffuse[:4]),
+                    "specular": list(specular[:3]),
+                    "ambient": list(
+                        tuple(getattr(native_material, "ambient", (0.0, 0.0, 0.0)))[:3]
+                    ),
+                    "specularPower": float(
+                        getattr(native_material, "specular_coefficient", 0.0) or 0.0
+                    ),
+                    "edgeColor": list(
+                        tuple(getattr(native_material, "edge_color", (0.0, 0.0, 0.0, 1.0)))[:4]
+                    ),
+                    "edgeSize": float(
+                        getattr(native_material, "edge_size", 0.0) or 0.0
+                    ),
+                }
+            )
+            face_count = max(0, int(getattr(native_material, "face_count", 0) or 0))
+            if face_count:
+                material_groups.append((start_index, face_count, material_index))
+                start_index += face_count
+
+        metadata = {
+            "metadata": {
+                "name": str(getattr(header, "model_name", "") or ""),
+                "englishName": str(getattr(header, "model_name_english", "") or ""),
+                "comment": str(getattr(header, "comment", "") or ""),
+                "englishComment": str(getattr(header, "comment_english", "") or ""),
+                "counts": {
+                    "softBodies": len(getattr(pmx, "soft_bodies", []) or []),
+                },
+            },
+            "materials": materials,
+        }
+        return metadata, material_groups
+    except Exception as exc:
+        logger.debug("Native PMX material metadata fallback skipped: %s", exc)
+        return None
+
+
+def _find_fast_blend_shapes(mesh_node: str, cmds_module) -> list[str]:
+    """Return existing blendShape nodes in the source mesh history."""
+    blend_shapes = []
+    try:
+        for history_node in cmds_module.listHistory(mesh_node, pruneDagObjects=True) or []:
+            if cmds_module.nodeType(history_node) == "blendShape" and history_node not in blend_shapes:
+                blend_shapes.append(history_node)
+    except Exception as exc:
+        logger.debug("Fast blendShape discovery skipped: %s", exc)
+    return blend_shapes
+
+
+def _apply_fast_morph_metadata(
+    filepath: str,
+    mesh_node: str,
+    cmds_module,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> list[str]:
     """Replace C++ vertex-morph aliases and persist their raw PMX mapping.
 
     ``mmdFastLoad`` intentionally only has the C++ byte-level sanitizer.  The
@@ -291,26 +797,22 @@ def _apply_fast_morph_metadata(filepath: str, mesh_node: str, cmds_module) -> No
     first Maya mutation.  If a Maya mutation fails, already-applied aliases
     and the metadata attribute are restored on a best-effort basis.
     """
+    blend_shapes = _find_fast_blend_shapes(mesh_node, cmds_module)
     try:
-        source = _load_fast_morph_source(filepath)
+        source = _load_fast_morph_source(filepath, native_pmx=native_pmx)
         if source is None:
-            return
+            return blend_shapes
 
-        blend_shapes = []
-        for history_node in cmds_module.listHistory(mesh_node, pruneDagObjects=True) or []:
-            if cmds_module.nodeType(history_node) == "blendShape":
-                if history_node not in blend_shapes:
-                    blend_shapes.append(history_node)
         if not blend_shapes:
-            return
+            return blend_shapes
         if len(blend_shapes) != 1:
             logger.debug("Fast morph metadata skipped: expected one blendShape, got %d", len(blend_shapes))
-            return
+            return blend_shapes
 
         blend_shape = blend_shapes[0]
         weight_count = int(cmds_module.blendShape(blend_shape, query=True, weightCount=True) or 0)
         if weight_count == 0:
-            return
+            return blend_shapes
 
         candidates = _fast_vertex_morph_candidates(source)
         if candidates is None or len(candidates) != weight_count:
@@ -319,7 +821,7 @@ def _apply_fast_morph_metadata(filepath: str, mesh_node: str, cmds_module) -> No
                 weight_count,
                 None if candidates is None else len(candidates),
             )
-            return
+            return blend_shapes
 
         alias_plan = []
         used_names = set()
@@ -356,11 +858,139 @@ def _apply_fast_morph_metadata(filepath: str, mesh_node: str, cmds_module) -> No
             alias_plan,
             serialized_mapping,
         )
+        return blend_shapes
     except Exception as exc:
         logger.debug("Fast morph metadata skipped: %s", exc)
+        return blend_shapes
 
 
-def _load_fast_morph_source(filepath: str) -> Optional[dict]:
+def _apply_fast_material_morph_runtime(
+    filepath: str,
+    root_node: str,
+    *,
+    model_registry: Optional[str] = None,
+    blend_shape_nodes=None,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> dict:
+    """Build material morph metadata/controller and bind native values."""
+    result = {
+        "success": True,
+        "material_morph_nodes": [],
+        "morph_controller": None,
+        "material_morph_graph": None,
+        "native_alpha": None,
+        "skipped": [],
+    }
+
+    try:
+        pmx = (
+            parse_pmx_native(filepath)
+            if native_pmx is _FAST_NATIVE_PMX_UNSET
+            else native_pmx
+        )
+        if pmx is None:
+            result["success"] = False
+            result["skipped"].append("native_pmx_unavailable")
+            return result
+
+        from mmd_tools.converters import MorphConverter
+        from mmd_tools.converters.material_morph_runtime import build_material_morph_graph
+        from mmd_tools.core.pmx_data.morph import PmxMorphType
+        from mmd_tools.io.model_import_pipeline import ModelImportPipeline
+
+        converter = MorphConverter()
+        converter.validate_runtime_requirements(pmx)
+        material_nodes = result["material_morph_nodes"]
+        material_morph_count = 0
+        conversion_failed = False
+        for morph_index, morph in enumerate(getattr(pmx, "morphs", []) or []):
+            if morph.morph_type != PmxMorphType.MaterialMorph:
+                continue
+            material_morph_count += 1
+            converted = converter._convert_material_morph_pmx(
+                morph,
+                morph_index=morph_index,
+            )
+            if isinstance(converted, dict) and converted.get("success") and converted.get("morph_node"):
+                material_nodes.append(converted["morph_node"])
+            else:
+                conversion_failed = True
+                result["success"] = False
+                result["skipped"].append(f"material_morph_conversion_failed:{morph_index}")
+
+        if material_morph_count == 0:
+            result["skipped"].append("no_material_morphs")
+            return result
+        if conversion_failed:
+            return result
+
+        morph_result = {
+            "success": True,
+            "morphs_converted": len(material_nodes),
+            "total_morphs": len(getattr(pmx, "morphs", []) or []),
+            "blend_shape_nodes": list(blend_shape_nodes or []),
+            "bone_morph_nodes": [],
+            "group_morph_nodes": [],
+            "material_morph_nodes": material_nodes,
+            "uv_morph_nodes": [],
+            "flip_impulse_morph_nodes": [],
+            "vertex_morph_nodes": [],
+            "results": [],
+        }
+        pipeline = ModelImportPipeline(
+            logger=logger,
+            filepath=filepath,
+            scale=1.0,
+            options={"import_morphs": True},
+        )
+        pipeline.connect_morph_nodes_to_root(
+            root_node,
+            morph_result,
+            model_registry=model_registry,
+        )
+        result["morph_controller"] = converter.build_morph_controller(
+            pmx,
+            root_node,
+            morph_result,
+        )
+        result["material_morph_graph"] = build_material_morph_graph(root_node)
+        native_alpha = result["material_morph_graph"].get("native_alpha")
+        result["native_alpha"] = native_alpha
+        native_alpha_success = (
+            native_alpha.get("success", False)
+            if isinstance(native_alpha, dict)
+            else bool(native_alpha)
+            and all(item.get("success", False) for item in native_alpha)
+        )
+        result["success"] = bool(
+            result["morph_controller"]
+            and result["material_morph_graph"].get("success", False)
+            and native_alpha_success
+        )
+        result["skipped"].extend(result["material_morph_graph"].get("skipped", []))
+        if isinstance(native_alpha, dict):
+            result["skipped"].extend(native_alpha.get("skipped", []))
+        else:
+            for native_result in native_alpha or []:
+                result["skipped"].extend(native_result.get("skipped", []))
+        return result
+    except Exception as exc:
+        result["success"] = False
+        result["skipped"].append(f"material_morph_runtime_failed:{exc}")
+        logger.warning(
+            "Fast native material morph bridge skipped for %s: %s",
+            root_node,
+            exc,
+            exc_info=True,
+        )
+        return result
+
+
+def _load_fast_morph_source(
+    filepath: str,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> Optional[dict]:
     """Read parsed morph metadata and optional runtime vertex-morph spans."""
     parsed = None
     try:
@@ -395,13 +1025,21 @@ def _load_fast_morph_source(filepath: str) -> Optional[dict]:
         else:
             logger.debug("Parsed-model morph metadata unavailable; trying native PMX fallback")
 
-    return _load_fast_morph_source_native(filepath)
+    return _load_fast_morph_source_native(filepath, native_pmx=native_pmx)
 
 
-def _load_fast_morph_source_native(filepath: str) -> Optional[dict]:
+def _load_fast_morph_source_native(
+    filepath: str,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
+) -> Optional[dict]:
     """Convert the native PMX object into the fast morph source schema."""
     try:
-        pmx = parse_pmx_native(filepath)
+        pmx = (
+            parse_pmx_native(filepath)
+            if native_pmx is _FAST_NATIVE_PMX_UNSET
+            else native_pmx
+        )
         if pmx is None:
             return None
         vertices = getattr(pmx, "vertices", None)
@@ -575,13 +1213,19 @@ def _apply_fast_root_metadata(
     root_node: str,
     metadata: Optional[dict],
     cmds_module,
+    *,
+    native_pmx=_FAST_NATIVE_PMX_UNSET,
 ) -> None:
     """Preserve PMX metadata on fast-import roots."""
     header = metadata.get("metadata") if isinstance(metadata, dict) else None
     soft_body_count = _fast_soft_body_count(metadata)
     if not isinstance(header, dict):
         try:
-            pmx = parse_pmx_native(filepath)
+            pmx = (
+                parse_pmx_native(filepath)
+                if native_pmx is _FAST_NATIVE_PMX_UNSET
+                else native_pmx
+            )
             header = getattr(pmx, "header", None)
             if soft_body_count is None and pmx is not None:
                 soft_body_count = len(getattr(pmx, "soft_bodies", []) or [])
@@ -640,6 +1284,8 @@ def _create_standard_material(
 
     try:
         shader = cmds_module.shadingNode("standardSurface", asShader=True, name=shader_name)
+        for attribute, value in (("base", 1.0), ("metalness", 0.0), ("specular", 0.2), ("specularRoughness", 0.6)):
+            cmds_module.setAttr(f"{shader}.{attribute}", value)
         shading_group = cmds_module.sets(
             renderable=True,
             noSurfaceShader=True,
@@ -654,305 +1300,43 @@ def _create_standard_material(
         if len(diffuse) >= 4:
             alpha = float(diffuse[3])
             cmds_module.setAttr(f"{shader}.opacity", alpha, alpha, alpha, type="double3")
+        else:
+            alpha = 1.0
 
         specular = material.get("specular") or []
         if len(specular) >= 3:
             cmds_module.setAttr(f"{shader}.specularColor", float(specular[0]), float(specular[1]), float(specular[2]), type="double3")
 
+        ambient = material.get("ambient") or [0.0, 0.0, 0.0]
+        shininess = material.get(
+            "specularPower",
+            material.get("specular_coefficient", material.get("shininess", 0.0)),
+        )
+        edge_color = material.get("edgeColor", material.get("edge_color")) or [
+            0.0, 0.0, 0.0, 1.0
+        ]
+        edge_alpha = float(edge_color[3]) if len(edge_color) > 3 else float(
+            material.get("edgeAlpha", material.get("edge_alpha", 1.0))
+        )
+        edge_size = material.get("edgeSize", material.get("edge_size", 0.0))
+
         _set_fast_string_attr(cmds_module, shader, ATTR_MMD_MATERIAL_NAME, material.get("name") or "")
         _set_fast_string_attr(cmds_module, shader, ATTR_MMD_MATERIAL_NAME_EN, material.get("englishName") or "")
+        _set_fast_long_attr(cmds_module, shader, ATTR_MMD_MATERIAL, 1)
+        _set_fast_long_attr(cmds_module, shader, ATTR_MMD_MATERIAL_INDEX, material_index)
+        _set_fast_double_attr(cmds_module, shader, ATTR_MMD_DIFFUSE_ALPHA, alpha)
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_DIFFUSE_COLOR, diffuse[:3])
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_SPECULAR_COLOR, specular[:3])
+        _set_fast_double_attr(cmds_module, shader, ATTR_MMD_SHININESS, shininess)
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_AMBIENT_COLOR, ambient[:3])
+        _set_fast_double3_attr(cmds_module, shader, ATTR_MMD_EDGE_COLOR, edge_color[:3])
+        _set_fast_double_attr(cmds_module, shader, ATTR_MMD_EDGE_ALPHA, edge_alpha)
+        _set_fast_double_attr(cmds_module, shader, ATTR_MMD_EDGE_SIZE, edge_size)
 
         return str(shader)
     except Exception as exc:
         logger.debug("Failed to create fast material %s: %s", raw_name, exc)
         return None
-
-
-def _load_fast_skin_data(filepath: str) -> Optional[_FastSkinData]:
-    """Load bones and skin weights for the fast skeleton/skin add-on path."""
-    pmx_bytes = Path(filepath).read_bytes()
-    parsed_model_cls = _mmd_parsed_model_class()
-    parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
-    if parsed is not None:
-        try:
-            metadata_text = parsed.metadata_json
-            skin_indices = parsed.skin_indices
-            skin_weights = parsed.skin_weights
-        finally:
-            parsed.free()
-
-        if metadata_text and skin_indices is not None and skin_weights is not None:
-            metadata = json.loads(metadata_text)
-            bones = metadata.get("bones") or metadata.get("skeleton", {}).get("bones") or []
-            if bones:
-                return _FastSkinData(list(bones), list(skin_indices), list(skin_weights))
-
-        logger.debug("Parsed-model skin metadata incomplete; trying native PMX parser fallback")
-
-    pmx = parse_pmx_native(filepath)
-    if pmx is None:
-        logger.debug("Native PMX parser fallback unavailable; skipping skeleton/skin")
-        return None
-
-    bones = [
-        {
-            "name": bone.name,
-            "englishName": bone.name_english,
-            "parentIndex": bone.parent_bone_index,
-            "position": bone.position,
-        }
-        for bone in pmx.bones
-    ]
-    skin_indices, skin_weights = _skin_data_from_pmx_vertices(pmx.vertices)
-    return _FastSkinData(bones, skin_indices, skin_weights)
-
-
-def _skin_data_from_pmx_vertices(
-    vertices,
-) -> tuple[list[tuple[int, int, int, int]], list[tuple[float, float, float, float]]]:
-    """Convert PmxVertex skinning fields to fixed four-influence tuples."""
-    skin_indices: list[tuple[int, int, int, int]] = []
-    skin_weights: list[tuple[float, float, float, float]] = []
-
-    for vertex in vertices:
-        indices = [int(i) for i in getattr(vertex, "bone_indices", [])[:4]]
-        weights = [float(w) for w in getattr(vertex, "bone_weights", [])[:4]]
-        mode = int(getattr(vertex, "weight_transform_type", 0))
-
-        if mode == 0:
-            weights = [1.0]
-        elif mode in (1, 3):
-            first = weights[0] if weights else 1.0
-            weights = [first, 1.0 - first]
-        elif mode in (2, 4):
-            pass
-        elif indices:
-            weights = [1.0]
-
-        while len(indices) < 4:
-            indices.append(0)
-        while len(weights) < 4:
-            weights.append(0.0)
-
-        skin_indices.append(tuple(indices[:4]))
-        skin_weights.append(tuple(weights[:4]))
-
-    return skin_indices, skin_weights
-
-
-def _apply_fast_skeleton_skin(
-    filepath: str,
-    mesh_node: str,
-    root_group: str,
-    base_name: str,
-    cmds_module,
-    scale: float = 1.0,
-) -> None:
-    """Create basic Maya joints + skinCluster from mmd-anim parsed metadata.
-
-    Bone positions come from ``metadata_json["bones"]`` (each entry has
-    ``name``, ``englishName``, ``parentIndex``, ``position``).  Vertex skin
-    data comes from ``MmdParsedModel.skin_indices`` / ``skin_weights``.
-
-    On any error the function logs and returns; the caller is responsible
-    for falling back to the mesh-only result.
-    """
-    skin_data = _load_fast_skin_data(filepath)
-    if skin_data is None:
-        return
-
-    bones = skin_data.bones
-    skin_indices = skin_data.skin_indices
-    skin_weights = skin_data.skin_weights
-    if not bones:
-        logger.debug("No bones in metadata; skipping skeleton/skin")
-        return
-
-    # ---- build unique bone/joint names ----
-    joint_names: list[str] = []
-    used_names: set[str] = _scene_name_set(cmds_module)
-    for b in bones:
-        raw = b.get("englishName") or b.get("name") or f"bone_{len(joint_names)}"
-        name = maya_name_utils.sanitize_unique_name(
-            str(raw),
-            used_names,
-            fallback=f"bone_{len(joint_names)}",
-        )
-        joint_names.append(name)
-
-    # ---- create skeleton group ----
-    skeleton_group = cmds_module.group(
-        empty=True,
-        name=f"{base_name}_skeleton_fast",
-        parent=root_group,
-    )
-
-    # ---- create all joints (initially at world origin) ----
-    joints: list[str] = []
-    for i, b in enumerate(bones):
-        pos = b.get("position", [0.0, 0.0, 0.0])
-        cmds_module.select(clear=True)
-        jnt = cmds_module.joint(
-            name=joint_names[i],
-            position=mmd_point_to_maya(pos, scale),
-        )
-        cmds_module.setAttr(f"{jnt}.segmentScaleCompensate", False)
-        _tag_fast_joint_metadata(cmds_module, jnt, i, b, scale=scale)
-        joints.append(jnt)
-
-    # ---- parent joints according to parentIndex ----
-    for i, b in enumerate(bones):
-        parent_idx = b.get("parentIndex", -1)
-        if 0 <= parent_idx < len(joints):
-            try:
-                cmds_module.parent(joints[i], joints[parent_idx], absolute=True)
-            except Exception:
-                pass
-
-    # ---- parent root joints (parentIndex == -1) into skeleton group ----
-    for i, b in enumerate(bones):
-        parent_idx = b.get("parentIndex", -1)
-        if parent_idx == -1 and cmds_module.objExists(joints[i]):
-            try:
-                cmds_module.parent(joints[i], skeleton_group, absolute=True)
-            except Exception:
-                pass
-
-    # Parent/absolute operations establish the final local bind translation.
-    # Persist that value for Animator Toolset Reset Pose, which intentionally
-    # operates on selected joints instead of opening Rest Pose display mode.
-    # Keep the VMD compatibility helper local so mesh-only fast import does
-    # not import the full VMD scene-state dependency graph at module load.
-    from mmd_tools.converters.vmd_import_state import store_bind_translate
-
-    for joint in joints:
-        try:
-            translate = cmds_module.getAttr(f"{joint}.translate")[0]
-            store_bind_translate(joint, translate, cmds_module=cmds_module)
-        except Exception as exc:
-            logger.debug("Failed to persist fast-path bind translate for %s: %s", joint, exc)
-
-    # ---- create skinCluster ----
-    if not cmds_module.objExists(mesh_node):
-        logger.debug("Mesh node %s does not exist; skipping skinCluster", mesh_node)
-        return
-
-    used_bone_indices = sorted(
-        {
-            int(bone_index)
-            for indices, weights in zip(skin_indices, skin_weights)
-            for bone_index, weight in zip(indices, weights)
-            if float(weight) > 0.0 and 0 <= int(bone_index) < len(joints)
-        }
-    )
-    influence_pairs = [
-        (bone_index, joints[bone_index])
-        for bone_index in used_bone_indices
-        if cmds_module.objExists(joints[bone_index])
-    ]
-    if not influence_pairs:
-        logger.debug("No positive-weight joints for skinCluster; skipping")
-        return
-    influence_joints = [joint for _bone_index, joint in influence_pairs]
-
-    # Evaluate authored-normal state before creating the deformer so Maya's
-    # skinCluster initialization cannot alter the predicate's mesh snapshot.
-    has_authored_normal_difference = maya_mesh_utils.has_materially_different_authored_normals(
-        mesh_node
-    )
-
-    skin_cluster = cmds_module.skinCluster(
-        influence_joints,
-        mesh_node,
-        toSelectedBones=True,
-        normalizeWeights=2,
-        maximumInfluences=4,
-        name=f"{base_name}_skinCluster_fast",
-    )[0]
-
-    maya_mesh_utils.configure_authored_normal_skin_policy(
-        skin_cluster,
-        has_authored_normal_difference,
-        cmds_module=cmds_module,
-    )
-
-    # ---- apply vertex weights ----
-    n_verts = len(skin_indices)
-    if n_verts == 0 or n_verts != len(skin_weights):
-        logger.debug("Skin data vertex count mismatch (%d indices, %d weights); skipping weights",
-                     n_verts, len(skin_weights) if skin_weights else 0)
-        return
-
-    influence_index_by_bone = {
-        bone_index: influence_index
-        for influence_index, (bone_index, _joint) in enumerate(influence_pairs)
-    }
-
-    # Build influence index -> weight for each vertex
-    weights_list: list[list[float]] = []
-    for v in range(n_verts):
-        vw = [0.0] * len(influence_joints)
-        idx4 = skin_indices[v]
-        w4 = skin_weights[v]
-        for k in range(4):
-            bi = int(idx4[k])
-            w = float(w4[k])
-            if w > 0.0 and bi < len(joints):
-                infl_idx = influence_index_by_bone.get(bi)
-                if infl_idx is not None:
-                    vw[infl_idx] = w
-        weights_list.append(vw)
-
-    try:
-        maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
-    except Exception as exc:
-        logger.debug("Failed to apply vertex weights: %s", exc)
-
-
-def _tag_fast_joint_metadata(
-    cmds_module,
-    joint: str,
-    bone_index: int,
-    bone: dict,
-    *,
-    scale: float = 1.0,
-) -> None:
-    """Attach MMD bone metadata expected by VMD/runtime paths."""
-    attrs = (
-        (ATTR_MMD_BONE_INDEX, "long", int(bone_index)),
-        (ATTR_MMD_BONE_PARENT_INDEX, "long", int(bone.get("parentIndex", -1))),
-        (
-            ATTR_MMD_PMX_REST_POSITION,
-            "double3",
-            tuple(float(value) * scale for value in bone.get("position", (0.0, 0.0, 0.0))),
-        ),
-        (ATTR_MMD_BONE_NAME, "string", str(bone.get("name") or "")),
-        (ATTR_MMD_BONE_NAME_EN, "string", str(bone.get("englishName") or "")),
-    )
-    for attr, attr_type, value in attrs:
-        try:
-            if not cmds_module.attributeQuery(attr, node=joint, exists=True):
-                if attr_type == "string":
-                    cmds_module.addAttr(joint, longName=attr, dataType="string")
-                elif attr_type == "double3":
-                    cmds_module.addAttr(joint, longName=attr, attributeType=attr_type)
-                    for axis in "XYZ":
-                        cmds_module.addAttr(
-                            joint,
-                            longName=f"{attr}{axis}",
-                            attributeType="double",
-                            parent=attr,
-                        )
-                else:
-                    cmds_module.addAttr(joint, longName=attr, attributeType=attr_type)
-            if attr_type == "string":
-                cmds_module.setAttr(f"{joint}.{attr}", value, type="string")
-            elif attr_type == "double3":
-                cmds_module.setAttr(f"{joint}.{attr}", *value, type=attr_type)
-            else:
-                cmds_module.setAttr(f"{joint}.{attr}", value)
-        except Exception:
-            pass
 
 
 def _sanitize_node_name(raw: str) -> str:
@@ -1017,3 +1401,22 @@ def _set_fast_double_attr(cmds_module, node: str, attr: str, value: float) -> No
         cmds_module.setAttr(f"{node}.{attr}", float(value))
     except Exception as exc:
         logger.debug("Failed to preserve fast-path floating metadata %s.%s: %s", node, attr, exc)
+
+
+def _set_fast_double3_attr(cmds_module, node: str, attr: str, value) -> None:
+    """Best-effort RGB metadata write for fast-import material authorship."""
+    try:
+        if not cmds_module.attributeQuery(attr, node=node, exists=True):
+            cmds_module.addAttr(node, longName=attr, attributeType="double3")
+            for axis in "XYZ":
+                cmds_module.addAttr(
+                    node,
+                    longName=f"{attr}{axis}",
+                    attributeType="double",
+                    parent=attr,
+                )
+        components = tuple(float(component) for component in value[:3])
+        if len(components) == 3:
+            cmds_module.setAttr(f"{node}.{attr}", *components, type="double3")
+    except Exception as exc:
+        logger.debug("Failed to preserve fast-path RGB metadata %s.%s: %s", node, attr, exc)

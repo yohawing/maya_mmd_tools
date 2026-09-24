@@ -1233,7 +1233,9 @@ class MayaSceneMetadataBackend:
         if shader != transaction["binding"] or material != transaction["target_material"]:
             raise MayaSceneMetadataError("material binding patch commit target mismatch")
         actual = self.read_material_value(model_root, shader, transaction["index"])
-        if actual != material:
+        if not self._material_value_attrs_equal(
+            actual.to_mapping(), material.to_mapping()
+        ):
             raise MayaSceneMetadataError(
                 f"material binding patch fingerprint mismatch: expected {material!r}, got {actual!r}"
             )
@@ -1953,6 +1955,17 @@ class MayaSceneMetadataBackend:
                 # harmless.  Preserve the fail-closed rollback behavior; the
                 # subsequent exact preimage check reports any remaining issue.
                 transaction["mutated"] = True
+        if transaction.get("kind") == "material_binding":
+            try:
+                transaction["mutated"] = self.read_material_value(
+                    transaction["root"], transaction["binding"], transaction["index"]
+                ) != transaction["original_material"]
+                if transaction.get("outline_original") is not None:
+                    transaction["mutated"] |= self._capture_material_outline_attrs(
+                        transaction["binding"]
+                    ) != transaction["outline_original"]
+            except Exception:
+                transaction["mutated"] = True
         try:
             if transaction["chunk_open"]:
                 self._call_adapter("undo_info", closeChunk=True)
@@ -2001,6 +2014,7 @@ class MayaSceneMetadataBackend:
             ):
                 raise MayaSceneMetadataError("material value patch rollback fingerprint mismatch")
             self._verify_material_outline_rollback(transaction)
+            self._discard_failed_material_redo(transaction)
             return
         if transaction.get("kind") == "material_binding":
             actual = self.read_material_value(
@@ -2009,6 +2023,7 @@ class MayaSceneMetadataBackend:
             if actual != transaction["original_material"]:
                 raise MayaSceneMetadataError("material binding patch rollback fingerprint mismatch")
             self._verify_material_outline_rollback(transaction)
+            self._discard_failed_material_redo(transaction)
             return
         if transaction.get("kind") == "material_create":
             members = self._registry_material_members(transaction["root"])
@@ -2053,6 +2068,24 @@ class MayaSceneMetadataBackend:
         actual = SceneMetadataAdapter(self).read_spec(model_root).fingerprint()
         if actual != transaction["original_fingerprint"]:
             raise MayaSceneMetadataError("metadata rollback fingerprint mismatch")
+
+    def _discard_failed_material_redo(self, transaction: Mapping[str, Any]) -> None:
+        """Replace the failed Redo item without clearing earlier Undo history.
+
+        Maya clears Redo on an undoable write, even when its value is unchanged.
+        Undoing that no-op leaves the preceding successful edit available to Undo
+        and only a harmless same-value write available to Redo.
+        """
+        if not transaction.get("mutated", True):
+            return
+        plug = f"{transaction['binding']}.mmd_material_index"
+        value = self._call_adapter("get_attr", plug)
+        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Material Rollback")
+        try:
+            self._call_adapter("set_attr", plug, value)
+        finally:
+            self._call_adapter("undo_info", closeChunk=True)
+        self._call_adapter("undo")
 
     def _material_value_mutated(self, transaction: Mapping[str, Any]) -> bool:
         """Return whether a narrow Material command changed owned state."""

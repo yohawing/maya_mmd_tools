@@ -30,22 +30,18 @@ def test_fast_load_preserves_receiver_and_caster_flags_separately() -> None:
     assert "bool selfShadow = false;" in queue_header
 
 
-def test_queue_and_structured_diagnostics_preserve_caster_eligibility() -> None:
+def test_queue_and_shape_settings_preserve_caster_and_receiver_flags() -> None:
     queue_header = (CPP / "MmdRenderQueue.h").read_text(encoding="utf-8")
-    shape_header = (CPP / "MmdRenderShape.h").read_text(encoding="utf-8")
+    queue_source = (CPP / "MmdRenderQueue.cpp").read_text(encoding="utf-8")
     shape_source = (CPP / "MmdRenderShape.cpp").read_text(encoding="utf-8")
-    override_source = (CPP / "MmdRenderGeometryOverride.cpp").read_text(
-        encoding="utf-8"
-    )
     smoke = (CPP / "MmdRenderQueueSmoke.cpp").read_text(encoding="utf-8")
 
     assert "bool selfShadowMap = false;" in queue_header
-    assert "bool selfShadowMap = false;" in shape_header
-    assert (
-        "diagnostic.selfShadowMap = queueGeometry.material.selfShadowMap;"
-        in override_source
-    )
-    assert 'appendJsonBool(stream, "selfShadowMap", diagnostic.selfShadowMap' in shape_source
+    assert "bool selfShadow = false;" in queue_header
+    assert "left.selfShadowMap == right.selfShadowMap" in queue_source
+    assert "left.selfShadow == right.selfShadow" in queue_source
+    assert "input.selfShadowMap = bool(flags & 4);" in shape_source
+    assert "input.selfShadow = bool(flags & 8);" in shape_source
     assert "materialInput.selfShadowMap = true;" in smoke
     assert "materialInput.selfShadow = false;" in smoke
     assert "secondMaterialInput.selfShadowMap = false;" in smoke
@@ -54,21 +50,3 @@ def test_queue_and_structured_diagnostics_preserve_caster_eligibility() -> None:
     assert "!secondMaterial->selfShadowMap" in smoke
     assert "!firstMaterial->selfShadow" in smoke
     assert "secondMaterial->selfShadow" in smoke
-    assert "bool selfShadow = false;" in shape_header
-    assert "diagnostic.selfShadow = queueGeometry.material.selfShadow;" in override_source
-    assert 'appendJsonBool(stream, "selfShadow", diagnostic.selfShadow' in shape_source
-
-
-def test_geometry_override_filters_only_native_caster_scene_items() -> None:
-    geometry = (CPP / "MmdRenderGeometryOverride.cpp").read_text(encoding="utf-8")
-    scene = (CPP / "MmdRenderOverride.cpp").read_text(encoding="utf-8")
-
-    assert "queueGeometry.material.selfShadowMap &&" in geometry
-    assert "!effectiveTransparent" in geometry
-    assert "MRenderItem::NonMaterialSceneItem" in geometry
-    assert 'diagnostic.casterExclusionReason' in geometry
-    assert "kRenderOpaqueShadedItems" in scene
-    assert "casterDrawCallback" in scene
-    assert "drawnRenderItems" in scene
-    assert "drawnRenderItemDagPaths" in scene
-    assert "drawnRenderItemCastsShadows" in scene

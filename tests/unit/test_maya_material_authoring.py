@@ -678,7 +678,7 @@ def test_apply_material_reindex_fast_path_writes_only_swapped_indices_and_morph_
         "material_index"
     ] == 1
     assert queue_calls == [("|Model_root", 0, 1)]
-    assert rebuild_calls == []
+    assert rebuild_calls == ["|Model_root"]
     written_attrs = {
         call[1][0].rsplit(".", 1)[1]
         for call in cmds.calls

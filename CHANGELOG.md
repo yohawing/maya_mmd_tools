@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-17
+
+### Added
+- Added panel-local MMD Render for DirectX 11, including PMX material ordering, outlines, material morphs, and self-shadow modes and material flags. Standard VP2 editing panels can remain open alongside the MMD preview.
+- Added compact MMD Render settings backed by the scene MMD light, and imported VMD self-shadow mode and distance tracks.
+
+### Changed
+- Made native PMX import the default UI route with full editable model authoring, including material-split meshes, rig, morph, and physics setup.
+- Used Standard Surface for new model previews while retaining MMD material attributes as the source for editing, saving, and PMX export. Removed obsolete native-import and shader-creation UI switches.
+- Reduced redundant geometry uploads, material evaluation, and unrelated morph dirty propagation in the MMD viewport.
+- Retired the temporary legacy-preview migration tool. Re-import the source model to use the current display setup; existing scene edits and animation are not transferred automatically.
+
+### Fixed
+- Preserved welded UV topology, normals, skin weights, material memos, and model identity in native import, including repeated imports and renamed models.
+- Restored textured material previews and base material values after removing the last material morph.
+- Recovered MMD rendering after temporary panel fallback and kept curve overlays out of shaded object-set passes.
+- Refreshed MMD Render settings when scene lights change and cleared legacy layouts before rebuilding controls.
+
+### Known Limitations
+- MMD Render is experimental and requires DirectX 11. Self-shadow distance is stored but does not affect rendering; MMD image parity and a general 16 ms playback target are not established.
+
 ## [0.7.2] - 2026-09-03
 
 ### Added

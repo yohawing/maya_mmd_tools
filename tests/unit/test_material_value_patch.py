@@ -1,5 +1,6 @@
 """Focused tests for the selected-material value patch transaction."""
 
+from copy import deepcopy
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
@@ -19,8 +20,13 @@ from mmd_tools.adapters.maya_material_shader_route import (  # noqa: E402
     material_shader_route,
 )
 from mmd_tools.adapters.maya_material_authoring import (  # noqa: E402
+    ATTR_MMD_TEXTURE_PATH,
     MayaMaterialAuthoring,
     MayaMaterialAuthoringError,
+)
+from mmd_tools.core.constants import (  # noqa: E402
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+    ATTR_MMD_TEXTURE_INDEX,
 )
 from mmd_tools.core.material_authoring import classify_material_change  # noqa: E402
 from mmd_tools.core.model_authoring_spec import (  # noqa: E402
@@ -37,6 +43,74 @@ from tests.unit.test_maya_material_authoring import (  # noqa: E402
 from tests.unit.test_maya_model_authoring_coordinator import _coordinator  # noqa: E402
 from tests.unit.test_maya_scene_metadata_backend import _material as _backend_material  # noqa: E402
 from tests.unit.test_maya_scene_metadata_backend import _writable_scene  # noqa: E402
+from tests.unit.test_maya_scene_metadata_backend import FakeCmds  # noqa: E402
+
+
+@pytest.mark.parametrize("kind", ["value", "binding"])
+@pytest.mark.parametrize("write_before_failure", [False, True])
+def test_failed_material_redo_cannot_revive_writes_or_consume_prior_undo(
+    kind, write_before_failure
+) -> None:
+    class HistoryCmds(FakeCmds):
+        def __init__(self):
+            super().__init__()
+            self.past = []
+            self.future = []
+            self.chunk_written = False
+
+        def undo_info(self, **kwargs):
+            result = super().undo_info(**kwargs)
+            if kwargs.get("openChunk"):
+                self.chunk_written = False
+            if kwargs.get("closeChunk") and self.chunk_written:
+                self.past.append((self.undo_snapshot, deepcopy(self.attrs)))
+            return result
+
+        def set_attr(self, *args, **kwargs):
+            super().set_attr(*args, **kwargs)
+            self.chunk_written = True
+            self.future.clear()
+
+        def undo(self):
+            before, after = self.past.pop()
+            self.attrs = deepcopy(before)
+            self.future.append((before, after))
+
+        def redo(self):
+            before, after = self.future.pop()
+            self.attrs = deepcopy(after)
+            self.past.append((before, after))
+
+    original_cmds, _, _ = _writable_scene()
+    cmds = HistoryCmds()
+    cmds.attrs = deepcopy(original_cmds.attrs)
+    cmds.attrs[("mat", "baseColor")] = [(0.1, 0.2, 0.3)]
+    cmds.node_types = dict(original_cmds.node_types)
+    backend = MayaSceneMetadataBackend(cmds)
+    backend._registry_material_members = lambda _root: ["mat"]
+    original_name = cmds.get_attr("mat.mmd_material_name_en")
+    cmds.undo_info(openChunk=True, chunkName="Prior successful edit")
+    cmds.set_attr("mat.mmd_material_name_en", "prior success", type="string")
+    cmds.undo_info(closeChunk=True)
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, name_english="failed edit")
+    getattr(backend, f"begin_material_{kind}_patch")("|root", "mat", old, new)
+    if write_before_failure:
+        cmds.set_attr("mat.mmd_material_name_en", "failed edit", type="string")
+    backend.rollback_write("|root")
+
+    assert backend._write_transaction is None
+    assert cmds.get_attr("mat.mmd_material_name_en") == "prior success"
+    if write_before_failure:
+        cmds.redo()
+        assert cmds.get_attr("mat.mmd_material_name_en") == "prior success"
+        cmds.undo()  # Undo the harmless Redo fence.
+    else:
+        assert not cmds.future
+    cmds.undo()  # The successful edit before the failure remains available.
+    assert cmds.get_attr("mat.mmd_material_name_en") == original_name
+    cmds.redo()
+    assert cmds.get_attr("mat.mmd_material_name_en") == "prior success"
 
 
 def test_classifier_routes_noop_value_binding_and_mixed_changes() -> None:
@@ -360,6 +434,156 @@ def test_adapter_binding_patch_updates_only_selected_texture_graph() -> None:
     )
     assert rebuilds == ["|Model_root", "|Model_root"]
     assert shader == updated.binding_identity
+
+
+def test_binding_patch_reuses_file_behind_owned_standard_preview_multiplier() -> None:
+    """Texture edits must not duplicate a file hidden behind the preview utility."""
+
+    class UtilityPreviewCmds(FakeCmdsAdapter):
+        def list_connections(self, node: str, **kwargs: object) -> list[str]:
+            if kwargs.get("source") is True and kwargs.get("destination") is False:
+                values = list(self.connections.get(node, []))
+                if kwargs.get("type") == "file":
+                    values = [
+                        value
+                        for value in values
+                        if self.types.get(value.rsplit(".", 1)[0]) == "file"
+                    ]
+                return values
+            return super().list_connections(node, **kwargs)
+
+    cmds = UtilityPreviewCmds()
+    registry = FakeRegistry()
+    adapter = _authoring(cmds, registry)
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    file_node = next(node for node, node_type in cmds.types.items() if node_type == "file")
+    utility = "ownedPreviewMultiply"
+    cmds.types[utility] = "multiplyDivide"
+    cmds.attrs[(utility, "mmdStandardPreviewMultiply")] = True
+    cmds.attrs[(utility, "mmdStandardPreviewShader")] = None
+    cmds.connections[f"{shader}.baseColor"] = [
+        f"{utility}.outputX",
+        f"{utility}.outputY",
+        f"{utility}.outputZ",
+    ]
+    cmds.connections[f"{utility}.mmdStandardPreviewShader"] = [f"{shader}.message"]
+    cmds.connections[f"{utility}.mmdStandardPreviewTexture"] = [f"{file_node}.message"]
+    for channel, axis in zip("RGB", "XYZ"):
+        cmds.connections[f"{utility}.input1{axis}"] = [f"{file_node}.outColor{channel}"]
+
+    cmds.calls.clear()
+    adapter.apply_material_binding_patch(
+        "|Model_root",
+        bound,
+        replace(bound, resolved_texture_path="C:/textures/edited.png"),
+    )
+
+    assert not any(call[0] == "shading_node" and call[1][0] == "file" for call in cmds.calls)
+    assert any(
+        call[0] == "set_attr"
+        and call[1][0] == f"{file_node}.fileTextureName"
+        and call[1][1] == "C:/textures/edited.png"
+        for call in cmds.calls
+    )
+
+
+def test_texture_index_preserves_provenance_behind_owned_preview_multiplier() -> None:
+    """The stock preview helper must not hide the PMX texture-table identity."""
+
+    class UtilityPreviewCmds(FakeCmdsAdapter):
+        def list_connections(self, node: str, **kwargs: object) -> list[str]:
+            if kwargs.get("source") is True and kwargs.get("destination") is False:
+                values = list(self.connections.get(node, []))
+                if kwargs.get("type") == "file":
+                    values = [
+                        value
+                        for value in values
+                        if self.types.get(value.rsplit(".", 1)[0]) == "file"
+                    ]
+                return values
+            return super().list_connections(node, **kwargs)
+
+    cmds = UtilityPreviewCmds()
+    adapter = _authoring(cmds, FakeRegistry())
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    file_node = next(node for node, node_type in cmds.types.items() if node_type == "file")
+    utility = "ownedPreviewMultiply"
+    cmds.types[utility] = "multiplyDivide"
+    cmds.attrs[(utility, "mmdStandardPreviewMultiply")] = True
+    cmds.attrs[(utility, "mmdStandardPreviewShader")] = None
+    cmds.connections[f"{shader}.baseColor"] = [f"{utility}.outputX"]
+    cmds.connections[f"{utility}.mmdStandardPreviewShader"] = [f"{shader}.message"]
+    cmds.connections[f"{utility}.mmdStandardPreviewTexture"] = [f"{file_node}.message"]
+    resolved = r"C:\textures\face.png"
+    cmds.attrs[(shader, ATTR_MMD_TEXTURE_PATH)] = resolved
+    cmds.attrs[(shader, ATTR_MMD_TEXTURE_INDEX)] = 7
+    cmds.attrs[(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)] = bound.texture_path
+    cmds.attrs[(file_node, "fileTextureName")] = resolved
+
+    assert adapter._texture_index_for_write(
+        shader,
+        ATTR_MMD_TEXTURE_INDEX,
+        ATTR_MMD_TEXTURE_PATH,
+        bound.texture_path,
+    ) == 7
+
+
+def test_binding_patch_removes_owned_preview_helpers_before_base_color_write() -> None:
+    """Clearing a stock texture tears down both owned helper routes first."""
+
+    class UtilityPreviewCmds(FakeCmdsAdapter):
+        def list_connections(self, node: str, **kwargs: object) -> list[str]:
+            if kwargs.get("source") is True and kwargs.get("destination") is False:
+                values = list(self.connections.get(node, []))
+                if kwargs.get("type") == "file":
+                    values = [
+                        value
+                        for value in values
+                        if self.types.get(value.rsplit(".", 1)[0]) == "file"
+                    ]
+                return values
+            return super().list_connections(node, **kwargs)
+
+    cmds = UtilityPreviewCmds()
+    adapter = _authoring(cmds, FakeRegistry())
+    bound, shader, _ = adapter.create_material("|Model_root", _material())
+    file_node = next(node for node, node_type in cmds.types.items() if node_type == "file")
+    rgb = "ownedPreviewMultiply"
+    alpha = "ownedPreviewAlpha"
+    cmds.types.update({rgb: "multiplyDivide", alpha: "multDoubleLinear"})
+    for utility, marker in (
+        (rgb, "mmdStandardPreviewMultiply"),
+        (alpha, "mmdStandardPreviewAlpha"),
+    ):
+        cmds.attrs[(utility, marker)] = True
+        cmds.attrs[(utility, "mmdStandardPreviewShader")] = None
+        cmds.connections[f"{utility}.mmdStandardPreviewShader"] = [f"{shader}.message"]
+    cmds.connections[f"{rgb}.mmdStandardPreviewTexture"] = [f"{file_node}.message"]
+    cmds.connections[f"{shader}.baseColor"] = [f"{rgb}.outputX"]
+    cmds.connections[f"{shader}.opacity"] = [f"{alpha}.output"]
+    for channel, axis in zip("RGB", "XYZ"):
+        cmds.connections[f"{rgb}.input1{axis}"] = [f"{file_node}.outColor{channel}"]
+    cmds.connections[f"{alpha}.input1"] = [f"{file_node}.outAlpha"]
+
+    cmds.calls.clear()
+    adapter.apply_material_binding_patch(
+        "|Model_root",
+        bound,
+        replace(bound, texture_path=None, resolved_texture_path=None),
+    )
+
+    delete_indices = [
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "delete" and call[1][0] in {rgb, alpha}
+    ]
+    base_color_index = next(
+        index
+        for index, call in enumerate(cmds.calls)
+        if call[0] == "set_attr" and call[1][0] == f"{shader}.baseColor"
+    )
+    assert len(delete_indices) == 2
+    assert max(delete_indices) < base_color_index
 
 
 def test_binding_patch_removes_texture_graph_before_writing_base_color() -> None:
@@ -1149,6 +1373,46 @@ def test_backend_binding_patch_verifies_selected_material_and_rolls_back() -> No
         backend.commit_material_binding_patch("|root", "mat", old)
     backend.rollback_write("|root")
     assert backend.read_material_value("|root", "mat", 0) == new
+
+
+def test_backend_binding_commit_accepts_maya_float32_round_trip_precision() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, edge_size=0.4)
+
+    backend.begin_material_binding_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_edge_size", 0.4000000059604645)
+    backend.commit_material_binding_patch("|root", "mat", new)
+
+    assert cmds.undo_chunk_open is False
+
+
+def test_backend_binding_commit_rejects_materially_different_numeric_value() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, edge_size=0.4)
+
+    backend.begin_material_binding_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_edge_size", 0.41)
+    with pytest.raises(MayaSceneMetadataError, match="fingerprint mismatch"):
+        backend.commit_material_binding_patch("|root", "mat", new)
+    backend.rollback_write("|root")
+
+    assert backend.read_material_value("|root", "mat", 0) == old
+
+
+def test_backend_binding_commit_rejects_non_numeric_value_mismatch() -> None:
+    cmds, backend, _adapter = _writable_scene()
+    old = backend.read_material_value("|root", "mat", 0)
+    new = replace(old, memo="edited")
+
+    backend.begin_material_binding_patch("|root", "mat", old, new)
+    cmds.set_attr("mat.mmd_memo", "wrong", type="string")
+    with pytest.raises(MayaSceneMetadataError, match="fingerprint mismatch"):
+        backend.commit_material_binding_patch("|root", "mat", new)
+    backend.rollback_write("|root")
+
+    assert backend.read_material_value("|root", "mat", 0) == old
 
 
 def test_presenter_value_apply_uses_selected_row_without_full_reload() -> None:

@@ -2,13 +2,14 @@
 
 The helpers in this module intentionally have no scenario knowledge.  They
 cover stable artifact/report plumbing and the commandPort operations shared by
-the VP2 ownership and native caster probes.  Scenario-specific orchestration
+the MMD Render probes.  Scenario-specific orchestration
 and report schemas remain in their original entry points.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
@@ -138,3 +139,79 @@ def require_requested_plugin(cmds: Any, plugin_path: str, log: Callable[[str], N
             f"requested={requested}; loaded={actual}"
         )
     return actual
+
+
+def _camera_vector(value: object, name: str) -> tuple[float, float, float]:
+    """Validate and normalize a camera position/target/up vector."""
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"camera {name} must be a three-number sequence")
+    try:
+        values = tuple(float(component) for component in value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"camera {name} must be a three-number sequence") from exc
+    if len(values) != 3 or not all(math.isfinite(component) for component in values):
+        raise ValueError(f"camera {name} must be a finite three-number sequence")
+    return values
+
+
+def _configure_camera(cmds: Any, panels: list[str], camera_config: dict) -> dict[str, object]:
+    """Create the explicit Oracle camera and assign it to every model panel."""
+    if not isinstance(camera_config, dict):
+        raise ValueError("camera configuration must be a JSON object")
+    position = _camera_vector(camera_config.get("position"), "position")
+    target = _camera_vector(camera_config.get("target"), "target")
+    up_value = camera_config.get("up")
+    up = _camera_vector(up_value, "up") if up_value is not None else None
+    fov = float(camera_config.get("fov", 25.0))
+    near = float(camera_config.get("near", 0.1))
+    far = float(camera_config.get("far", 1000.0))
+    if not math.isfinite(fov) or not 0.0 < fov < 180.0:
+        raise ValueError(f"camera fov must be finite and between 0 and 180, got {fov}")
+    if not math.isfinite(near) or not math.isfinite(far) or near <= 0.0 or far <= near:
+        raise ValueError(f"camera clip planes must satisfy 0 < near < far, got {near}, {far}")
+
+    camera, shape = cmds.camera(name="renderOverrideOracleCam")
+    cmds.xform(camera, worldSpace=True, translation=position)
+    target_locator = cmds.spaceLocator(name="__render_override_camera_target__")[0]
+    cmds.xform(target_locator, worldSpace=True, translation=target)
+    if up is None:
+        constraint = cmds.aimConstraint(
+            target_locator,
+            camera,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="scene",
+        )[0]
+    else:
+        constraint = cmds.aimConstraint(
+            target_locator,
+            camera,
+            aimVector=(0, 0, -1),
+            upVector=(0, 1, 0),
+            worldUpType="vector",
+            worldUpVector=up,
+        )[0]
+    cmds.delete(constraint, target_locator)
+    aperture = cmds.getAttr(f"{shape}.horizontalFilmAperture")
+    focal_length = (aperture * 25.4 * 0.5) / math.tan(math.radians(fov) * 0.5)
+    cmds.setAttr(f"{shape}.focalLength", focal_length)
+    cmds.setAttr(f"{shape}.nearClipPlane", near)
+    cmds.setAttr(f"{shape}.farClipPlane", far)
+    for panel in panels:
+        cmds.lookThru(panel, camera)
+    return {
+        "node": camera,
+        "shape": shape,
+        "position": list(position),
+        "target": list(target),
+        "up": list(up) if up is not None else None,
+        "fov": fov,
+        "near": near,
+        "far": far,
+    }
+
+
+def make_parity_camera(cmds: Any, camera: Dict[str, Any]) -> str:
+    """Create the manifest camera used by the visual capture harness."""
+    configured = _configure_camera(cmds, [], camera)
+    return str(configured["node"])

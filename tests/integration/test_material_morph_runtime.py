@@ -356,7 +356,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
                 transparency,
                 type="double3",
             )
-        else:
+        elif cmds.nodeType(shader) != "standardSurface":
             cmds.setAttr(f"{shader}.DiffuseColorRGB", *base_color, type="double3")
             cmds.setAttr(f"{shader}.DiffuseColorA", base_alpha)
 
@@ -395,6 +395,555 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         graph = build_material_morph_graph(root) if build_graph else None
 
         return root, mesh, shader, material_nodes, graph
+
+    def test_standard_proxy_migration_undo_redo_and_component_edit(self):
+        from maya.api import OpenMaya as om
+        from mmd_tools.core import maya_proxy_attribute
+
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.diffuse = (1.0, 1.0, 1.0, 1.0)
+        converter = MeshConverter("")
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        root, _, shader, morphs, _ = self._create_scene_with_shader(
+            shader=shader, build_graph=False,
+        )
+        consumer = cmds.createNode("multiplyDivide")
+        cmds.connectAttr(shader + ".specular_color", consumer + ".input1")
+        cmds.undoInfo(openChunk=True)
+        try:
+            self.assertTrue(build_material_morph_graph(root)["success"])
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        authored = shader + ".diffuse_color"
+        self.assertTrue(maya_proxy_attribute.is_proxy(authored))
+        self.assertTrue(cmds.isConnected(shader + ".specular_color", consumer + ".input1"))
+        cmds.undo()
+        self.assertFalse(maya_proxy_attribute.is_proxy(authored))
+        cmds.redo()
+        self.assertTrue(maya_proxy_attribute.is_proxy(authored))
+        cmds.setAttr(authored, 0.2, 0.3, 0.4, type="double3")
+        selection = om.MSelectionList()
+        selection.add(authored)
+        selection.getPlug(0).child(1).setDouble(0.6)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorG"), 0.6)
+        cmds.setAttr(morphs[0] + ".weight", 0.5)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
+        self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.2)
+
+    def test_standard_proxy_animation_survives_rebuild_and_last_morph_removal(self):
+        from mmd_tools.core import maya_proxy_attribute
+
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.diffuse = (1.0, 1.0, 1.0, 1.0)
+        converter = MeshConverter("")
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"])
+        authored = shader + ".diffuse_color"
+        child = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
+        base = cmds.connectionInfo(shader + "." + child, sourceFromDestination=True)
+        driver = cmds.createNode("animCurveTU")
+        cmds.setKeyframe(driver, time=1, value=0.25)
+        cmds.connectAttr(driver + ".output", base)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.25)
+        cmds.delete(morphs)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        self.assertFalse(maya_proxy_attribute.is_proxy(authored))
+        self.assertTrue(cmds.isConnected(driver + ".output", shader + "." + child))
+        self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.25)
+
+    def test_standard_custom_rgb_definition_keeps_legacy_binding(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+        from mmd_tools.core import maya_proxy_attribute
+
+        converter = MeshConverter("")
+        material = PmxMaterial()
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        child = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
+        cmds.addAttr(shader + "." + child, edit=True, defaultValue=0.25, minValue=0.0)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        self.assertFalse(maya_proxy_attribute.is_proxy(shader + ".diffuse_color"))
+        self.assertEqual(cmds.attributeQuery(child, node=shader, listDefault=True), [0.25])
+        cmds.setAttr(shader + ".diffuse_color", 0.2, 0.3, 0.4, type="double3")
+        cmds.setAttr(morphs[0] + ".weight", 0.5)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+
+    def test_standard_locked_rgb_child_keeps_legacy_binding(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+        from mmd_tools.core import maya_proxy_attribute
+
+        converter = MeshConverter("")
+        material = PmxMaterial()
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        child = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
+        cmds.setAttr(shader + "." + child, 0.2)
+        cmds.setAttr(shader + "." + child, lock=True)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        self.assertFalse(maya_proxy_attribute.is_proxy(shader + ".diffuse_color"))
+        self.assertTrue(cmds.getAttr(shader + "." + child, lock=True))
+        cmds.setAttr(morphs[0] + ".weight", 0.5)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+
+    def test_standard_preview_rebuild_and_reload_preserve_authored_material(self):
+        """Evaluated RGB/alpha must never become the persisted PMX base."""
+        import tempfile
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.converters.export_scene_collector import _collect_mmd_material_dict
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.name = "standard_preview"
+        material.diffuse = (0.2, 0.3, 0.4, 0.8)
+        converter = MeshConverter("")
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        self.assertEqual(cmds.nodeType(shader), "standardSurface")
+        root, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        original = _collect_mmd_material_dict(shader)
+
+        def check(rgb, alpha):
+            for actual, expected in zip(cmds.getAttr(shader + ".baseColor")[0], rgb):
+                self.assertAlmostEqual(actual, expected, places=6)
+            self.assertAlmostEqual(cmds.getAttr(shader + ".opacityR"), alpha, places=6)
+            self.assertEqual(_collect_mmd_material_dict(shader), original)
+
+        check((0.2, 0.3, 0.4), 0.8)
+        cmds.setAttr(morphs[0] + ".weight", 1.0)
+        check((0.5, 0.4, 0.4), 0.6)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        check((0.5, 0.4, 0.4), 0.6)
+        cmds.setAttr(morphs[0] + ".weight", 0.0)
+        cmds.undo()
+        check((0.5, 0.4, 0.4), 0.6)
+        cmds.redo()
+        check((0.2, 0.3, 0.4), 0.8)
+        cmds.setAttr(morphs[0] + ".weight", 1.0)
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "standard.ma")
+            cmds.file(rename=path)
+            cmds.file(save=True, type="mayaAscii", force=True)
+            cmds.file(path, open=True, force=True)
+            check((0.5, 0.4, 0.4), 0.6)
+        cmds.delete(morphs)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        check((0.2, 0.3, 0.4), 0.8)
+
+    def test_removing_standard_morph_preserves_drivers_when_rebinding_fails(self):
+        """A failed stock replacement must keep the old evaluator recoverable."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+        plugs = [shader + ".baseColor" + c for c in "RGB"] + [shader + ".opacity" + c for c in "RGB"]
+        before = {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}
+        cmds.delete(morphs)
+        connect = material_morph_runtime._connect_if_needed
+
+        def fail_last_alpha(source, destination, **kwargs):
+            if destination == shader + ".opacityB":
+                raise RuntimeError("injected preview connection failure")
+            return connect(source, destination, **kwargs)
+
+        with mock.patch.object(material_morph_runtime, "_connect_if_needed", side_effect=fail_last_alpha):
+            failed = build_material_morph_graph(root)
+        self.assertFalse(failed["success"], failed)
+        self.assertTrue(cmds.objExists(evaluator))
+        self.assertEqual({p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}, before)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        self.assertFalse(cmds.objExists(evaluator))
+        self.assertEqual(cmds.connectionInfo(shader + ".opacityR", sourceFromDestination=True), shader + ".mmd_diffuse_alpha")
+
+    def test_removing_last_standard_morph_restores_native_texture_factors(self):
+        """Retiring the evaluator disconnects native inputs before neutral reset."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        maya_version = str(cmds.about(version=True)).split(".", 1)[0]
+        cpp_plugin = _REPO_ROOT / "plug-ins" / maya_version / "Debug" / "mmd_tools_cpp.mll"
+        self.assertTrue(cpp_plugin.exists(), f"Build the Maya {maya_version} Debug C++ plugin first")
+        self.load_plugin(str(cpp_plugin))
+
+        material = PmxMaterial()
+        material.diffuse = (0.2, 0.3, 0.4, 0.8)
+        converter = MeshConverter("")
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        root, mesh, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+
+        source_mesh = cmds.listRelatives(mesh, shapes=True, type="mesh", fullPath=True)[0]
+        render_shape = cmds.createNode("mmdRenderShape", parent=mesh)
+        cmds.connectAttr(source_mesh + ".outMesh", render_shape + ".inputMesh")
+        bound = build_material_morph_graph(root)
+        self.assertTrue(bound["success"], bound)
+        self.assertEqual(bound["native_alpha"]["material_values"][0]["evaluator"], evaluator)
+
+        factor_plugs = {
+            f"{render_shape}.materialValues[0].{uniform}{axis}": neutral
+            for uniform, neutral in (
+                ("MainTextureMultiply", 1.0), ("MainTextureAdd", 0.0),
+                ("SphereTextureMultiply", 1.0), ("SphereTextureAdd", 0.0),
+                ("ToonTextureMultiply", 1.0), ("ToonTextureAdd", 0.0),
+            )
+            for axis in "RGBA"
+        }
+        for plug in factor_plugs:
+            self.assertTrue(cmds.connectionInfo(plug, isExactDestination=True), plug)
+
+        cmds.delete(morphs)
+        restored = build_material_morph_graph(root)
+        self.assertTrue(restored["success"], restored)
+        self.assertFalse(cmds.objExists(evaluator))
+        for plug, neutral in factor_plugs.items():
+            self.assertFalse(cmds.connectionInfo(plug, isExactDestination=True), plug)
+            self.assertAlmostEqual(cmds.getAttr(plug), neutral, places=6, msg=plug)
+
+    def test_textured_preview_rebinding_failure_preserves_expression(self):
+        """A failed stock replacement must keep the old expression recoverable."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+        plugs = [shader + ".baseColor" + c for c in "RGB"] + [shader + ".opacity" + c for c in "RGB"]
+        before = {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        before_body = cmds.expression(expression, query=True, string=True)
+        gain_plugs = [texture + ".colorGain" + c for c in "RGB"] + [texture + ".alphaGain"]
+        before_gains = {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in gain_plugs}
+        cmds.delete(morphs)
+        connect = material_morph_runtime._connect_if_needed
+
+        def fail_last_alpha(source, destination, **kwargs):
+            if destination == shader + ".opacityB":
+                raise RuntimeError("injected preview connection failure")
+            return connect(source, destination, **kwargs)
+
+        with mock.patch.object(material_morph_runtime, "_connect_if_needed", side_effect=fail_last_alpha):
+            failed = build_material_morph_graph(root)
+        self.assertFalse(failed["success"], failed)
+        self.assertTrue(cmds.objExists(evaluator))
+        self.assertEqual({p: cmds.connectionInfo(p, sourceFromDestination=True) for p in plugs}, before)
+        self.assertEqual(cmds.expression(expression, query=True, string=True), before_body)
+        self.assertEqual(
+            {p: cmds.connectionInfo(p, sourceFromDestination=True) for p in gain_plugs},
+            before_gains,
+        )
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        self.assertFalse(cmds.objExists(evaluator))
+        self.assertTrue(cmds.objExists(expression))
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        self.assertEqual(cmds.connectionInfo(shader + ".opacityR", sourceFromDestination=True), shader + ".mmd_diffuse_alpha")
+
+    def test_textured_preview_failure_restores_reused_utility_message_tag(self):
+        """A failed repair must restore the helper's prior texture provenance."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        _, _, shader, _, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        cmds.delete(expression)
+        rgb, _ = material_morph_runtime._ensure_standard_preview_utility(
+            shader, texture, "mmdStandardPreviewMultiply", "multiplyDivide",
+        )
+        material_morph_runtime._connect_preview_rgb(
+            texture, evaluator + ".outputDiffuse", rgb, shader,
+        )
+        stale = cmds.shadingNode("file", asTexture=True)
+        tag = rgb + ".mmdStandardPreviewTexture"
+        cmds.connectAttr(stale + ".message", tag, force=True)
+        connect = material_morph_runtime._connect_if_needed
+
+        def fail_last_alpha(source, destination, **kwargs):
+            if destination == shader + ".opacityB":
+                raise RuntimeError("injected message rollback failure")
+            return connect(source, destination, **kwargs)
+
+        with mock.patch.object(
+            material_morph_runtime,
+            "_preview_utility_textures",
+            return_value=[texture],
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_connect_if_needed",
+            side_effect=fail_last_alpha,
+        ):
+            self.assertFalse(material_morph_runtime.bind_standard_material(shader, evaluator))
+        self.assertEqual(
+            cmds.connectionInfo(tag, sourceFromDestination=True),
+            stale + ".message",
+        )
+        self.assertTrue(cmds.isConnected(rgb + ".outputX", shader + ".baseColorR"))
+        self.assertFalse(cmds.listConnections(texture + ".colorGainR", s=True, d=False))
+
+    def test_textured_preview_keeps_morph_on_late_native_bind_failure(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+        cmds.setAttr(morphs[0] + ".weight", 1.0)
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        before_body = cmds.expression(expression, query=True, string=True)
+        before = {
+            plug: cmds.connectionInfo(plug, sourceFromDestination=True)
+            for plug in [texture + ".colorGain" + channel for channel in "RGB"]
+            + [texture + ".alphaGain", shader + ".opacityR"]
+        }
+        cmds.delete(morphs)
+        with mock.patch.object(material_morph_runtime, "_collect_native_render_shapes", return_value=["proxy"]), \
+                mock.patch.object(material_morph_runtime, "bind_native_material_alpha",
+                                  return_value={"success": False, "skipped": ["injected"]}):
+            self.assertFalse(build_material_morph_graph(root)["success"])
+        self.assertTrue(cmds.objExists(evaluator))
+        self.assertEqual({p: cmds.connectionInfo(p, sourceFromDestination=True) for p in before}, before)
+        self.assertEqual(cmds.expression(expression, query=True, string=True), before_body)
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+
+    def test_retired_legacy_expression_body_survives_late_native_failure(self):
+        """Graph rollback restores an old preview expression as well as its wires."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        root, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        evaluator = graph["evaluator_nodes"][0]
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        old_body = cmds.expression(expression, query=True, string=True)
+        cmds.delete(morphs)
+        with mock.patch.object(
+            material_morph_runtime,
+            "_collect_native_render_shapes",
+            return_value=["proxy"],
+        ), mock.patch.object(
+            material_morph_runtime,
+            "bind_native_material_alpha",
+            return_value={"success": False, "skipped": ["injected"]},
+        ):
+            self.assertFalse(build_material_morph_graph(root)["success"])
+        self.assertTrue(cmds.objExists(evaluator))
+        self.assertEqual(cmds.expression(expression, query=True, string=True), old_body)
+
+    def test_standard_texture_uses_direct_file_route_and_owned_expression(self):
+        """Stock VP2 keeps the file route direct and evaluates gains by expression."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.name = "textured_preview"
+        material.diffuse = (0.2, 0.3, 0.4, 0.8)
+        shader = MeshConverter("")._create_material(material, material_index=0)
+        cmds.setAttr(shader + ".mmdTransparencyMode", "blend", type="string")
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor")
+        self.assertTrue(material_morph_runtime.bind_standard_material(shader))
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        root, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        self.assertTrue(cmds.objExists(expression))
+        cmds.setAttr(morphs[0] + ".weight", 1.0)
+        self.assertTrue(build_material_morph_graph(root)["success"])
+        for actual, expected in zip(cmds.getAttr(texture + ".colorGain")[0], (0.5, 0.4, 0.4)):
+            self.assertAlmostEqual(actual, expected, places=6)
+        self.assertAlmostEqual(cmds.getAttr(texture + ".alphaGain"), 0.6, places=6)
+        self.assertTrue(cmds.attributeQuery("mmdStandardPreview", node=expression, exists=True))
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        for index, attr in enumerate(("colorGainR", "colorGainG", "colorGainB", "alphaGain")):
+            self.assertTrue(cmds.isConnected(f"{expression}.output[{index}]", texture + "." + attr))
+        body = cmds.expression(expression, query=True, string=True)
+        self.assertIn(graph["evaluator_nodes"][0] + ".outputDiffuseR", body)
+        self.assertFalse(cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide"))
+        self.assertAlmostEqual(cmds.getAttr(shader + ".mmd_diffuse_alpha"), 0.8, places=6)
+
+    def test_textured_preview_rebuild_migrates_owned_utilities_to_expression(self):
+        """A rebuild replaces the tagged utility route with the direct file contract."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        cmds.setAttr(shader + ".mmdTransparencyMode", "blend", type="string")
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        root, _, shader, _, _ = self._create_scene_with_shader(shader=shader, build_graph=False)
+        rgb, _ = material_morph_runtime._ensure_standard_preview_utility(
+            shader, texture, "mmdStandardPreviewMultiply", "multiplyDivide",
+        )
+        alpha, _ = material_morph_runtime._ensure_standard_preview_utility(
+            shader, texture, "mmdStandardPreviewAlpha", "multDoubleLinear",
+        )
+        material_morph_runtime._connect_preview_rgb(
+            texture, shader + ".diffuse_color", rgb, shader,
+        )
+        cmds.connectAttr(texture + ".outAlpha", alpha + ".input1", force=True)
+        cmds.connectAttr(shader + ".mmd_diffuse_alpha", alpha + ".input2", force=True)
+        for channel in "RGB":
+            cmds.connectAttr(alpha + ".output", shader + ".opacity" + channel, force=True)
+
+        graph = build_material_morph_graph(root)
+        self.assertTrue(graph["success"], graph)
+        self.assertFalse(cmds.objExists(rgb))
+        self.assertFalse(cmds.objExists(alpha))
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        self.assertTrue(cmds.attributeQuery("mmdStandardPreview", node=expression, exists=True))
+        self.assertIn(graph["evaluator_nodes"][0] + ".outputDiffuseR", cmds.expression(
+            expression, query=True, string=True,
+        ))
+
+    def test_textured_preview_first_bind_failure_removes_partial_utilities(self):
+        """A failed first bind restores the direct file route without owned debris."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        shader = MeshConverter("")._create_material(PmxMaterial(), material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        root, _, shader, _, _ = self._create_scene_with_shader(shader=shader, build_graph=False)
+        connect = material_morph_runtime._connect_if_needed
+
+        def fail_last_alpha(source, destination, **kwargs):
+            if destination == shader + ".opacityB":
+                raise RuntimeError("injected first-bind failure")
+            return connect(source, destination, **kwargs)
+
+        with mock.patch.object(material_morph_runtime, "_connect_if_needed", side_effect=fail_last_alpha):
+            failed = build_material_morph_graph(root)
+        self.assertFalse(failed["success"], failed)
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        self.assertFalse(cmds.listConnections(shader + ".message", s=False, d=True, type="multiplyDivide"))
+        self.assertIsNone(material_morph_runtime._find_standard_preview_utility(
+            shader, "mmdStandardPreviewAlpha", "multDoubleLinear",
+        ))
+        self.assertTrue(build_material_morph_graph(root)["success"])
+
+    def test_textured_preview_rebuild_repairs_partial_expression_connections(self):
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.diffuse = (.2, .3, .4, .8)
+        shader = MeshConverter("")._create_material(material, material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor", force=True)
+        self.assertTrue(material_morph_runtime.bind_standard_material(shader))
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        for index, attr in enumerate(("colorGainR", "colorGainG", "colorGainB", "alphaGain")):
+            self.assertTrue(cmds.isConnected(f"{expression}.output[{index}]", texture + "." + attr))
+        cmds.disconnectAttr(expression + ".output[0]", texture + ".colorGainR")
+        cmds.setAttr(texture + ".colorGainR", 0.0)
+        self.assertTrue(material_morph_runtime.bind_standard_material(shader))
+        self.assertTrue(cmds.isConnected(expression + ".output[0]", texture + ".colorGainR"))
+        self.assertAlmostEqual(cmds.getAttr(texture + ".colorGainR"), .2, places=6)
+
+    def test_shared_toon_keeps_table_index_without_custom_path(self):
+        from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
+        from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataBackend
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.name = "shared_toon_preview"
+        material.shared_toon_flag = 1
+        material.toon_texture_index = 2
+        shader = MeshConverter("")._create_material(material, material_index=0)
+        self.assertEqual(cmds.getAttr(shader + ".mmd_resolved_toon_texture_path"), "")
+        mapping = MayaSceneMetadataBackend(MayaCmdsAdapter())._read_material(shader)
+        self.assertTrue(mapping["shared_toon"])
+        self.assertEqual(mapping["toon_texture_index"], 2)
+        self.assertIsNone(mapping["resolved_toon_texture_path"])
+
+    def test_standard_preview_without_pmx_edge_metadata(self):
+        """PMD diffuse metadata does not require PMX-only edge fields."""
+        shader = cmds.shadingNode("standardSurface", asShader=True)
+        cmds.addAttr(shader, longName="diffuse_color", attributeType="double3")
+        for axis in "RGB":
+            cmds.addAttr(shader, longName="diffuse_color" + axis,
+                         attributeType="double", parent="diffuse_color")
+        cmds.addAttr(shader, longName="mmd_diffuse_alpha", attributeType="double")
+        cmds.setAttr(shader + ".diffuse_color", .2, .4, .6, type="double3")
+        cmds.setAttr(shader + ".mmd_diffuse_alpha", .7)
+        self.assertTrue(material_morph_runtime.bind_standard_material(shader))
+        for actual, expected in zip(cmds.getAttr(shader + ".baseColor")[0], (.2, .4, .6)):
+            self.assertAlmostEqual(actual, expected, places=6)
+        self.assertAlmostEqual(cmds.getAttr(shader + ".opacityR"), .7, places=6)
+
+    def test_opaque_texture_retains_authored_alpha_and_live_base_edits(self):
+        """Opaque textures ignore texture alpha while canonical edits reach morphs."""
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        material = PmxMaterial()
+        material.name = "opaque_preview"
+        material.diffuse = (.2, .3, .4, 1.0)
+        shader = MeshConverter("")._create_material(material, material_index=0)
+        texture = cmds.shadingNode("file", asTexture=True)
+        cmds.connectAttr(texture + ".outColor", shader + ".baseColor")
+        _, _, shader, morphs, graph = self._create_scene_with_shader(
+            shader=shader, diffuse_offset=(.3, .1, 0, -.2),
+        )
+        self.assertTrue(graph["success"], graph)
+        self.assertEqual(cmds.getAttr(shader + ".mmdTransparencyMode"), "opaque")
+        self.assertFalse(cmds.isConnected(texture + ".outAlpha", shader + ".opacityR"))
+        cmds.setAttr(morphs[0] + ".weight", 1.0)
+        cmds.setAttr(shader + ".diffuse_color", .4, .5, .6, type="double3")
+        cmds.setAttr(shader + ".mmd_diffuse_alpha", .9)
+        expression = cmds.listConnections(texture + ".colorGainR", s=True, d=False)[0]
+        for actual, expected in zip(cmds.getAttr(texture + ".colorGain")[0], (.7, .6, .6)):
+            self.assertAlmostEqual(actual, expected, places=6)
+        self.assertAlmostEqual(cmds.getAttr(texture + ".alphaGain"), .7, places=6)
+        self.assertTrue(cmds.isConnected(texture + ".outColor", shader + ".baseColor"))
+        self.assertTrue(cmds.attributeQuery("mmdStandardPreview", node=expression, exists=True))
+        self.assertAlmostEqual(cmds.getAttr(shader + ".opacityR"), .7, places=6)
+        cmds.undo()
+        self.assertAlmostEqual(cmds.getAttr(shader + ".opacityR"), .8, places=6)
 
     @staticmethod
     def _add_vec4_uniform(shader, name, default):

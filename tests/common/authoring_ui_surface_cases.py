@@ -295,14 +295,6 @@ def _prepare_surface(window: Any, surface: Mapping[str, Any], widget: QWidget) -
             presenter._sync_physics_enable_checkbox()
     elif tab == "settings":
         window.settings_presenter._refresh_dev_tools_visibility(True)
-        if surface["id"] in {
-            "settings.cpp_fast_load",
-            "settings.cpp_vp2_ownership",
-            "settings.cpp_rig_nodes",
-        }:
-            view.settings_tabs.setCurrentIndex(1)
-        if surface["id"] == "settings.cpp_vp2_ownership":
-            view.use_cpp_fast_load_check.setChecked(True)
 
 
 def _interaction(widget: QWidget, kind: str) -> Tuple[str, Any]:

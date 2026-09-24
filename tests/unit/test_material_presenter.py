@@ -784,6 +784,123 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.select_fast.assert_called_once_with(["material1"], replace=True)
         self.mock_maya_adapter.select.assert_not_called()
 
+    def test_unchanged_coefficient_preserves_source_precision(self):
+        self._configure_apply_inputs()
+        self.presenter.material_data["specular_coefficient_view"] = 0.75
+        prior = MmdMaterialSpec("Material", specular_coefficient=0.75000003)
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.specular_coefficient, prior.specular_coefficient)
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.8
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.specular_coefficient, 0.8)
+
+    def test_slider_rounding_cannot_feed_back_into_spinbox(self):
+        slider = Mock()
+        slider.minimum.return_value = 0
+        slider.maximum.return_value = 12800
+        slider.blockSignals.return_value = False
+        MaterialPresenter._sync_slider(slider, 81.256)
+        self.assertEqual(slider.method_calls, [
+            call.blockSignals(True), call.minimum(), call.maximum(),
+            call.setValue(8126), call.blockSignals(False),
+        ])
+
+    def test_history_callbacks_are_removed_with_the_view(self):
+        presenter, _ = self._make_authoring_presenter()
+        presenter._history_callbacks = []
+        with patch("mmd_tools.ui.presenters.material_presenter.om") as api, patch(
+            "mmd_tools.ui.presenters.material_presenter.QTimer"
+        ) as timer:
+            api.MEventMessage.addEventCallback.side_effect = [101, 102]
+            presenter._install_history_sync()
+            callbacks = [c.args for c in api.MEventMessage.addEventCallback.call_args_list]
+            self.assertEqual([c[0] for c in callbacks], ["Undo", "Redo"])
+            callbacks[0][1](None)
+            timer.return_value.start.assert_called_once_with(0)
+            presenter.view.destroyed.connect.assert_called_with(presenter._dispose_history_sync)
+            presenter._dispose_history_sync()
+            self.assertEqual(api.MMessage.removeCallback.call_args_list, [call(101), call(102)])
+            presenter._dispose_history_sync()
+            self.assertEqual(api.MMessage.removeCallback.call_count, 2)
+
+    def test_history_refreshes_selected_material_even_with_pending_edits(self):
+        presenter, _ = self._make_authoring_presenter()
+        presenter.current_material = "shader"
+        presenter.has_unsaved_changes = True
+        presenter.load_materials = Mock()
+        presenter._select_projected_binding = Mock(return_value=True)
+        presenter.on_search_text_changed = Mock()
+        presenter._sync_history()
+        presenter.load_materials.assert_called_once_with()
+        presenter._select_projected_binding.assert_called_once_with("shader")
+        self.assertFalse(presenter.has_unsaved_changes)
+
+    def test_history_clears_deleted_selection_after_reloading_list(self):
+        presenter, _ = self._make_authoring_presenter()
+        presenter.current_material = "deleted_shader"
+        presenter.current_material_index = 31
+        presenter.load_materials = Mock()
+        presenter._select_projected_binding = Mock(return_value=False)
+        presenter.on_search_text_changed = Mock()
+        presenter._sync_history()
+        presenter.load_materials.assert_called_once_with()
+        self.assertIsNone(presenter.current_material)
+        self.assertIsNone(presenter.current_material_index)
+        self.mock_view._set_details_enabled.assert_called_with(False)
+
+    def test_unedited_edge_and_alpha_preserve_source_values(self):
+        self._configure_apply_inputs()
+        self.presenter.material_data.update(edge_size_view=3.25, transparency_view=0.876543)
+        self.mock_view.edge_size_spin.value.return_value = 3.25
+        self.mock_view.transparency_spin.value.return_value = 0.876543
+        prior = MmdMaterialSpec("Material", edge_size=3.25, diffuse=(1.0, 1.0, 1.0, 0.1234567))
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.edge_size, 3.25)
+        self.assertEqual(result.diffuse[3], prior.diffuse[3])
+        self.mock_view.edge_size_spin.value.return_value = 4.5
+        self.mock_view.transparency_spin.value.return_value = 0.25
+        result = self.presenter._material_from_authoring_controls(prior)
+        self.assertEqual(result.edge_size, 4.5)
+        self.assertEqual(result.diffuse[3], 0.75)
+
+    def test_apply_then_return_numeric_fields_to_initial_values(self):
+        """Returning to the selection's original values is a real second edit."""
+        self._configure_apply_inputs()
+        presenter = self.presenter
+        presenter.current_material_index = 0
+        presenter.app_state.current_model_root = "|model_root"
+        presenter.material_data.update(
+            transparency_view=0.0, edge_size_view=0.0, specular_coefficient_view=0.0
+        )
+        current = [MmdMaterialSpec(
+            "Material", index=0, binding_identity="test_material",
+            diffuse=(1.0, 0.5, 0.0, 1.0), edge_size=0.0, specular_coefficient=0.0,
+        )]
+
+        def apply(root, material):
+            current[0] = material
+            return material
+
+        coordinator = Mock(spec=[
+            "read_material_value", "apply_material_value_patch", "apply_material_binding_patch"
+        ])
+        coordinator.read_material_value.side_effect = lambda *args: current[0]
+        coordinator.apply_material_value_patch.side_effect = apply
+        coordinator.apply_material_binding_patch.side_effect = apply
+        presenter.authoring_coordinator = coordinator
+        presenter._apply_authoring_changes()
+        self.assertEqual(current[0].diffuse[3], 0.75)
+        self.assertEqual(current[0].edge_size, 1.5)
+        self.assertEqual(current[0].specular_coefficient, 0.75)
+
+        self.mock_view.transparency_spin.value.return_value = 0.0
+        self.mock_view.edge_size_spin.value.return_value = 0.0
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.0
+        presenter._apply_authoring_changes()
+        self.assertEqual(current[0].diffuse[3], 1.0)
+        self.assertEqual(current[0].edge_size, 0.0)
+        self.assertEqual(current[0].specular_coefficient, 0.0)
+
     def test_selected_detail_projection_renders_semantics_provenance_and_preview(self):
         presenter, coordinator = self._make_authoring_presenter()
         assignment = MaterialAssignmentSummary(MaterialAssignmentKind.EMPTY, 0, 0)
@@ -804,6 +921,7 @@ class TestMaterialPresenter(unittest.TestCase):
             sphere_texture_path="textures/sphere.spa",
             resolved_sphere_texture_path="C:/model/sphere.spa",
             draw_flags=0x10,
+            specular_coefficient=81.25,
         )
         coordinator.read_material_detail_projection.return_value = MaterialDetailProjection(
             "|model_root",
@@ -830,11 +948,18 @@ class TestMaterialPresenter(unittest.TestCase):
         coordinator.read_material_detail_projection.assert_called_once_with(
             "|model_root", 0, "shader", assignment
         )
+        self.mock_view.specular_coefficient_spin.setValue.assert_called_with(81.25)
         self.mock_view.texture_path_edit.setText.assert_called_with("C:/model/body.png")
         self.mock_view.sphere_map_path_edit.setText.assert_called_with(
             "C:/model/sphere.spa"
         )
         self.mock_view.shader_outline_check.setChecked.assert_called_with(False)
+        self.mock_view.shader_outline_check.setEnabled.assert_called_with(True)
+        detail = coordinator.read_material_detail_projection.return_value
+        from dataclasses import replace
+        presenter._render_material_detail(replace(detail, preview=MaterialPreviewState("standardSurface", False)))
+        self.mock_view.shader_outline_check.setEnabled.assert_called_with(False)
+        self.assertIn("legacy DX11", self.mock_view.shader_outline_check.setToolTip.call_args.args[0])
         self.assertEqual(
             presenter.material_data["original_pmx_texture_path"],
             "textures/body.png",
