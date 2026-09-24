@@ -5,9 +5,12 @@ ApplicationStateやPresenterがMayaコマンドへ直接依存しすぎないよ
 """
 
 from ..adapters import MayaCmdsAdapter
+from ..adapters.maya_metadata_read_support import MayaMetadataReadSupport
+from ..adapters.maya_morph_metadata_repository import MayaMorphMetadataRepository
 from ..core.constants import (
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_MODEL_REGISTRY,
     SCENE_ROOT_SUFFIX,
 )
 from ..core.logger import get_logger
@@ -209,7 +212,21 @@ class SceneModelService:
             ) or []
             info["bone_count"] = len(joints)
 
-            if shapes:
+            registry_members = None
+            invalid_registry = False
+            if self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_REGISTRY, node=model_root):
+                support = MayaMetadataReadSupport(self._cmds_adapter, error_factory=ValueError)
+                repository = MayaMorphMetadataRepository(
+                    support, cmds_adapter=self._cmds_adapter, error_factory=ValueError
+                )
+                try:
+                    registry_members = repository.registry_morph_members(model_root)
+                except ValueError:
+                    invalid_registry = True
+                    logger.warning("Invalid model morph registry for %s", model_root, exc_info=True)
+            if registry_members:
+                info["morph_count"] = len(set(registry_members))
+            elif shapes and not invalid_registry:
                 blend_shapes = self._cmds_adapter.ls(
                     self._cmds_adapter.list_history(shapes), type="blendShape"
                 ) or []

@@ -5,6 +5,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MODEL_REGISTRY,
+    ATTR_MMD_REGISTRY_MORPH_MEMBERS,
+    ATTR_MMD_REGISTRY_ROOT,
+    ATTR_MMD_REGISTRY_SCHEMA,
 )
 from mmd_tools.services.scene_model_service import SceneModelService
 
@@ -113,6 +116,81 @@ class _FakeCmds:
 
 
 class TestSceneModelService(unittest.TestCase):
+    def test_model_info_uses_owned_registry_morphs_over_blendshape_targets(self):
+        cmds = _FakeCmds()
+        root = "|ns:model_root"
+        cmds.existing = {root}
+        cmds.attrs = {
+            root: {ATTR_MMD_MODEL_REGISTRY: None},
+            "registry": {
+                ATTR_MMD_REGISTRY_SCHEMA: "1",
+                ATTR_MMD_REGISTRY_ROOT: None,
+                ATTR_MMD_REGISTRY_MORPH_MEMBERS: None,
+            },
+        }
+        cmds.connections = {
+            f"{root}.{ATTR_MMD_MODEL_REGISTRY}": ["registry"],
+            f"registry.{ATTR_MMD_REGISTRY_ROOT}": [root],
+            f"registry.{ATTR_MMD_REGISTRY_MORPH_MEMBERS}": ["morphA", "morphB"],
+        }
+        cmds.meshes = {root: ["|ns:model_root|mesh|meshShape"]}
+        cmds.vertices = {"|ns:model_root|mesh|meshShape": 3}
+
+        info = SceneModelService(cmds_module=cmds).get_model_info(root)
+
+        self.assertEqual(info["morph_count"], 2)
+
+    def test_model_info_empty_registry_keeps_legacy_blendshape_count(self):
+        cmds = _FakeCmds()
+        root = "|model_root"
+        shape = "|model_root|mesh|meshShape"
+        cmds.existing = {root}
+        cmds.attrs = {
+            root: {ATTR_MMD_MODEL_REGISTRY: None},
+            "registry": {
+                ATTR_MMD_REGISTRY_SCHEMA: "1",
+                ATTR_MMD_REGISTRY_ROOT: None,
+                ATTR_MMD_REGISTRY_MORPH_MEMBERS: None,
+            },
+        }
+        cmds.connections = {
+            f"{root}.{ATTR_MMD_MODEL_REGISTRY}": ["registry"],
+            f"registry.{ATTR_MMD_REGISTRY_ROOT}": [root],
+        }
+        cmds.meshes = {root: [shape]}
+        cmds.history = {shape: ["blendShape"]}
+        cmds.blend_targets = {"blendShape": ["smile"]}
+
+        info = SceneModelService(cmds_module=cmds).get_model_info(root)
+
+        self.assertEqual(info["morph_count"], 1)
+
+    def test_model_info_rejects_foreign_registry_without_counting_targets(self):
+        cmds = _FakeCmds()
+        root = "|model_root"
+        shape = "|model_root|mesh|meshShape"
+        cmds.existing = {root}
+        cmds.attrs = {
+            root: {ATTR_MMD_MODEL_REGISTRY: None},
+            "registry": {
+                ATTR_MMD_REGISTRY_SCHEMA: "1",
+                ATTR_MMD_REGISTRY_ROOT: None,
+                ATTR_MMD_REGISTRY_MORPH_MEMBERS: None,
+            },
+        }
+        cmds.connections = {
+            f"{root}.{ATTR_MMD_MODEL_REGISTRY}": ["registry"],
+            f"registry.{ATTR_MMD_REGISTRY_ROOT}": ["|foreign_root"],
+            f"registry.{ATTR_MMD_REGISTRY_MORPH_MEMBERS}": ["foreignMorph"],
+        }
+        cmds.meshes = {root: [shape]}
+        cmds.history = {shape: ["blendShape"]}
+        cmds.blend_targets = {"blendShape": ["smile"]}
+
+        info = SceneModelService(cmds_module=cmds).get_model_info(root)
+
+        self.assertEqual(info["morph_count"], 0)
+
     def test_model_info_keeps_duplicate_leaf_shapes_and_joints_on_full_paths(self):
         class _FullPathOnlyCmds(_FakeCmds):
             def __init__(self):
