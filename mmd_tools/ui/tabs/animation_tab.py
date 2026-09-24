@@ -96,8 +96,6 @@ class AnimationTab(BaseTab):
         self.morph_filter = QLineEdit()
         self.morph_filter.setPlaceholderText("Filter morphs")
         morph_outer.addWidget(self.morph_filter)
-        self.morph_selection_status = QLabel("Select morphs (Ctrl / Shift)")
-        morph_outer.addWidget(self.morph_selection_status)
         morph_scroll = QScrollArea()
         morph_scroll.setObjectName("MorphPickerScroll")
         morph_scroll.setWidgetResizable(True)

@@ -278,7 +278,7 @@ class TestAnimationMorphEditor(GuiTestBase):
         self.assertTrue(first.is_selected)
         self.assertTrue(second.is_selected)
         self.assertFalse(third.is_selected)
-        self.assertIn("Mixed", self.tab.morph_selection_status.text())
+        self.assertFalse(hasattr(self.tab, "morph_selection_status"))
 
         QTest.mousePress(first.slider, Qt.LeftButton)
         self.assertTrue(first.is_selected and second.is_selected)
@@ -364,7 +364,6 @@ class TestAnimationMorphEditor(GuiTestBase):
         self.state._current_model_root = None
         self.presenter._clear_morph_tab()
         self.assertEqual(self.presenter._morph_selected_names, [])
-        self.assertIn("Select morphs", self.tab.morph_selection_status.text())
 
 
 if __name__ == "__main__":

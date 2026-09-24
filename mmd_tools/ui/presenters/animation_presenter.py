@@ -707,7 +707,6 @@ class AnimationPresenter:
             set_multi_key_mode = getattr(row, "set_multi_key_mode", None)
             if callable(set_multi_key_mode):
                 set_multi_key_mode(multi and name in selected)
-        self._refresh_morph_selection_status()
 
     def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> list[str]:
         """Select only candidates inside currently visible model boundaries.
@@ -2425,21 +2424,6 @@ class AnimationPresenter:
         else:
             self._sync_picker_to_actual_selection()
 
-    def _refresh_morph_selection_status(self) -> None:
-        status = getattr(self.view, "morph_selection_status", None)
-        if status is None:
-            return
-        names = [name for name in self._morph_selected_names if name in self._morph_rows]
-        if not names:
-            status.setText("Select morphs (Ctrl / Shift)")
-            return
-        values = [self._morph_value(name) for name in names]
-        mixed = any(abs(value - values[0]) > 0.0005 for value in values[1:])
-        status.setText(
-            f"{len(names)} selected" + (" · Mixed" if mixed else "")
-            + " · Edit a selected slider or value"
-        )
-
     def _on_morph_row_activated(self, morph_name: str, modifiers=None) -> None:
         """Select a row, toggle with Ctrl, or extend a range with Shift."""
 
@@ -2518,7 +2502,6 @@ class AnimationPresenter:
         finally:
             if implicit_chunk:
                 self._end_morph_edit()
-        self._refresh_morph_selection_status()
 
     def _set_morph_weight(self, morph_name: str, weight: float) -> None:
         morph_index = self._morph_indices.get(morph_name, -1)
@@ -2614,7 +2597,6 @@ class AnimationPresenter:
                 row.set_value(self._morph_value(morph_name))
             if refresh_animation:
                 row.set_animation_state(self._morph_animation_state(row.plugs))
-        self._refresh_morph_selection_status()
 
     def _morph_animation_state(self, plugs) -> str:
         if isinstance(plugs, str):
