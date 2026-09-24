@@ -99,7 +99,12 @@ class TestAnimationMorphEditor(GuiTestBase):
         rows = list(self.presenter._morph_rows.values())
         self.assertEqual({row.label.width() for row in rows}, {116})
         self.assertEqual({row.editor.width() for row in rows}, {72})
-        self.assertIn("Very Long Smile Morph Name", rows[0].label.toolTip())
+        self.assertTrue(
+            any(
+                name in rows[0].label.toolTip()
+                for name in ("Very Long Smile Morph Name", "とても長い笑顔モーフの表示名")
+            )
+        )
         self.assertFalse(rows[0].icon.pixmap().isNull())
 
         rows[0].editor.setValue(0.625)
@@ -262,6 +267,92 @@ class TestAnimationMorphEditor(GuiTestBase):
             cmds.keyframe(plug, query=True, time=(frame, frame), valueChange=True)[0],
             0.875,
         )
+
+    def test_multi_selection_batch_weight_undo_filter_and_model_scope(self):
+        names = list(self.presenter._morph_rows)
+        first, second, third = [self.presenter._morph_rows[name] for name in names]
+        plugs = [f"{self.controller}.inputWeight[{index}]" for index in range(3)]
+        QTest.mouseClick(first.label, Qt.LeftButton)
+        QTest.mouseClick(second.label, Qt.LeftButton, Qt.ControlModifier)
+        QApplication.processEvents()
+        self.assertTrue(first.is_selected)
+        self.assertTrue(second.is_selected, (cmds.ls(selection=True), self.presenter._morph_selection_anchor, self.presenter._morph_selected_names, first.is_selected, second.is_selected))
+        self.assertFalse(third.is_selected)
+        self.assertIn("Mixed", self.tab.morph_batch_status.text())
+        self.assertFalse(self.tab.morph_batch_apply.isEnabled())
+
+        QTest.keyClick(self.tab.morph_batch_weight, Qt.Key_Up)
+        QApplication.processEvents()
+        self.assertAlmostEqual(self.tab.morph_batch_weight.value(), 0.01)
+        self.assertTrue(self.tab.morph_batch_apply.isEnabled())
+        self.tab.morph_batch_apply.click()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.01)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.01)
+        self.assertAlmostEqual(cmds.getAttr(plugs[2]), 0.2)
+        cmds.undo()
+        self.presenter._refresh_morph_batch_state()
+
+        editor = self.tab.morph_batch_weight.lineEdit()
+        QTest.mouseClick(editor, Qt.LeftButton)
+        QTest.keyClick(editor, Qt.Key_A, Qt.ControlModifier)
+        QTest.keyClicks(editor, "0.625")
+        QTest.keyClick(editor, Qt.Key_Enter)
+        self.tab.morph_batch_apply.click()
+        QApplication.processEvents()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.625)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.625)
+        self.assertAlmostEqual(cmds.getAttr(plugs[2]), 0.2)
+        cmds.undo()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.0)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.1)
+        cmds.redo()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.625)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.625)
+
+        self.tab.morph_filter.setText("Material")
+        QApplication.processEvents()
+        self.assertFalse(self.tab.morph_batch_apply.isEnabled())
+        self.assertTrue(first.isHidden())
+        self.assertFalse(third.isHidden())
+        self.tab.morph_filter.clear()
+        QTest.mouseClick(first.label, Qt.LeftButton)
+        QTest.mouseClick(third.label, Qt.LeftButton, Qt.ShiftModifier)
+        QApplication.processEvents()
+        self.assertTrue(all(row.is_selected for row in (first, second, third)))
+        frame = int(cmds.currentTime(query=True))
+        first.setFocus(Qt.OtherFocusReason)
+        QTest.keyClick(first, Qt.Key_S)
+        QApplication.processEvents()
+        for plug in plugs:
+            self.assertEqual(
+                cmds.keyframe(plug, query=True, time=(frame, frame), keyframeCount=True),
+                1,
+            )
+        next_frame = frame + 1
+        cmds.currentTime(next_frame)
+        previous_auto_key = cmds.autoKeyframe(query=True, state=True)
+        try:
+            cmds.autoKeyframe(state=True)
+            editor = self.tab.morph_batch_weight.lineEdit()
+            QTest.mouseClick(editor, Qt.LeftButton)
+            QTest.keyClick(editor, Qt.Key_A, Qt.ControlModifier)
+            QTest.keyClicks(editor, "0.5")
+            QTest.keyClick(editor, Qt.Key_Enter)
+            self.tab.morph_batch_apply.click()
+            QApplication.processEvents()
+            for plug in plugs:
+                self.assertEqual(
+                    cmds.keyframe(
+                        plug, query=True, time=(next_frame, next_frame), keyframeCount=True
+                    ),
+                    1,
+                )
+        finally:
+            cmds.autoKeyframe(state=previous_auto_key)
+
+        self.state._current_model_root = None
+        self.presenter._clear_morph_tab()
+        self.assertFalse(self.tab.morph_batch_apply.isEnabled())
 
 
 if __name__ == "__main__":
