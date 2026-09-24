@@ -6,6 +6,7 @@ from ..qt_compat import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -92,6 +93,9 @@ class AnimationTab(BaseTab):
         self.morph_page = QWidget()
         morph_outer = QVBoxLayout(self.morph_page)
         morph_outer.setContentsMargins(0, 0, 0, 0)
+        self.morph_filter = QLineEdit()
+        self.morph_filter.setPlaceholderText("Filter morphs")
+        morph_outer.addWidget(self.morph_filter)
         morph_scroll = QScrollArea()
         morph_scroll.setObjectName("MorphPickerScroll")
         morph_scroll.setWidgetResizable(True)

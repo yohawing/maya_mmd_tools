@@ -358,6 +358,10 @@ def apply_translation_plan(plan: Sequence[NameChange], *, cmds_module=None) -> T
     if not changes:
         return changes
     cmds = cmds_module or _maya_cmds()
+    renamed_paths = tuple(
+        change.entry.node for change in changes if change.maya_name is not None
+    )
+    accumulator_targets = _bone_morph_targets_under_renamed_paths(cmds, renamed_paths)
     opened = False
     try:
         cmds.undoInfo(openChunk=True, chunkName="Translate MMD Names")
@@ -378,6 +382,13 @@ def apply_translation_plan(plan: Sequence[NameChange], *, cmds_module=None) -> T
         )
         for change in renames:
             cmds.rename(change.entry.node, change.maya_name)
+        for accumulator, joint_uuid in accumulator_targets:
+            matches = cmds.ls(joint_uuid, long=True) or []
+            if len(matches) != 1:
+                raise NameTranslationError(
+                    f"renamed bone morph target no longer resolves: {joint_uuid}"
+                )
+            cmds.setAttr(f"{accumulator}.mmd_target_joint", str(matches[0]), type="string")
     except Exception:
         if opened:
             cmds.undoInfo(closeChunk=True)
@@ -391,6 +402,37 @@ def apply_translation_plan(plan: Sequence[NameChange], *, cmds_module=None) -> T
         if opened:
             cmds.undoInfo(closeChunk=True)
     return changes
+
+
+def _bone_morph_targets_under_renamed_paths(cmds, paths: Sequence[str]) -> Tuple[Tuple[str, str], ...]:
+    """Remember only uniquely owned bone-morph targets affected by renames."""
+    if not paths:
+        return ()
+    from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
+
+    joints = tuple(
+        str(joint)
+        for joint in cmds.ls(type="joint", long=True) or []
+        if any(joint == path or joint.startswith(path + "|") for path in paths)
+    )
+    if not joints:
+        return ()
+    ownership = resolve_owned_bone_morph_base_routes(joints)
+    if ownership.blocked:
+        raise NameTranslationError(
+            "bone morph ownership is unresolved before node rename: "
+            + ", ".join(sorted(ownership.blocked))
+        )
+    targets = []
+    for joint, routes in ownership.routes.items():
+        accumulators = {node for node, _attr in routes.values()}
+        if len(accumulators) != 1:
+            raise NameTranslationError(f"bone morph owner is ambiguous: {joint!r}")
+        uuids = cmds.ls(joint, uuid=True) or []
+        if len(uuids) != 1:
+            raise NameTranslationError(f"bone morph target is ambiguous: {joint!r}")
+        targets.append((next(iter(accumulators)), str(uuids[0])))
+    return tuple(targets)
 
 
 def run(

@@ -43,6 +43,28 @@ class TestVmdMotionClear(MayaTestBase):
             set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
         )
 
+    def test_clear_vmd_layer_preserves_manual_base_key(self):
+        """A VMD layer must not claim a pre-existing base animation curve."""
+        root = cmds.group(empty=True, name="clear_manual_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="clear_manual_joint")
+        joint = cmds.parent(joint, root)[0]
+        cmds.setKeyframe(joint, attribute="translateX", time=4, value=2.0)
+        layer = cmds.animLayer("VMD_Motion_manual_clear", override=False, weight=1.0)
+        cmds.animLayer(layer, edit=True, attribute=f"{joint}.translateX")
+        cmds.setKeyframe(joint, attribute="translateX", time=4, value=3.0, animLayer=layer)
+        self.converter.bone_name_mapping = {"センター": joint}
+
+        clear_existing_motion(self._import_state_context(), layer, target_model=root)
+
+        self.assertFalse(cmds.objExists(layer))
+        self.assertEqual(
+            cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True),
+            [4.0],
+        )
+        cmds.currentTime(4, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 2.0)
+
     def test_anim_layer_selection_restore_deselects_new_vmd_layer(self):
         """VMD import 中に作られた layer を selected のまま残さない。"""
         previous_layer = cmds.animLayer("pre_vmd_selected_layer", override=False, weight=1.0)

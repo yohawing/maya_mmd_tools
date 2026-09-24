@@ -490,8 +490,11 @@ def _solver_for_root(root: str) -> str | None:
         candidates = []
     if candidates:
         return str(candidates[0])
+    from mmd_tools.core.model_registry import get_model_registry
+
+    registry = get_model_registry(root)
     # Older Maya builds can omit the type filter while a Python MPxNode is
-    # still being registered.  Verify candidates by their modelRoot source.
+    # still being registered.  Check both legacy root and current registry ownership.
     for candidate in cmds.ls(type="mmdPhysicsSolver") or []:
         try:
             owners = cmds.listConnections(
@@ -501,6 +504,15 @@ def _solver_for_root(root: str) -> str | None:
             owners = []
         if root in owners or (cmds.ls(root, long=True) and cmds.ls(root, long=True)[0] in owners):
             return str(candidate)
+        if registry:
+            try:
+                registry_owners = cmds.listConnections(
+                    f"{candidate}.modelRegistry", source=True, destination=False
+                ) or []
+            except Exception:
+                registry_owners = []
+            if registry in registry_owners:
+                return str(candidate)
     return None
 
 

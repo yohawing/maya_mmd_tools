@@ -106,6 +106,8 @@ class AnimationPresenter:
         }
         self._morph_sliders: dict[str, object] = {}
         self._morph_rows: dict[str, object] = {}
+        self._morph_selection_anchor: str | None = None
+        self._morph_selected_names: list[str] = []
         self._morph_group_headers: list[tuple[object, str, int]] = []
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
         self._network_morph_targets: dict[str, list[str]] = {}
@@ -141,6 +143,8 @@ class AnimationPresenter:
             self._sync_visibility_controls(None)
 
     def connect_signals(self):
+        if hasattr(self.view, "morph_filter"):
+            self.view.morph_filter.textChanged.connect(self._filter_morph_rows)
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
         self.app_state.model_list_updated.connect(self.on_model_list_updated)
         self.view.model_combo.currentTextChanged.connect(self.on_model_selected)
@@ -674,17 +678,35 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "set_selected_regions"):
             self.view.finger_picker.set_selected_regions(selected_ids(_FINGER_REGIONS))
 
-        # Morph rows are selected only when Maya's active plug set is exactly
-        # the row's authoritative set.  This intentionally clears every row
-        # for mixed node/plug selections or an unrelated external selection.
-        for row in tuple(getattr(self, "_morph_rows", {}).values()):
+        # A valid selection is the union of complete visible morph rows.
+        rows = getattr(self, "_morph_rows", {})
+        active_set = set(active_plugs)
+        matched = {
+            name for name, row in rows.items()
+            if getattr(row, "plugs", ())
+            and set(row.plugs) <= active_set
+            and not getattr(row, "isHidden", lambda: False)()
+        }
+        valid = active_set == {
+            plug for name in matched for plug in rows[name].plugs
+        }
+        if not valid:
+            matched.clear()
+        self._set_morph_row_selection([name for name in rows if name in matched])
+
+    def _set_morph_row_selection(self, names: list[str]) -> None:
+        """Keep the logical selection and row highlights in sync."""
+        rows = getattr(self, "_morph_rows", {})
+        selected = set(names)
+        self._morph_selected_names = [name for name in rows if name in selected]
+        multi = len(self._morph_selected_names) > 1
+        for name, row in tuple(rows.items()):
             set_selected = getattr(row, "set_selected", None)
             if callable(set_selected):
-                plugs = tuple(str(plug) for plug in (getattr(row, "plugs", ()) or ()))
-                selected = bool(plugs) and len(active_plugs) == len(plugs) and set(
-                    active_plugs
-                ) == set(plugs)
-                set_selected(selected)
+                set_selected(name in selected)
+            set_multi_key_mode = getattr(row, "set_multi_key_mode", None)
+            if callable(set_multi_key_mode):
+                set_multi_key_mode(multi and name in selected)
 
     def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> list[str]:
         """Select only candidates inside currently visible model boundaries.
@@ -2109,11 +2131,9 @@ class AnimationPresenter:
 
     def _clear_morph_tab(self):
         self._end_morph_edit()
+        self._morph_selection_anchor = None
+        self._set_morph_row_selection([])
         self._last_morph_refresh_time = None
-        for row in tuple(self._morph_rows.values()):
-            set_selected = getattr(row, "set_selected", None)
-            if callable(set_selected):
-                set_selected(False)
         self._morph_sliders.clear()
         self._morph_rows.clear()
         self._morph_group_headers.clear()
@@ -2342,8 +2362,6 @@ class AnimationPresenter:
                 editor.setEnabled(enabled)
 
                 morph_name = morph.name
-                slider.sliderPressed.connect(self._begin_morph_edit)
-                slider.sliderReleased.connect(self._end_morph_edit)
                 slider.valueChanged.connect(
                     lambda value, name=morph_name: self._on_morph_weight_changed(
                         name, value / 100.0
@@ -2357,11 +2375,14 @@ class AnimationPresenter:
                     )
                 )
                 row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
+                row_widgets.slider_edit_started.connect(self._begin_morph_edit)
+                row_widgets.slider_edit_finished.connect(self._end_morph_edit)
                 row_widgets.set_value(self._morph_value(morph_name))
                 row_widgets.set_animation_state(self._morph_animation_state(plugs))
                 row_widgets.activated.connect(
-                    lambda name=morph_name: self._on_morph_row_activated(name)
+                    lambda modifiers, name=morph_name: self._on_morph_row_activated(name, modifiers)
                 )
+                row_widgets.multi_key_requested.connect(self._key_selected_morphs)
                 self._morph_sliders[morph_name] = slider
                 self._morph_rows[morph_name] = row_widgets
                 content_layout.addWidget(row_widgets, row_index, 0, 1, 4)
@@ -2384,21 +2405,75 @@ class AnimationPresenter:
             insert_pos = max(0, layout.count() - 1)
             layout.insertWidget(insert_pos, group)
 
-    def _on_morph_row_activated(self, morph_name: str) -> None:
-        """Select exactly one Morph's authoritative plugs for Maya keying."""
+        self._filter_morph_rows()
+
+    def _filter_morph_rows(self, *_args) -> None:
+        """Hide unmatched rows and drop only selection that became hidden."""
+        field = getattr(self.view, "morph_filter", None)
+        if field is None:
+            return
+        query = field.text().casefold().strip()
+        for row in self._morph_rows.values():
+            row.setHidden(query not in row.label.toolTip().casefold())
+        visible = [name for name in self._morph_selected_names
+                   if name in self._morph_rows and not self._morph_rows[name].isHidden()]
+        if self._morph_selection_anchor not in visible:
+            self._morph_selection_anchor = None
+        if visible:
+            self._set_morph_row_selection(visible)
+        else:
+            self._sync_picker_to_actual_selection()
+
+    def _on_morph_row_activated(self, morph_name: str, modifiers=None) -> None:
+        """Select a row, toggle with Ctrl, or extend a range with Shift."""
+
+        from ..qt_compat import Qt
 
         plugs = self._morph_plugs(morph_name)
         if not plugs:
             self._sync_picker_to_actual_selection()
             return
+        names = [name for name, row in self._morph_rows.items()
+                 if not getattr(row, "isHidden", lambda: False)() and row.plugs]
+        selected = [name for name in self._morph_selected_names if name in names]
+        if modifiers is not None and modifiers & Qt.ShiftModifier and self._morph_selection_anchor in names:
+            start = names.index(self._morph_selection_anchor)
+            end = names.index(morph_name)
+            selected = list(dict.fromkeys(selected + names[min(start, end):max(start, end) + 1]))
+        elif modifiers is not None and modifiers & Qt.ControlModifier:
+            selected = [name for name in selected if name != morph_name] if morph_name in selected else selected + [morph_name]
+            self._morph_selection_anchor = morph_name
+        else:
+            selected = [morph_name]
+            self._morph_selection_anchor = morph_name
+        if len(selected) > 1:
+            self._set_morph_row_selection(selected)
+            return
+        selected_plugs = list(self._morph_plugs(selected[0])) if selected else []
         try:
             # Morph plugs are intentionally selected directly: unlike picker
             # nodes they are not subject to DAG visibility guards, and Maya's
             # standard Set Key command consumes this active plug selection.
-            self._write_selection(plugs, replace=True)
+            self._write_selection(selected_plugs, replace=True)
         except Exception:
             logger.debug("Morph plug selection failed for %s", morph_name, exc_info=True)
         self._sync_picker_to_actual_selection()
+
+    def _key_selected_morphs(self) -> None:
+        """Key all selected row plugs when Maya cannot select multiple plugs on one node."""
+        from maya import cmds
+
+        plugs = list(dict.fromkeys(
+            plug for name in self._morph_selected_names for plug in self._morph_plugs(name)
+        ))
+        if len(self._morph_selected_names) < 2 or not plugs:
+            return
+        self._begin_morph_edit()
+        try:
+            # Match Maya's Set Key hotkey, including its active animation layer.
+            cmds.setKeyframe(plugs)
+        finally:
+            self._end_morph_edit()
 
     def _on_morph_slider_changed(self, morph_name: str, value: int, label):
         """Compatibility entry point for existing extensions and tests."""
@@ -2410,9 +2485,23 @@ class AnimationPresenter:
         implicit_chunk = not self._morph_edit_open
         if implicit_chunk:
             self._begin_morph_edit()
-        self._set_morph_weight(morph_name, max(0.0, min(1.0, float(weight))))
-        if implicit_chunk:
-            self._end_morph_edit()
+        try:
+            selected = [name for name in self._morph_selected_names
+                        if name in self._morph_rows and not getattr(
+                            self._morph_rows[name], "isHidden", lambda: False
+                        )()]
+            targets = selected if morph_name in selected else [morph_name]
+            value = max(0.0, min(1.0, float(weight)))
+            for name in targets:
+                self._set_morph_weight(name, value)
+                row = self._morph_rows.get(name)
+                if row is not None:
+                    set_value = getattr(row, "set_value", None)
+                    if callable(set_value):
+                        set_value(value)
+        finally:
+            if implicit_chunk:
+                self._end_morph_edit()
 
     def _set_morph_weight(self, morph_name: str, weight: float) -> None:
         morph_index = self._morph_indices.get(morph_name, -1)

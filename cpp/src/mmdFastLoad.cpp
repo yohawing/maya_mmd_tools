@@ -17,6 +17,7 @@
  */
 
 #include "mmdFastLoad.h"
+#include "MmdAuthoredEdgeSmoothing.h"
 #include "MmdRenderQueue.h"
 #include "MmdTextureAlphaClassifier.h"
 #include "MmdRenderShape.h"
@@ -754,14 +755,23 @@ BuiltMesh buildMesh(const std::vector<float>&    positions,
             authoredVertexIds.append(vertexId);
         }
     }
+    MStatus authoredNormalStatus = MS::kSuccess;
     if (authoredFaceIds.length() > 0) {
-        meshFn.setFaceVertexNormals(
+        authoredNormalStatus = meshFn.setFaceVertexNormals(
             authoredNormals, authoredFaceIds, authoredVertexIds, MSpace::kObject);
     }
 
     MDagPath dagPath;
     MStatus dagStatus = MDagPath::getAPathTo(meshObj, dagPath);
-    if (!dagStatus) {
+    if (!authoredNormalStatus || !dagStatus || (authoredFaceIds.length() > 0 &&
+                       !mmdSoftenContinuousAuthoredEdges(meshFn, dagPath))) {
+        MStatus parentStatus;
+        MObject parent = meshFn.parent(0, &parentStatus);
+        if (parentStatus && !parent.isNull()) {
+            MDagModifier cleanup;
+            cleanup.deleteNode(parent);
+            cleanup.doIt();
+        }
         return result;
     }
     MFnTransform transformFn(dagPath.transform(), &dagStatus);

@@ -31,6 +31,25 @@ class TestVmdBoneAnimation(MayaTestBase):
         super().setUp()
         self.converter = VmdConverter()
 
+    def test_legacy_vmd_layer_weight_zero_restores_preimport_joint_value(self):
+        """An authored VMD layer must yield to the joint baseline at weight zero."""
+        joint = cmds.joint(name="vmd_layer_weight_zero_joint")
+        cmds.setAttr(f"{joint}.translateX", 2.0)
+        layer = cmds.animLayer("vmd_weight_zero_layer", override=False, weight=1.0)
+        self.converter.anim_layer = layer
+        self.converter.bone_name_mapping = {"センター": joint}
+        self.converter._bone_bind_poses["センター"] = (2.0, 0.0, 0.0)
+
+        self.assertTrue(
+            self.converter._convert_bone_animation(
+                [_bone_frame("センター", 10, (3.0, 0.0, 0.0))]
+            )
+        )
+        cmds.currentTime(10, edit=True)
+        self.assertNotAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 2.0)
+        cmds.animLayer(layer, edit=True, weight=0.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 2.0)
+
     def test_registered_semantic_rotation_drives_layer_quaternion_time(self):
         """Compiled semantic rotation uses Bezier-warped slerp on an animLayer."""
         joint = cmds.joint(name="registered_semantic_layer_joint")
