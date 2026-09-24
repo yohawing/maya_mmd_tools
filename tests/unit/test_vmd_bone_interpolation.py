@@ -7,8 +7,10 @@ from unittest.mock import patch
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
-from mmd_tools.converters import vmd_bezier_tangent
+from mmd_tools.converters import vmd_bezier_tangent, vmd_profile
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_context import VmdImportStateContext
+from mmd_tools.converters.vmd_import_state import clear_existing_motion
 from mmd_tools.converters.vmd_redirected_authoring_proxy import (
     resolve_redirected_authoring_proxy_authority,
 )
@@ -208,6 +210,96 @@ class TestVmdBoneInterpolation(MayaTestBase):
             outTangentType=True,
         )
         self.assertEqual(out_type, ["fixed"])
+
+    def test_ik_link_vmd_rotation_yields_to_base_at_layer_weight_zero(self):
+        """An IK link's solver input must follow its VMD layer weight."""
+        joint = cmds.joint(name="layered_ik_link_joint")
+        solver = cmds.createNode("mmdCcdIk", name="layered_ik_solver")
+        cmds.connectAttr(f"{solver}.outputRotate[0]", f"{joint}.rotate", force=True)
+        baseline = 2.0
+        plug = f"{solver}.inputRotate[0].inputRotateElementY"
+        cmds.setAttr(plug, baseline)
+        manual_layer = cmds.animLayer("manual_ik_layer", override=False, weight=1.0)
+        cmds.animLayer(manual_layer, edit=True, attribute=plug)
+        cmds.setKeyframe(plug, time=10, value=5.0, animLayer=manual_layer)
+        cmds.animLayer(manual_layer, edit=True, selected=False)
+        layer = cmds.animLayer("layered_ik_vmd", override=False, weight=1.0)
+        self.converter.anim_layer = layer
+        self.converter.use_animation_layers = True
+        self.converter._bone_bind_poses = {"IKリンク": (0.0, 0.0, 0.0)}
+        route = {"skip_rotate": True, "ik_solver_rotate": {"solver": solver, "slot": 0}}
+
+        self.converter._set_bone_keyframes(
+            joint, self._rotation_frames("IKリンク"), "IKリンク", route
+        )
+        cmds.currentTime(10, edit=True)
+        self.assertNotAlmostEqual(cmds.getAttr(plug), 5.0, places=3)
+        cmds.animLayer(layer, edit=True, weight=0.0)
+        self.assertAlmostEqual(cmds.getAttr(plug), 5.0, places=3)
+        cmds.animLayer(manual_layer, edit=True, weight=0.0)
+        self.assertAlmostEqual(cmds.getAttr(plug), baseline, places=3)
+
+        # The opt-in cmds fallback accepts absolute values, unlike API curve
+        # insertion, which receives additive layer deltas.
+        cmds.animLayer(manual_layer, edit=True, weight=1.0)
+        cmds.animLayer(layer, edit=True, weight=1.0)
+        with patch.object(vmd_profile, "allow_setkeyframe_fallback", return_value=True), patch.object(
+            self.converter, "_batch_key_scalar_channels", return_value=False
+        ):
+            self.converter._set_bone_keyframes(
+                joint, self._rotation_frames("IKリンク"), "IKリンク", route
+            )
+        self.assertAlmostEqual(cmds.getAttr(plug), -90.0, places=3)
+        cmds.animLayer(layer, edit=True, weight=0.0)
+        self.assertAlmostEqual(cmds.getAttr(plug), 5.0, places=3)
+
+    def test_clear_layered_ik_input_preserves_base_and_undo(self):
+        """Clear removes the VMD solver layer without deleting manual base keys."""
+        root = cmds.group(empty=True, name="clear_layered_ik_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="clear_layered_ik_joint")
+        joint = cmds.parent(joint, root)[0]
+        solver = cmds.createNode("mmdCcdIk", name="clear_layered_ik_solver")
+        cmds.connectAttr(f"{solver}.outputRotate[0]", f"{joint}.rotate", force=True)
+        plug = f"{solver}.inputRotate[0].inputRotateElementY"
+        cmds.setKeyframe(plug, time=10, value=5.0)
+        manual_layer = cmds.animLayer("clear_layered_ik_manual", override=False, weight=1.0)
+        cmds.animLayer(manual_layer, edit=True, attribute=plug)
+        cmds.setKeyframe(plug, time=10, value=10.0, animLayer=manual_layer)
+        cmds.animLayer(manual_layer, edit=True, selected=False)
+        layer = cmds.animLayer("clear_layered_ik_vmd", override=False, weight=1.0)
+        cmds.animLayer(layer, edit=True, attribute=plug)
+        cmds.setKeyframe(plug, time=10, value=-90.0, animLayer=layer)
+        cmds.setKeyframe(solver, attribute="enabled", time=10, value=0)
+        cmds.animLayer(layer, edit=True, attribute=f"{solver}.enabled")
+        cmds.setKeyframe(solver, attribute="enabled", time=10, value=1, animLayer=layer)
+        cmds.currentTime(10, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(plug), -90.0, places=3)
+        self.assertTrue(cmds.getAttr(f"{solver}.enabled"))
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={"IKリンク": joint},
+            bone_bind_poses={},
+            morph_name_mapping={},
+            collect_append_info=lambda: {},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+
+        cmds.undoInfo(openChunk=True)
+        try:
+            clear_existing_motion(context, layer, target_model=root)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        self.assertFalse(cmds.objExists(layer))
+        self.assertTrue(cmds.objExists(manual_layer))
+        self.assertEqual(cmds.keyframe(plug, query=True, timeChange=True), [10.0])
+        self.assertAlmostEqual(cmds.getAttr(plug), 10.0, places=3)
+        self.assertFalse(cmds.getAttr(f"{solver}.enabled"))
+        cmds.undo()
+        self.assertTrue(cmds.objExists(layer))
+        self.assertAlmostEqual(cmds.getAttr(plug), -90.0, places=3)
+        self.assertTrue(cmds.getAttr(f"{solver}.enabled"))
 
     def test_bone_interpolation_fixture_matches_mmd_anim_midframe_oracle(self):
         """Rig import 後の中間フレーム translate が mmd-anim oracle と大きくズレない。"""

@@ -377,13 +377,11 @@ def _set_bone_keyframes_impl(
         target_node, target_attr = attr_targets.get(attr, (joint, attr))
         keyed_attrs_by_node.setdefault(target_node, []).append(target_attr)
 
-    use_layer = context.use_animation_layers and context.anim_layer is not None and not skip_rotate
+    use_layer = context.use_animation_layers and context.anim_layer is not None
     if use_layer:
         cmds.animLayer(context.anim_layer, edit=True, selected=True)
         for target_node, target_attrs in keyed_attrs_by_node.items():
             context.add_attrs_to_anim_layer(target_node, target_attrs)
-    elif context.use_animation_layers and context.anim_layer is not None:
-        cmds.animLayer(context.anim_layer, edit=True, selected=False)
 
     bind_pos = context.bone_bind_poses.get(
         vmd_bone_name,
@@ -548,22 +546,41 @@ def _set_bone_keyframes_impl(
             f"inputRotate[{slot}].inputRotateElementY",
             f"inputRotate[{slot}].inputRotateElementZ",
         ]
+        if animation_layer:
+            for attr in ir_attrs:
+                cmds.animLayer(
+                    animation_layer,
+                    edit=True,
+                    attribute=f"{solver_node}.{attr}",
+                )
         solver_samples = {attr: [] for attr in ir_attrs}
         for maya_time, rotation in rotation_samples:
             for attr, value in zip(ir_attrs, rotation):
                 solver_samples[attr].append((maya_time, float(value)))
-        if not context.batch_key_scalar_channels(solver_node, solver_samples, animation_layer=None):
+        keyed_solver_samples = (
+            context.samples_as_anim_layer_deltas(solver_node, solver_samples)
+            if animation_layer
+            else solver_samples
+        )
+        if not context.batch_key_scalar_channels(
+            solver_node, keyed_solver_samples, animation_layer=animation_layer
+        ):
             context.logger.debug(f"IK solver batch keying produced no keys for {solver_node}; using setKeyframe fallback")
+            # Maya setKeyframe(animLayer=...) accepts the evaluated value;
+            # only API curve insertion receives additive layer deltas.
             for attr, samples in solver_samples.items():
                 _ensure_fallback_allowed(
                     solver_node,
                     attr,
-                    None,
+                    animation_layer,
                     "batch_key_scalar_channels returned False for IK solver samples",
                 )
                 for maya_time, value in samples:
                     with vmd_profile.scope("fallback_setKeyframe"):
-                        cmds.setKeyframe(f"{solver_node}.{attr}", time=maya_time, value=value)
+                        key_args = {"time": maya_time, "value": value}
+                        if animation_layer:
+                            key_args["animLayer"] = animation_layer
+                        cmds.setKeyframe(f"{solver_node}.{attr}", **key_args)
 
     quaternion_plugs = _configure_sparse_rotation_track(
         context,

@@ -447,6 +447,8 @@ class VmdConverter:
             collect_ik_nodes_by_bone_name=self._collect_ik_nodes_by_bone_name,
             get_animation_frame_range=self._get_animation_frame_range,
             vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
         )
 
     def _name_mapping_context(self) -> VmdNameMappingContext:

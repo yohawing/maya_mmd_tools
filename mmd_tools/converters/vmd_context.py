@@ -202,6 +202,8 @@ class VmdIkEnabledAnimationContext:
     collect_ik_nodes_by_bone_name: Callable[[Optional[str], Optional[str]], Dict[str, str]]
     get_animation_frame_range: Callable[[Any], Tuple[int, int]]
     vmd_frame_to_maya_time: Callable[[float], float]
+    anim_layer: Optional[str] = None
+    use_animation_layers: bool = False
 
 
 @dataclass(frozen=True)

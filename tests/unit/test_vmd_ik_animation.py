@@ -117,6 +117,54 @@ class TestVmdIkAnimation(MayaTestBase):
             vmd_frame_to_maya_time=self.converter.vmd_frame_to_maya_time,
         )
 
+    def test_vmd_ik_enabled_yields_to_base_at_layer_weight_zero(self):
+        """VMD IK state must not remain active when its layer has no weight."""
+        root = cmds.group(empty=True, name="layered_ik_state_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="layered_ik_state_joint")
+        cmds.parent(joint, root)
+        solver = cmds.createNode("mmdCcdIk", name="layered_ik_state_solver")
+        cmds.connectAttr(f"{joint}.rotate", f"{solver}.inputRotate[0]")
+        cmds.addAttr(solver, longName="mmd_ik_bone_name", dataType="string")
+        cmds.setAttr(f"{solver}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+        cmds.setAttr(f"{solver}.enabled", False)
+        layer = cmds.animLayer("layered_ik_state_vmd", override=False, weight=1.0)
+        self.converter.anim_layer = layer
+        self.converter.use_animation_layers = True
+        vmd_data = create_test_vmd_data()
+        frame = VmdIKShowHideFrame()
+        frame.frame_number = 10
+        frame.ik_states = [("左足ＩＫ", 1)]
+        vmd_data.ik_show_hide_frames = [frame]
+
+        apply_ik_enabled_animation(
+            self.converter._ik_enabled_animation_context(), vmd_data,
+            target_model=root,
+        )
+        cmds.currentTime(10, edit=True)
+        self.assertTrue(cmds.getAttr(f"{solver}.enabled"))
+        cmds.animLayer(layer, edit=True, weight=0.0)
+        self.assertFalse(cmds.getAttr(f"{solver}.enabled"))
+
+    def test_vmd_ik_default_on_yields_to_base_at_layer_weight_zero(self):
+        """Implicit VMD IK ON is owned by the layer when property frames are absent."""
+        solver = cmds.createNode("mmdCcdIk", name="layered_ik_default_solver")
+        cmds.addAttr(solver, longName="mmd_ik_bone_name", dataType="string")
+        cmds.setAttr(f"{solver}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+        cmds.setAttr(f"{solver}.enabled", False)
+        layer = cmds.animLayer("layered_ik_default_vmd", override=False, weight=1.0)
+        self.converter.anim_layer = layer
+        self.converter.use_animation_layers = True
+        vmd_data = create_test_vmd_data()
+
+        apply_ik_enabled_animation(
+            self.converter._ik_enabled_animation_context(), vmd_data
+        )
+        cmds.currentTime(30, edit=True)
+        self.assertTrue(cmds.getAttr(f"{solver}.enabled"))
+        cmds.animLayer(layer, edit=True, weight=0.0)
+        self.assertFalse(cmds.getAttr(f"{solver}.enabled"))
+
     def test_apply_ik_enabled_animation_defaults_all_ik_on_before_property_keys(self):
         """IK property frame が一部だけでも未指定 IK と初期区間は default ON で評価する"""
         left = cmds.createNode("mmdCcdIk", name="left_ik_solver")

@@ -104,10 +104,14 @@ def _resolve_ik_enabled_animation_context(
         collect_ik_nodes_by_bone_name=converter_or_context._collect_ik_nodes_by_bone_name,
         get_animation_frame_range=converter_or_context._get_animation_frame_range,
         vmd_frame_to_maya_time=converter_or_context.vmd_frame_to_maya_time,
+        anim_layer=getattr(converter_or_context, "anim_layer", None),
+        use_animation_layers=bool(getattr(converter_or_context, "use_animation_layers", False)),
     )
 
 
-def _key_ik_enabled(node: str, time: float, value: bool, set_value: bool) -> None:
+def _key_ik_enabled(
+    node: str, time: float, value: bool, set_value: bool, anim_layer: Optional[str] = None
+) -> None:
     """Key ``enabled`` without writing through a potentially connected plug.
 
     IK state application can be repeated during VMD re-import.  Once the
@@ -119,14 +123,12 @@ def _key_ik_enabled(node: str, time: float, value: bool, set_value: bool) -> Non
     behavior; callers disable it for nodes that were already connected when
     the conversion started.
     """
-    if set_value:
+    if set_value and not anim_layer:
         cmds.setAttr(f"{node}.enabled", bool(value))
-    cmds.setKeyframe(
-        node,
-        attribute="enabled",
-        time=time,
-        value=int(bool(value)),
-    )
+    key_args = {"attribute": "enabled", "time": time, "value": int(bool(value))}
+    if anim_layer:
+        key_args["animLayer"] = anim_layer
+    cmds.setKeyframe(node, **key_args)
 
 
 def apply_ik_enabled_animation(
@@ -154,6 +156,10 @@ def apply_ik_enabled_animation(
         key=lambda f: int(getattr(f, "frame_number", 0)),
     )
     default_nodes = set(ik_nodes.values()) if getattr(vmd_data, "bone_frames", None) else set()
+    anim_layer = context.anim_layer if context.use_animation_layers else None
+    if anim_layer:
+        for node in set(ik_nodes.values()) if property_frames else default_nodes:
+            cmds.animLayer(anim_layer, edit=True, attribute=f"{node}.enabled")
 
     if property_frames:
         min_frame, _max_frame = context.get_animation_frame_range(vmd_data)
@@ -168,13 +174,14 @@ def apply_ik_enabled_animation(
             )
         }
         for node in ik_nodes.values():
-            _key_ik_enabled(node, min_time, True, node not in connected_before_keying)
+            _key_ik_enabled(
+                node, min_time, True, node not in connected_before_keying, anim_layer
+            )
 
     elif default_nodes:
         # A VMD without IK property frames means the imported IK solvers are
-        # active by default.  Set the current value for unconnected plugs,
-        # but do not invent an animation key at the bone min-frame.  Existing
-        # animCurve connections own the value and must not be overwritten.
+        # active by default.  A VMD layer needs a key so weight zero can
+        # restore the base value; direct imports retain their static default.
         connected_before_default = {
             node
             for node in default_nodes
@@ -184,8 +191,16 @@ def apply_ik_enabled_animation(
                 destination=False,
             )
         }
-        for node in default_nodes.difference(connected_before_default):
-            cmds.setAttr(f"{node}.enabled", True)
+        if anim_layer:
+            min_frame, _max_frame = context.get_animation_frame_range(vmd_data)
+            min_time = context.vmd_frame_to_maya_time(min_frame)
+        for node in default_nodes:
+            if anim_layer:
+                _key_ik_enabled(
+                    node, min_time, True, False, anim_layer,
+                )
+            elif node not in connected_before_default:
+                cmds.setAttr(f"{node}.enabled", True)
 
     if property_frames:
         keyed = 0
@@ -201,6 +216,7 @@ def apply_ik_enabled_animation(
                     context.vmd_frame_to_maya_time(frame_number),
                     value,
                     node not in connected_before_keying,
+                    anim_layer,
                 )
                 keyed += 1
         if keyed:
