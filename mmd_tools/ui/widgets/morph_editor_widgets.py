@@ -110,7 +110,15 @@ class _MorphRowEventFilter(QObject):
         ):
             self._row._child_activated = True
             QtCore.QTimer.singleShot(0, self._row._clear_child_activation)
-            self._row.activated.emit(event.modifiers())
+            if watched is self._row.slider:
+                self._row.slider_edit_started.emit()
+            editing_selected_row = self._row._multi_key_mode and watched in (
+                self._row.slider, self._row.editor, self._editor_line_edit
+            )
+            if not editing_selected_row:
+                self._row.activated.emit(event.modifiers())
+        elif watched is self._row.slider and event.type() == QtCore.QEvent.MouseButtonRelease:
+            QtCore.QTimer.singleShot(0, self._row.slider_edit_finished.emit)
         elif (
             watched is self._editor_line_edit
             and event.type() == QtCore.QEvent.KeyPress
@@ -125,6 +133,8 @@ class MorphRowWidget(QWidget):
 
     activated = Signal(object)
     multi_key_requested = Signal()
+    slider_edit_started = Signal()
+    slider_edit_finished = Signal()
 
     _STYLE_SHEET = (
         "QWidget#MorphRow { background: #383838; border: 1px solid transparent; "

@@ -2104,48 +2104,39 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertFalse(first.selected)
         self.assertFalse(second.selected)
 
-    def test_mixed_batch_refresh_does_not_count_as_user_value_edit(self):
-        presenter, view, _, _ = self._make_with_morphs(
+    def test_editing_selected_morph_updates_only_selected_rows_in_one_chunk(self):
+        presenter, _, _, adapter = self._make_with_morphs(
             blend_shapes=SAMPLE_BLEND_SHAPES,
         )
 
-        class Field:
-            def __init__(self):
-                self.blocked = False
+        class Row(_FakeMorphRow):
+            def __init__(self, plugs):
+                super().__init__(plugs)
                 self.value = None
 
-            def setEnabled(self, _enabled):
-                pass
+            def isHidden(self):
+                return False
 
-            def blockSignals(self, blocked):
-                previous = self.blocked
-                self.blocked = blocked
-                return previous
-
-            def setSpecialValueText(self, _text):
-                pass
-
-            def setValue(self, value):
+            def set_value(self, value):
                 self.value = value
-                if not self.blocked:
-                    presenter._on_morph_batch_input(value)
 
-        field = Field()
-        view.morph_batch_weight = field
-        view.morph_batch_apply = _FakeButton()
-        view.morph_batch_status = _FakeLabel()
-        presenter._morph_rows = {"a": _FakeMorphRow(("a.weight",)), "b": _FakeMorphRow(("b.weight",))}
-        presenter._morph_selected_names = ["a", "b"]
-        presenter._morph_value = lambda name: {"a": 0.0, "b": 0.5}[name]
+        first = Row(("blendShape1.weight[0]",))
+        second = Row(("blendShape1.weight[1]",))
+        third = Row(("blendShape1.weight[2]",))
+        presenter._morph_rows = {"笑い": first, "怒り": second, "まばたき": third}
+        presenter._morph_selected_names = ["笑い", "怒り"]
 
-        presenter._refresh_morph_batch_state()
+        presenter._on_morph_weight_changed("笑い", 0.625)
 
-        self.assertFalse(presenter._morph_batch_pending)
-        self.assertFalse(view.morph_batch_apply.enabled)
-        self.assertEqual(field.value, 0.0)
-        presenter._on_morph_batch_input(0.01)
-        self.assertTrue(presenter._morph_batch_pending)
-        self.assertTrue(view.morph_batch_apply.enabled)
+        self.assertEqual(adapter._set_attrs["blendShape1.weight[0]"], 0.625)
+        self.assertEqual(adapter._set_attrs["blendShape1.weight[1]"], 0.625)
+        self.assertNotIn("blendShape1.weight[2]", adapter._set_attrs)
+        self.assertEqual((first.value, second.value, third.value), (0.625, 0.625, None))
+        self.assertEqual(adapter._undo_chunks, ["Edit MMD Morph"])
+
+        presenter._on_morph_weight_changed("まばたき", 0.25)
+        self.assertEqual(adapter._set_attrs["blendShape1.weight[2]"], 0.25)
+        self.assertEqual(first.value, 0.625)
 
     def test_animation_state_distinguishes_current_key_and_interpolation(self):
         presenter, _, _, adapter = self._make_with_morphs(

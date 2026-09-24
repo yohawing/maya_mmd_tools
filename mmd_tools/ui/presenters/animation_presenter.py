@@ -108,7 +108,6 @@ class AnimationPresenter:
         self._morph_rows: dict[str, object] = {}
         self._morph_selection_anchor: str | None = None
         self._morph_selected_names: list[str] = []
-        self._morph_batch_pending = False
         self._morph_group_headers: list[tuple[object, str, int]] = []
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
         self._network_morph_targets: dict[str, list[str]] = {}
@@ -146,13 +145,6 @@ class AnimationPresenter:
     def connect_signals(self):
         if hasattr(self.view, "morph_filter"):
             self.view.morph_filter.textChanged.connect(self._filter_morph_rows)
-            self.view.morph_batch_apply.clicked.connect(self._apply_selected_morph_weight)
-            self.view.morph_batch_weight.lineEdit().textEdited.connect(
-                self._on_morph_batch_input
-            )
-            self.view.morph_batch_weight.valueChanged.connect(
-                self._on_morph_batch_input
-            )
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
         self.app_state.model_list_updated.connect(self.on_model_list_updated)
         self.view.model_combo.currentTextChanged.connect(self.on_model_selected)
@@ -700,20 +692,21 @@ class AnimationPresenter:
         }
         if not valid:
             matched.clear()
-        self._morph_selected_names = [name for name in rows if name in matched]
-        previous = {name for name, row in rows.items() if getattr(
-            row, "is_selected", getattr(row, "selected", False)
-        )}
-        if matched != previous:
-            self._morph_batch_pending = False
-        for name, row in tuple(rows.items()):
+        self._set_morph_row_selection([name for name in rows if name in matched])
+
+    def _set_morph_row_selection(self, names: list[str]) -> None:
+        """Keep the logical selection and row highlights in sync."""
+        selected = set(names)
+        self._morph_selected_names = [name for name in self._morph_rows if name in selected]
+        multi = len(self._morph_selected_names) > 1
+        for name, row in tuple(self._morph_rows.items()):
             set_selected = getattr(row, "set_selected", None)
             if callable(set_selected):
-                set_selected(name in matched)
+                set_selected(name in selected)
             set_multi_key_mode = getattr(row, "set_multi_key_mode", None)
             if callable(set_multi_key_mode):
-                set_multi_key_mode(len(matched) > 1 and name in matched)
-        self._refresh_morph_batch_state()
+                set_multi_key_mode(multi and name in selected)
+        self._refresh_morph_selection_status()
 
     def _select_nodes(self, nodes: list[str], *, replace: bool = True) -> list[str]:
         """Select only candidates inside currently visible model boundaries.
@@ -2139,20 +2132,14 @@ class AnimationPresenter:
     def _clear_morph_tab(self):
         self._end_morph_edit()
         self._morph_selection_anchor = None
-        self._morph_selected_names = []
-        self._morph_batch_pending = False
+        self._set_morph_row_selection([])
         self._last_morph_refresh_time = None
-        for row in tuple(self._morph_rows.values()):
-            set_selected = getattr(row, "set_selected", None)
-            if callable(set_selected):
-                set_selected(False)
         self._morph_sliders.clear()
         self._morph_rows.clear()
         self._morph_group_headers.clear()
         self._morph_targets.clear()
         self._network_morph_targets.clear()
         self._morph_indices.clear()
-        self._refresh_morph_batch_state()
         layout = self.view.morph_groups_layout
         while layout.count() > 1:
             child = layout.takeAt(0)
@@ -2375,8 +2362,6 @@ class AnimationPresenter:
                 editor.setEnabled(enabled)
 
                 morph_name = morph.name
-                slider.sliderPressed.connect(self._begin_morph_edit)
-                slider.sliderReleased.connect(self._end_morph_edit)
                 slider.valueChanged.connect(
                     lambda value, name=morph_name: self._on_morph_weight_changed(
                         name, value / 100.0
@@ -2390,6 +2375,8 @@ class AnimationPresenter:
                     )
                 )
                 row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
+                row_widgets.slider_edit_started.connect(self._begin_morph_edit)
+                row_widgets.slider_edit_finished.connect(self._end_morph_edit)
                 row_widgets.set_value(self._morph_value(morph_name))
                 row_widgets.set_animation_state(self._morph_animation_state(plugs))
                 row_widgets.activated.connect(
@@ -2421,61 +2408,36 @@ class AnimationPresenter:
         self._filter_morph_rows()
 
     def _filter_morph_rows(self, *_args) -> None:
-        """Hide unmatched rows and invalidate any hidden batch targets."""
+        """Hide unmatched rows and drop only selection that became hidden."""
         field = getattr(self.view, "morph_filter", None)
         if field is None:
             return
         query = field.text().casefold().strip()
         for row in self._morph_rows.values():
             row.setHidden(query not in row.label.toolTip().casefold())
-        self._morph_selection_anchor = None
-        self._morph_batch_pending = False
-        self._sync_picker_to_actual_selection()
+        visible = [name for name in self._morph_selected_names
+                   if name in self._morph_rows and not self._morph_rows[name].isHidden()]
+        if self._morph_selection_anchor not in visible:
+            self._morph_selection_anchor = None
+        if visible:
+            self._set_morph_row_selection(visible)
+        else:
+            self._sync_picker_to_actual_selection()
 
-    def _on_morph_batch_input(self, _value) -> None:
-        """Mark keyboard, arrow, spin-button, and wheel edits as intentional."""
-        self._morph_batch_pending = True
-        self.view.morph_batch_apply.setEnabled(True)
-
-    def _refresh_morph_batch_state(self) -> None:
-        field = getattr(self.view, "morph_batch_weight", None)
-        if field is None:
+    def _refresh_morph_selection_status(self) -> None:
+        status = getattr(self.view, "morph_selection_status", None)
+        if status is None:
             return
         names = [name for name in self._morph_selected_names if name in self._morph_rows]
-        enabled = bool(names)
-        field.setEnabled(enabled)
-        self.view.morph_batch_apply.setEnabled(enabled)
-        status = self.view.morph_batch_status
         if not names:
             status.setText("Select morphs (Ctrl / Shift)")
-            field.setSpecialValueText("")
-            return
-        if self._morph_batch_pending:
             return
         values = [self._morph_value(name) for name in names]
         mixed = any(abs(value - values[0]) > 0.0005 for value in values[1:])
-        status.setText(f"{len(names)} selected" + (" · Mixed" if mixed else ""))
-        self.view.morph_batch_apply.setEnabled(not mixed)
-        blocked = field.blockSignals(True)
-        field.setSpecialValueText("Mixed" if mixed else "")
-        field.setValue(0.0 if mixed else values[0])
-        field.blockSignals(blocked)
-
-    def _apply_selected_morph_weight(self) -> None:
-        """Apply one absolute weight to the selected visible rows in one undo chunk."""
-        names = [name for name in self._morph_selected_names if name in self._morph_rows]
-        if not names or not self.view.morph_batch_apply.isEnabled():
-            return
-        weight = self.view.morph_batch_weight.value()
-        self._begin_morph_edit()
-        try:
-            for name in names:
-                self._set_morph_weight(name, weight)
-                self._morph_rows[name].set_value(weight)
-        finally:
-            self._end_morph_edit()
-        self._morph_batch_pending = False
-        self._refresh_morph_batch_state()
+        status.setText(
+            f"{len(names)} selected" + (" · Mixed" if mixed else "")
+            + " · Edit a selected slider or value"
+        )
 
     def _on_morph_row_activated(self, morph_name: str, modifiers=None) -> None:
         """Select a row, toggle with Ctrl, or extend a range with Shift."""
@@ -2500,13 +2462,7 @@ class AnimationPresenter:
             selected = [morph_name]
             self._morph_selection_anchor = morph_name
         if len(selected) > 1:
-            self._morph_selected_names = selected
-            for name, row in self._morph_rows.items():
-                row.set_selected(name in selected)
-                set_multi_key_mode = getattr(row, "set_multi_key_mode", None)
-                if callable(set_multi_key_mode):
-                    set_multi_key_mode(name in selected)
-            self._refresh_morph_batch_state()
+            self._set_morph_row_selection(selected)
             return
         selected_plugs = list(self._morph_plugs(selected[0])) if selected else []
         try:
@@ -2544,9 +2500,24 @@ class AnimationPresenter:
         implicit_chunk = not self._morph_edit_open
         if implicit_chunk:
             self._begin_morph_edit()
-        self._set_morph_weight(morph_name, max(0.0, min(1.0, float(weight))))
-        if implicit_chunk:
-            self._end_morph_edit()
+        try:
+            selected = [name for name in self._morph_selected_names
+                        if name in self._morph_rows and not getattr(
+                            self._morph_rows[name], "isHidden", lambda: False
+                        )()]
+            targets = selected if morph_name in selected else [morph_name]
+            value = max(0.0, min(1.0, float(weight)))
+            for name in targets:
+                self._set_morph_weight(name, value)
+                row = self._morph_rows.get(name)
+                if row is not None:
+                    set_value = getattr(row, "set_value", None)
+                    if callable(set_value):
+                        set_value(value)
+        finally:
+            if implicit_chunk:
+                self._end_morph_edit()
+        self._refresh_morph_selection_status()
 
     def _set_morph_weight(self, morph_name: str, weight: float) -> None:
         morph_index = self._morph_indices.get(morph_name, -1)
@@ -2642,9 +2613,7 @@ class AnimationPresenter:
                 row.set_value(self._morph_value(morph_name))
             if refresh_animation:
                 row.set_animation_state(self._morph_animation_state(row.plugs))
-        batch = getattr(self.view, "morph_batch_weight", None)
-        if batch is not None and not batch.is_editing:
-            self._refresh_morph_batch_state()
+        self._refresh_morph_selection_status()
 
     def _morph_animation_state(self, plugs) -> str:
         if isinstance(plugs, str):
