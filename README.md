@@ -26,7 +26,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | Display frames (表示枠) | ✅ | Display-frame names, special-frame flags, and ordered bone/morph items can be edited. |
 | Morphs (vertex / bone / material / group / UV) | ℹ️ | Vertex, bone, material, and group morphs are supported. PMX 2.0 UV/additional-UV morph metadata (types 3–7) is preserved through export and re-import, but is not applied to Maya UV sets. |
 | Physics (rigid bodies & joints) | ℹ️ | Performance and quality have known issues. Some editing operations remain unsupported. |
-| Export | 🧪 | Broadly supported, but there are likely still many bugs. Invalid data is rejected during validation with an explanation. |
+| Export | 🧪 | Export is experimental. Testing across a wide range of models is not yet complete. |
 
 ### Animation (VMD)
 
@@ -45,9 +45,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 ## Known Limitations
 
 - **Detailed documentation is not written yet.** This is an alpha release, and development speed is prioritized over documentation maintenance.
-- **Various features are still incomplete.** This is an experimental alpha release; feedback is welcome.
 - **QDEF and SDEF are downgraded to BDEF4.** Their specialized deformation is not preserved, so meshes may appear thinner with some model and motion combinations.
-- **Export supports a bounded, validated scope.** Export depends on many features, and we have not yet tested it across a wide range of cases, so it likely still contains many bugs.
 - **Leg rotations and bones that conflict with bone morphs work only under the Control Rig.** Bones may become immovable when their connections conflict with bone morphs.
 
 ## System Requirements
@@ -80,12 +78,7 @@ The installer copies all Maya MMD Tools files into Maya's user `modules` folder,
 2. Open `Window > Settings/Preferences > Plug-in Manager`.
 3. Find `mmd_tools_plugin.py`.
 4. Check `Loaded`. If you want it to load automatically, also check `Auto load`.
-
-## Verify Installation
-
-### Check the Menu
-
-Confirm that `MMD > MMD Editor` appears in Maya's menu bar.
+5. Confirm that `MMD > MMD Editor` appears in Maya's menu bar.
 
 ## Quick Start
 
@@ -119,18 +112,6 @@ The UI follows PMX Editor conventions.
 2. In the Export tab, choose `Model` or `Animation`.
 3. Review validation, then export PMX or VMD.
 
-### Use HumanIK (Experimental)
-
-![HumanIK window](docs/assets/humanik.png)
-
-1. Select `MMD > HumanIK (Experimental)` from Maya's menu bar to open the standalone window.
-2. Select the MMD character's ModelRoot and click `Set Up Selected Model` to create its character definition.
-3. Import two characters and set up both. Choose the character that contains the motion from the SOURCE list to retarget its motion.
-4. The retargeted motion can be baked to a Control Rig.
-5. Use `Restore MMD Rig` to return from the Control Rig to the MMD rig state.
-
-Using Maya's HumanIK features directly can break the MMD rig in some workflows.
-
 ## Support
 
-If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the Maya and OS versions, reproduction steps, the error, and a screenshot when possible.
+If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the Maya and OS versions, reproduction steps, and error details. If possible, also include a link to the model's download page and a screenshot.
