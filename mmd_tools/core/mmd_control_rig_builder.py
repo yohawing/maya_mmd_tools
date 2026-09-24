@@ -1063,8 +1063,12 @@ def _control_shape_rotation(
         return None
     maya_direction = (direction[0], direction[1], -direction[2])
 
-    if role in _ARM_ORIENTATION_ROLES:
-        world_axes = _arm_control_world_axes(role, maya_direction)
+    if role in _ARM_ORIENTATION_ROLES or role in _FINGER_ROLES:
+        world_axes = _arm_control_world_axes(
+            role,
+            maya_direction,
+            shared_depth=role in _FINGER_ROLES,
+        )
         if world_axes is None:
             return None
         bind_axes = _rotation_axes_from_matrix(bind_world_matrix)
@@ -1147,14 +1151,14 @@ def _twist_child_direction(cmds, binding, child_joint=None):
     return max(candidates, key=lambda item: item[0])[1]
 
 
-def _arm_control_world_axes(role, direction):
-    """Return mirrored ergonomic X/Y/Z axes with Z aimed at the child."""
+def _arm_control_world_axes(role, direction, *, shared_depth=False):
+    """Return child-facing axes, with a common curl direction for fingers."""
 
     z_axis = _normalized_vector(direction)
     if z_axis is None:
         return None
     # Match yw_test_model: Z follows the bone and X uses mirrored depth.
-    depth_sign = -1.0 if str(role).startswith("left_") else 1.0
+    depth_sign = 1.0 if shared_depth or str(role).startswith("right_") else -1.0
     x_axis = None
     for reference in ((0.0, 0.0, depth_sign), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)):
         projection = sum(reference[index] * z_axis[index] for index in range(3))

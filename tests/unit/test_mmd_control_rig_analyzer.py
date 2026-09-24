@@ -27,6 +27,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
     _control_curve_template_role,
     _control_group_parent,
     _control_shape_rotation,
+    _cross_product,
     _ROLE_PARENTS,
     _control_basis_rotations,
     _role_controller_scale,
@@ -432,6 +433,53 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertAlmostEqual(aligned[0], 0.0, places=12)
         self.assertAlmostEqual(aligned[1], 0.0, places=12)
         self.assertAlmostEqual(aligned[2], -1.0, places=12)
+
+    def test_finger_axes_share_world_depth_across_left_and_right(self):
+        values = {
+            "left_index.mmd_bone_flags": 0,
+            "left_index.mmd_connect_index": 11,
+            "left_index.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "left_next.mmd_pmx_rest_position": [(2.0, -1.0, 0.0)],
+            "right_index.mmd_bone_flags": 0,
+            "right_index.mmd_connect_index": 21,
+            "right_index.mmd_pmx_rest_position": [(0.0, 0.0, 0.0)],
+            "right_next.mmd_pmx_rest_position": [(-2.0, -1.0, 0.0)],
+        }
+        cmds = _ShapeOrientationFake(values)
+        identity = (
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        )
+        for role, joint, target, index in (
+            ("left_index_1", "left_index", "left_next", 11),
+            ("right_index_1", "right_index", "right_next", 21),
+        ):
+            rotation = _control_shape_rotation(
+                cmds,
+                "root",
+                role,
+                SimpleNamespace(joint=joint, bone_index=10, pmx_flags=0),
+                {index: target},
+                bind_world_matrix=identity,
+            )
+            control_x = _rotate_shape_point((1.0, 0.0, 0.0), rotation)
+            control_y = _rotate_shape_point((0.0, 1.0, 0.0), rotation)
+            control_z = _rotate_shape_point((0.0, 0.0, 1.0), rotation)
+            direction = values[f"{target}.mmd_pmx_rest_position"][0]
+            length = math.sqrt(sum(value * value for value in direction))
+            expected_z = tuple(value / length for value in direction)
+            with self.subTest(role=role):
+                self.assertGreater(control_x[2], 0.99)
+                self.assertAlmostEqual(sum(x * z for x, z in zip(control_x, control_z)), 0.0, places=12)
+                for actual, expected in zip(control_z, expected_z):
+                    self.assertAlmostEqual(actual, expected, places=12)
+                self.assertAlmostEqual(
+                    sum(a * b for a, b in zip(_cross_product(control_x, control_y), control_z)),
+                    1.0,
+                    places=12,
+                )
 
     def test_twist_ring_uses_child_direction_in_bind_local_space(self):
         values = {
