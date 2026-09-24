@@ -696,10 +696,11 @@ class AnimationPresenter:
 
     def _set_morph_row_selection(self, names: list[str]) -> None:
         """Keep the logical selection and row highlights in sync."""
+        rows = getattr(self, "_morph_rows", {})
         selected = set(names)
-        self._morph_selected_names = [name for name in self._morph_rows if name in selected]
+        self._morph_selected_names = [name for name in rows if name in selected]
         multi = len(self._morph_selected_names) > 1
-        for name, row in tuple(self._morph_rows.items()):
+        for name, row in tuple(rows.items()):
             set_selected = getattr(row, "set_selected", None)
             if callable(set_selected):
                 set_selected(name in selected)
