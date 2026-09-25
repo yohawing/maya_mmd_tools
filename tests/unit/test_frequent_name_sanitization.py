@@ -70,3 +70,41 @@ class TestFrequentNameSanitization(unittest.TestCase):
 
     def test_unknown_bone_token_keeps_hash_fallback(self):
         self.assertEqual(sanitize_bone_name("左未知捩1"), "left_HASH1622dc9b_twist_1")
+
+    def test_second_batch_bone_tokens_keep_structure(self):
+        cases = {
+            "マント_4_3": "cape_4_3",
+            "右人指握": "right_finger_index_grip",
+            "左握り": "left_grip",
+            "エッジ調整": "edge_adjust",
+            "エッジ用ダミー": "edge_dummy",
+            "舌位置": "tongue_position",
+            "鞘": "scabbard",
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertEqual(sanitize_bone_name(source), expected)
+
+    def test_second_batch_qualifiers_do_not_collapse(self):
+        pairs = [
+            ("上歯前", "下歯前", "upper_teeth_front", "lower_teeth_front"),
+            ("怒り2右", "怒り2左", "angry_2_right", "angry_2_left"),
+            ("←ウインク", "ウインク→", "left_arrow_wink", "wink_right_arrow"),
+            ("はちゅ目縦潰れ", "はちゅ目横潰れ", "hachu_eye_vertical_squash", "hachu_eye_horizontal_squash"),
+        ]
+        for left, right, expected_left, expected_right in pairs:
+            with self.subTest(left=left, right=right):
+                self.assertEqual(sanitize_text(left), expected_left)
+                self.assertEqual(sanitize_text(right), expected_right)
+                self.assertNotEqual(sanitize_text(left), sanitize_text(right))
+
+    def test_second_batch_symbols_and_full_names(self):
+        for source, expected in {
+            "Д": "cyrillic_de",
+            "恐ろしい子！": "osoroshii_ko",
+            "手袋消し": "gloves_off",
+            "カメラ目線": "camera_gaze",
+            "ｼﾙｴｯﾄ黒": "silhouette_black",
+        }.items():
+            with self.subTest(source=source):
+                self.assertEqual(sanitize_text(source), expected)
