@@ -969,6 +969,10 @@ def _control_curve_display_rotation(role: str, basis_rotation=None):
 
     if role in {"left_foot_ik_parent", "right_foot_ik_parent"}:
         return _IK_PARENT_CURVE_ROTATION
+    if role in _FINGER_ROLES and role.startswith("left_"):
+        # The shared finger curve sits on +Y. Mirrored bone directions reverse
+        # authoring Y, so turn the left curve to match the right-hand placement.
+        return ((0.0, 0.0, 1.0), -1.0, 0.0)
     return basis_rotation
 
 

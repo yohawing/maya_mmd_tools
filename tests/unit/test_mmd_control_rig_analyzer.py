@@ -28,6 +28,7 @@ from mmd_tools.core.mmd_control_rig_builder import (
     _control_group_parent,
     _control_shape_rotation,
     _cross_product,
+    _FINGER_ROLES,
     _ROLE_PARENTS,
     _control_basis_rotations,
     _role_controller_scale,
@@ -434,7 +435,7 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
         self.assertAlmostEqual(aligned[1], 0.0, places=12)
         self.assertAlmostEqual(aligned[2], -1.0, places=12)
 
-    def test_finger_axes_share_world_depth_across_left_and_right(self):
+    def test_finger_axes_share_depth_and_curves_match_right_hand_placement(self):
         values = {
             "left_index.mmd_bone_flags": 0,
             "left_index.mmd_connect_index": 11,
@@ -452,15 +453,16 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
             0.0, 0.0, 1.0, 0.0,
             0.0, 0.0, 0.0, 1.0,
         )
-        for role, joint, target, index in (
-            ("left_index_1", "left_index", "left_next", 11),
-            ("right_index_1", "right_index", "right_next", 21),
-        ):
+        for role in _FINGER_ROLES:
+            side = role.split("_", 1)[0]
+            joint, target = f"{side}_index", f"{side}_next"
+            index = 11 if side == "left" else 21
+            binding = SimpleNamespace(joint=joint, bone_index=10, pmx_flags=0)
             rotation = _control_shape_rotation(
                 cmds,
                 "root",
                 role,
-                SimpleNamespace(joint=joint, bone_index=10, pmx_flags=0),
+                binding,
                 {index: target},
                 bind_world_matrix=identity,
             )
@@ -480,6 +482,22 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
                     1.0,
                     places=12,
                 )
+                authoring, display = _control_basis_rotations(binding, rotation)
+                self.assertIs(authoring, rotation)
+                display = _control_curve_display_rotation(role, display)
+                if side == "right":
+                    self.assertIsNone(display)
+                # The accepted right-hand placement is toward world +Y in
+                # this symmetric rest pose. Check the entire asymmetric curve
+                # on both hands, rather than just its normal or authoring axes.
+                for shape in _control_curve_templates()["finger"]:
+                    for point in shape["points"]:
+                        visible = _rotate_shape_point(point, display) if display else point
+                        # Turning the curve around the finger must preserve its
+                        # placement along the bone, rather than reverse its tip.
+                        self.assertAlmostEqual(visible[2], point[2], places=12)
+                        world = _rotate_shape_point(visible, authoring)
+                        self.assertGreater(world[1], 0.0)
 
     def test_twist_ring_uses_child_direction_in_bind_local_space(self):
         values = {
