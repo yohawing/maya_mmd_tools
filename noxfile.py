@@ -1886,6 +1886,13 @@ def render_override_separation(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def render_override_warnings(session: nox.Session) -> None:
+    """Verify missing-data and rendering-failure warnings in a real Maya GUI."""
+    session.run(sys.executable, "tools/render_override/warnings_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def render_override_settings(session: nox.Session) -> None:
     """Verify the official MMD Render option box in a real Maya GUI."""
     session.run(sys.executable, "tools/render_override/settings_e2e.py",
