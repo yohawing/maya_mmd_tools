@@ -1,7 +1,8 @@
 """Measure GUI PMX imports with optional saved-source A/B and reload checks.
 
 The UTF-8 config supplies out, plugin, cases (model, label, split, repeats),
-and optional source_dir containing saved versions of the three profiled modules.
+and optional source_dir containing saved versions of the profiled modules.
+Bone/mesh converters and texture_path_cache may also be supplied for full-import A/B.
 Verification runs outside the measured import interval.
 """
 
@@ -116,12 +117,15 @@ def probe(config_path):
     report["sourceSha256"] = {
         name: hashlib.sha256((ROOT / "mmd_tools" / folder / name).read_bytes()).hexdigest()
         for folder, name in (("converters", "material_morph_runtime.py"),
-                             ("converters", "morph_converter.py"), ("core", "morph_delta_mapping.py"))
+                             ("converters", "morph_converter.py"), ("core", "morph_delta_mapping.py"),
+                             ("converters", "bone_converter.py"), ("converters", "mesh_converter.py"),
+                             ("core", "texture_path_cache.py"))
     }
     try:
         require_requested_plugin(cmds, plugin, print)
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
         converter, material_graph = pmx_importer.MorphConverter, pmx_importer.build_material_morph_graph
+        bone_converter, mesh_converter = pmx_importer.BoneConverter, pmx_importer.MeshConverter
         if config.get("source_dir"):
             saved = Path(config["source_dir"])
             mapping = runpy.run_path(str(saved / "morph_delta_mapping.py"))
@@ -129,8 +133,25 @@ def probe(config_path):
             converter = morph["MorphConverter"]
             converter._mapped_vertex_morph_deltas.__globals__["map_morph_deltas_to_local"] = mapping["map_morph_deltas_to_local"]
             material_graph = runpy.run_path(str(saved / "material_morph_runtime.py"))["build_material_morph_graph"]
+            if (saved / "bone_converter.py").exists():
+                bone_converter = runpy.run_path(
+                    str(saved / "bone_converter.py"), run_name="mmd_tools.converters._benchmark_bone_converter",
+                )["BoneConverter"]
+            if (saved / "mesh_converter.py").exists():
+                mesh = runpy.run_path(
+                    str(saved / "mesh_converter.py"), run_name="mmd_tools.converters._benchmark_mesh_converter",
+                )
+                mesh_converter = mesh["MeshConverter"]
+                if (saved / "texture_path_cache.py").exists():
+                    cache = runpy.run_path(str(saved / "texture_path_cache.py"))
+                    mesh_converter._setup_standard_shader.__globals__["resolve_texture_to_cache"] = cache["resolve_texture_to_cache"]
             report["sourceSha256"] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in saved.glob("*.py")}
-        with patch.object(pmx_importer, "MorphConverter", converter), patch.object(pmx_importer, "build_material_morph_graph", material_graph):
+        with (
+            patch.object(pmx_importer, "MorphConverter", converter),
+            patch.object(pmx_importer, "build_material_morph_graph", material_graph),
+            patch.object(pmx_importer, "BoneConverter", bone_converter),
+            patch.object(pmx_importer, "MeshConverter", mesh_converter),
+        ):
             for case in config["cases"]:
                 for repeat in range(case.get("repeats", 1)):
                     cmds.file(new=True, force=True)
