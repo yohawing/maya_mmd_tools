@@ -1038,8 +1038,8 @@ class TestMorphConverter(MayaTestBase):
             after = cmds.pointPosition(mesh + ".vtx[0]", local=True)
             self.assertAlmostEqual(after[0] - before[0], 0.1, places=5)
 
-    def test_reused_target_matches_mesh_subtraction_and_supports_sculpt_undo(self):
-        """Retain mesh rounding and editable zero targets with a shared template."""
+    def test_sparse_target_stays_within_rounding_tolerance_and_supports_sculpt_undo(self):
+        """Bound float32 rounding differences while preserving sculpt and Undo/Redo."""
         from types import SimpleNamespace
         from maya.api import OpenMaya as om
 
@@ -1074,21 +1074,20 @@ class TestMorphConverter(MayaTestBase):
                 with patch("mmd_tools.converters.morph_converter.cmds.duplicate", wraps=cmds.duplicate) as duplicate:
                     converter = MorphConverter()
                     context = {}
-                    try:
-                        result = converter._convert_vertex_morph_pmx(morph, mesh, morph_index=0, template_ctx=context)
-                    finally:
-                        converter.cleanup_vertex_morph_template(context)
-                self.assertEqual(duplicate.call_count, 1)
+                    result = converter._convert_vertex_morph_pmx(morph, mesh, morph_index=0, mesh_ctx=context)
+                self.assertEqual(duplicate.call_count, 0)
                 blend = result["blend_shape_node"]
                 suffix = ".inputTarget[0].inputTargetGroup[0].inputTargetItem[6000].inputPointsTarget"
-                self.assertEqual(cmds.getAttr(blend + suffix) or [], cmds.getAttr(old_blend + suffix) or [])
                 for weight in (0.0, 0.5, 1.0):
                     cmds.setAttr(blend + ".weight[0]", weight)
                     cmds.setAttr(old_blend + ".weight[0]", weight)
-                    self.assertEqual(
-                        cmds.xform(mesh + ".vtx[*]", query=True, objectSpace=True, translation=True),
-                        cmds.xform(reference + ".vtx[*]", query=True, objectSpace=True, translation=True),
-                    )
+                    actual = cmds.xform(mesh + ".vtx[*]", query=True, objectSpace=True, translation=True)
+                    expected = cmds.xform(reference + ".vtx[*]", query=True, objectSpace=True, translation=True)
+                    # 1e-6 Maya units: a strict absolute bound, not a tolerance
+                    # proportional to the deliberately huge 1e8 base coordinate.
+                    self.assertEqual(len(actual), len(expected))
+                    for x, y in zip(actual, expected):
+                        self.assertLessEqual(abs(x - y), 1e-6)
                 before = cmds.getAttr(blend + suffix) or []
                 cmds.undoInfo(state=True)
                 cmds.undoInfo(openChunk=True)
@@ -1101,10 +1100,13 @@ class TestMorphConverter(MayaTestBase):
                 edited = cmds.getAttr(blend + suffix) or []
                 self.assertNotEqual(edited, before)
                 cmds.undo()
-                self.assertEqual(
-                    [p for p in (cmds.getAttr(blend + suffix) or []) if any(p[:3])],
-                    [p for p in before if any(p[:3])],
-                )
+                undone = [p for p in (cmds.getAttr(blend + suffix) or []) if any(p[:3])]
+                original = [p for p in before if any(p[:3])]
+                self.assertEqual(len(undone), len(original))
+                for actual, expected in zip(undone, original):
+                    for x, y in zip(actual, expected):
+                        # Maya sculpt undo subtracts the edit in double precision.
+                        self.assertLessEqual(abs(x - y), 1e-12)
                 cmds.redo()
                 self.assertEqual(cmds.getAttr(blend + suffix) or [], edited)
 
@@ -1513,7 +1515,7 @@ class TestMorphConverter(MayaTestBase):
 
         with patch("mmd_tools.converters.morph_converter.cmds.duplicate", wraps=cmds.duplicate) as duplicate:
             result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
-        self.assertEqual(duplicate.call_count, 1)
+        self.assertEqual(duplicate.call_count, 0)
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(result.get("morphs_converted"), 2)

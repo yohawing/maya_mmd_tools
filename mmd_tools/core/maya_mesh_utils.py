@@ -11,6 +11,24 @@ from mmd_tools.core.logger import get_logger
 logger = get_logger(__name__)
 
 
+def write_vertex_target_deltas(item, components, points, set_attr=None):
+    """Write sparse blendShape data; empty arrays require no count argument."""
+    if len(components) != len(points):
+        raise ValueError(f"Vertex target {item!r} points/components lengths differ")
+    if set_attr is None:
+        set_attr = cmds.setAttr
+    set_attr(
+        f"{item}.inputComponentsTarget",
+        *((len(components), *components) if components else ()),
+        type="componentList",
+    )
+    set_attr(
+        f"{item}.inputPointsTarget",
+        *((len(points), *points) if points else ()),
+        type="pointArray",
+    )
+
+
 def separate_render_proxy(mesh_transform, parent, cmds_module=cmds):
     """Keep native draw shapes out of editable blendShape target hierarchies."""
     proxies = cmds_module.listRelatives(
