@@ -240,10 +240,10 @@ def import_pmx_file(
 
             logger.debug("Converting morphs...")
             phase_start = time.perf_counter()
-            morph_result = morph_converter.convert_pmx_morphs(
-                parser, mesh_name,
-                progress_callback=lambda value: pipeline.emit_progress(35 + value * 15 // 100),
-            )
+            # Plug-in reloads can retain a converter with the original two-argument
+            # method. Optional progress must not invalidate that import contract.
+            morph_converter.progress_callback = lambda value: pipeline.emit_progress(35 + value * 15 // 100)
+            morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
             pipeline.record_phase("morph_conversion_sec", phase_start)
             pipeline.emit_progress(50)
             logger.debug("Morph conversion complete")

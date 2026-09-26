@@ -144,6 +144,7 @@ class MorphConverter:
         self.logger = get_logger(__name__)
         self.scale = float(scale)
         self.profile = {}
+        self.progress_callback = None
         self._morph_node_name_used = _scene_name_set()
 
     def _add_profile_time(self, key: str, start: float) -> None:
@@ -184,6 +185,8 @@ class MorphConverter:
         Returns:
             Dict[str, Any]: 変換結果の辞書
         """
+        if progress_callback is None:
+            progress_callback = getattr(self, "progress_callback", None)
         if not self.settings.get(_OPT_IMPORT_MORPHS, True):
             return {"success": True, "morphs_converted": 0}
 
