@@ -340,11 +340,20 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
     if native_shapes:
         native_results = []
         for render_shape in native_shapes:
+            try:
+                shape_shaders = _native_shape_shaders(render_shape, shaders_by_index)
+            except Exception:
+                logger.warning("Failed to resolve native materials for %s", render_shape, exc_info=True)
+                native_results.append({
+                    "success": False,
+                    "skipped": [f"native_materials_unresolved:{render_shape}"],
+                })
+                continue
             native_results.append(
                 bind_native_material_alpha(
                     root_group,
                     render_shape,
-                    shaders_by_index=shaders_by_index,
+                    shaders_by_index=shape_shaders,
                     evaluators_by_shader=evaluator_nodes_by_shader,
                 )
             )
@@ -1059,6 +1068,39 @@ def _native_evaluator_plugs(
     if len(leaves) != size:
         return []
     return [f"{evaluator}.{leaf}" for leaf in leaves]
+
+
+def _native_shape_shaders(render_shape: str, shaders_by_index: Dict[int, str]) -> Dict[int, str]:
+    """Bind only source-mesh materials, preserving their original PMX indices.
+
+    Match the native shape's queue reconstruction on scene reload: source mesh
+    shading groups are authoritative, not the model-wide material registry.
+    """
+    import maya.api.OpenMaya as om
+
+    sources = cmds.listConnections(
+        f"{render_shape}.inputMesh", source=True, destination=False, shapes=True,
+    ) or []
+    if len(sources) != 1:
+        raise ValueError(f"Expected one source mesh for {render_shape}")
+    selection = om.MSelectionList()
+    selection.add(sources[0])
+    dag = selection.getDagPath(0)
+    shading_groups, _ = om.MFnMesh(dag).getConnectedShaders(dag.instanceNumber())
+    assigned = set()
+    known_shaders = set(shaders_by_index.values())
+    for group in shading_groups:
+        name = om.MFnDependencyNode(group).name()
+        shaders = cmds.listConnections(
+            f"{name}.surfaceShader", source=True, destination=False,
+        ) or []
+        if len(shaders) != 1 or shaders[0] not in known_shaders:
+            raise ValueError(f"Unresolved model material on {name} for {render_shape}")
+        assigned.add(shaders[0])
+    selected = {index: shader for index, shader in shaders_by_index.items() if shader in assigned}
+    if not selected:
+        raise ValueError(f"No model materials assigned to {render_shape}'s source mesh")
+    return selected
 
 
 def _collect_native_render_shapes(root_group: str) -> List[str]:

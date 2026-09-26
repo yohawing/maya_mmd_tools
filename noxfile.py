@@ -816,6 +816,12 @@ def release_version(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_pmx_import_performance(session: nox.Session) -> None:
+    """Measure GUI imports/reload/export using a UTF-8 --config JSON."""
+    session.run(sys.executable, "tools/smoke/maya_pmx_import_performance.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 
