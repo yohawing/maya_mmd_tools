@@ -37,6 +37,14 @@ def _sparse_rotation_samples(
 ) -> List[tuple]:
     """Convert only authored VMD rotation keys for editable rig curves."""
     samples_by_time = {}
+    basis = (key_route or {}).get("authoring_basis")
+    if basis and frames:
+        from ..core.mmd_control_rig_basis import bone_to_control
+
+        joint_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
+        attr_targets = (key_route or {}).get("attr_targets", {})
+        control = attr_targets.get("rotateX", (joint, "rotateX"))[0]
+        control_order = int(cmds.getAttr(f"{control}.rotateOrder"))
     for frame in frames:
         if hasattr(frame, "frame_number"):
             frame_number = frame.frame_number
@@ -46,18 +54,9 @@ def _sparse_rotation_samples(
             rotation_quat = frame.get("rotation", [0, 0, 0, 1])
         maya_time = context.vmd_frame_to_maya_time(frame_number)
         rotation = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
-        basis = (key_route or {}).get("authoring_basis")
         if basis:
-            from ..core.mmd_control_rig_basis import (
-                bone_to_control,
-            )
-
-            joint_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
             bone_quaternion = _euler_degrees_to_quaternion(rotation, joint_order)
             control_quaternion = bone_to_control(bone_quaternion, basis)
-            attr_targets = (key_route or {}).get("attr_targets", {})
-            control = attr_targets.get("rotateX", (joint, "rotateX"))[0]
-            control_order = int(cmds.getAttr(f"{control}.rotateOrder"))
             rotation = _quaternion_to_euler_degrees(
                 control_quaternion, control_order
             )
@@ -389,11 +388,12 @@ def _set_bone_keyframes_impl(
     )
     control_owned_channels = set(key_route.get("control_owned_channels", ()))
     needs_rotation_samples = not skip_rotate or bool(key_route.get("ik_solver_rotate"))
-    rotation_samples = (
-        _sparse_rotation_samples(context, joint, frames, key_route)
-        if needs_rotation_samples
-        else []
-    )
+    with vmd_profile.scope("rotation_sample_build", count=len(frames) if needs_rotation_samples else 0):
+        rotation_samples = (
+            _sparse_rotation_samples(context, joint, frames, key_route)
+            if needs_rotation_samples
+            else []
+        )
     rotation_by_time = dict(rotation_samples)
 
     batch_simple_bone = (

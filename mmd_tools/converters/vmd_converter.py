@@ -11,6 +11,7 @@ Phase 1 以降:
 from __future__ import annotations
 
 import math
+from functools import partial
 import struct
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -287,7 +288,9 @@ class VmdConverter:
             add_attrs_to_anim_layer=self._add_attrs_to_anim_layer,
             vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
             vmd_interp_channel_for_attr=self._vmd_interp_channel_for_attr,
-            convert_vmd_quat_to_joint_rotate=self._convert_vmd_quat_to_joint_rotate,
+            # A context is local to a bone-keying batch; never retain bind terms
+            # across imports or scene/bind changes.
+            convert_vmd_quat_to_joint_rotate=partial(self._convert_vmd_quat_to_joint_rotate, bind_cache={}),
             samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
             batch_key_scalar_channels=self._batch_key_scalar_channels,
             apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
@@ -3821,9 +3824,9 @@ class VmdConverter:
         """joint の jointOrient quaternion と rotateOrder をキャッシュ付きで取得する。"""
         return get_joint_orient_cache(self, joint_name)
 
-    def _convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw):
+    def _convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw, *, bind_cache=None):
         """VMD quaternion を Maya joint.rotate の Euler 角（度）へ変換する。"""
-        return convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw)
+        return convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw, bind_cache=bind_cache)
 
     def get_failed_bones(self) -> set:
         """変換に失敗したボーン名のセットを取得
