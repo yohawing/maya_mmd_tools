@@ -307,7 +307,6 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        opts["use_cpp_fast_load"] = True
         # UI imports always include ordinary PMX authoring.
         opts["cpp_fast_load_mesh_only"] = False
         opts["use_cpp_vp2_ownership"] = True

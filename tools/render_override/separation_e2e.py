@@ -101,7 +101,7 @@ def _probe_steps(output, plugin, split=False, textured=False):
         settings.set("import.physics.import_physics", False)
         options = SettingsService().build_pmx_import_options()
         assert not SettingsService().is_development_mode()
-        assert options["use_cpp_fast_load"] and options["use_cpp_vp2_ownership"]
+        assert options["use_cpp_vp2_ownership"]
         report["importOptions"] = options
         root = import_mmd_file(str(model), options=options)
         assert root, "import failed"

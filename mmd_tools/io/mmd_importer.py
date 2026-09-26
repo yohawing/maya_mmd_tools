@@ -305,15 +305,9 @@ def import_mmd_file(
 
         import_scale = SettingsService().resolve_import_scale()
 
-    # --- C++ fast import path (default UI route, PMX only) --
-    logger.info("Model import strategy: cpp_fast_load=%s (%s)", strategy.use_cpp_fast_load, strategy.cpp_fast_load_reason)
+    # PMX always uses C++ geometry; PMD/VMD retain their format-specific parsers.
     vp2_ownership_requested = bool(options.get("use_cpp_vp2_ownership", False))
-    if suffix == ".pmx" and vp2_ownership_requested and not strategy.use_cpp_fast_load:
-        # The UI can persist the two native checkboxes independently.  A stale
-        # VP2=true with Fast Load=false must not silently become a Python mesh.
-        _raise_native_vp2_failure(options, "C++ Fast Load is disabled")
-
-    if strategy.use_cpp_fast_load:
+    if suffix == ".pmx":
         _emit_progress(10)
         mesh_only = options.get("cpp_fast_load_mesh_only", False)
         if options.get("create_mmd_control_rig", False):
@@ -332,10 +326,8 @@ def import_mmd_file(
             "mesh_only": mesh_only,
             "include_morphs": include_morphs,
         }
-        # Direct callers that explicitly request C++ Fast Load retain the
-        # ordinary mesh path unless they also opt into VP2 ownership.  The UI
-        # supplies this setting explicitly, so its default remains the native
-        # RenderOverride route without changing the direct API contract.
+        # VP2 ownership remains a separate option until its API is retired.
+        # The UI chooses it from the active viewport device.
         if options.get("use_cpp_vp2_ownership", False):
             fast_kwargs["vp2_ownership"] = True
         if not mesh_only:
@@ -383,7 +375,10 @@ def import_mmd_file(
             return _post_model_import_control_rig(fast_root, options)
         if vp2_ownership_requested:
             _raise_native_vp2_failure(options, "fast importer returned no model root")
-        logger.info("C++ fast import failed/excluded – falling back to Python parser")
+        raise MMDImportException(
+            "PMX import requires C++ Fast Load, but the native importer returned no model root. "
+            "Check that the matching mmd_tools_cpp plugin and native runtime are installed."
+        )
 
     parse_completed = False
     try:
@@ -403,19 +398,7 @@ def import_mmd_file(
 
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
         # ファイル拡張子でインポーターを選ぶ。
-        if suffix == ".pmx":
-            _record_physics_compatibility_warnings(parsed_data, options)
-            with _scoped_settings_override(options):
-                model_root = pmx_importer.import_pmx_file(
-                    parsed_data,
-                    filepath,
-                    import_scale,
-                    options,
-                    progress_callback=progress_callback,
-                )
-            return _post_model_import_control_rig(model_root, options)
-
-        elif suffix == ".pmd":
+        if suffix == ".pmd":
             with _scoped_settings_override(options):
                 model_root = pmx_importer.import_pmx_file(
                     parsed_data,

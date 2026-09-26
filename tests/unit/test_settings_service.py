@@ -275,7 +275,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
-        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertNotIn("use_cpp_fast_load", options)
         self.assertFalse(options["cpp_fast_load_mesh_only"])
         self.assertTrue(options["use_cpp_vp2_ownership"])
         self.assertFalse(options["use_native_pmx_parse"])
@@ -302,7 +302,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["disable_backface_culling"])
         self.assertTrue(options["add_semi_standard_bones"])
         self.assertFalse(options["translate_names"])
-        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertNotIn("use_cpp_fast_load", options)
         self.assertFalse(options["cpp_fast_load_mesh_only"])
         self.assertTrue(options["use_cpp_vp2_ownership"])
         self.assertTrue(options["use_native_pmx_parse"])
@@ -318,7 +318,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
 
         options = self.service.build_pmx_import_options()
 
-        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertNotIn("use_cpp_fast_load", options)
         self.assertTrue(options["use_cpp_vp2_ownership"])
 
     def test_saved_native_switches_do_not_select_import_route(self):
@@ -330,7 +330,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
                         self.service.set("import.native.use_cpp_fast_load", fast)
                         self.service.set("import.native.use_cpp_vp2_ownership", vp2)
                         options = self.service.build_pmx_import_options()
-                        self.assertTrue(options["use_cpp_fast_load"])
+                        self.assertNotIn("use_cpp_fast_load", options)
                         self.assertTrue(options["use_cpp_vp2_ownership"])
 
     def test_opengl_ui_uses_fast_load_without_render_override(self):
@@ -342,7 +342,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
                 return_value=api,
             ):
                 options = self.service.build_pmx_import_options()
-                self.assertTrue(options["use_cpp_fast_load"])
+                self.assertNotIn("use_cpp_fast_load", options)
                 self.assertFalse(options["use_cpp_vp2_ownership"])
                 self.assertTrue(self.service.get("import.native.use_cpp_vp2_ownership"))
 

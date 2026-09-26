@@ -1,8 +1,6 @@
-"""Shared PMX import entry points used by the Python/C++ parity contracts.
+"""Compare production C++ PMX import with the lower-level Python reference.
 
-The parity tests deliberately vary only the import entry option.  Both routes
-then pass through the production ``import_mmd_file`` entry point so the
-assertions exercise the same authoring contract.
+The Python reference is test-only; it is no longer a public import route.
 """
 
 from __future__ import annotations
@@ -22,20 +20,30 @@ class ImportRoute(str, Enum):
     CPP = "cpp"
 
 
+def import_python_pmx_reference(filepath, *, options=None, progress_callback=None):
+    """Build the Python oracle explicitly without restoring a product switch."""
+    from mmd_tools.services.settings_service import SettingsService
+
+    options = options if options is not None else {}
+    parsed = mmd_importer.parse_mmd_file(
+        filepath, use_native_pmx_parse=False, require_native_pmx_parse=False
+    )
+    scale = options.get("scale", SettingsService().resolve_import_scale())
+    mmd_importer._record_physics_compatibility_warnings(parsed, options)
+    with mmd_importer._scoped_settings_override(options):
+        root = mmd_importer.pmx_importer.import_pmx_file(
+            parsed, filepath, scale, options, progress_callback=progress_callback
+        )
+    return mmd_importer._post_model_import_control_rig(root, options)
+
+
 def import_pmx_via_route(
     test_case: Any,
     filepath: str,
     route: ImportRoute,
     options: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Import ``filepath`` through one route and fail closed for C++.
-
-    ``fast_import`` historically returns ``None`` when the C++ plugin cannot
-    be loaded, allowing the public entry point to fall back to Python.  That
-    behaviour is useful for normal callers but would make a parity test pass
-    without exercising native geometry.  The C++ lane therefore wraps the
-    existing function and turns that result into an explicit test failure.
-    """
+    """Compare the Python reference against witnessed production C++ import."""
 
     import_options = dict(options or {})
     import_options.setdefault("create_mmd_shaders", False)
@@ -43,14 +51,7 @@ def import_pmx_via_route(
     import_options.setdefault("setup_bone_orientation", False)
 
     if route == ImportRoute.PYTHON:
-        import_options.update(
-            {
-                "use_cpp_fast_load": False,
-                "use_native_pmx_parse": False,
-                "require_native_pmx_parse": False,
-            }
-        )
-        root = import_mmd_file(filepath, options=import_options)
+        root = import_python_pmx_reference(filepath, options=import_options)
         if not root:
             test_case.fail("Python PMX importer returned no model root")
         return str(root)
@@ -60,7 +61,6 @@ def import_pmx_via_route(
 
     import_options.update(
         {
-            "use_cpp_fast_load": True,
             "cpp_fast_load_mesh_only": False,
             "use_native_pmx_parse": True,
             "require_native_pmx_parse": True,
@@ -101,7 +101,7 @@ def import_pmx_via_route(
         if root is None:
             test_case.fail(
                 "C++ PMX importer did not complete native geometry; "
-                "the route returned None and would have fallen back to Python "
+                "the native route returned None "
                 "(fast_import_calls={}, native_calls={})".format(
                     len(fast_import_calls), len(native_calls)
                 )
