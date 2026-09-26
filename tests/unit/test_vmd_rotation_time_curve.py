@@ -34,6 +34,56 @@ def _interpolation_bytes(rotation=(13, 102, 38, 127)) -> bytes:
 
 
 class TestVmdRotationTimeCurve(MayaTestBase):
+    def test_batched_tangent_runs_match_individual_edits_and_undo(self):
+        """Repeated handles, gaps and duplicate keys keep exact curve authoring."""
+        control, plugs = self._quaternion_control()
+        points = (.1, .8, .3, 1.)
+        rows = [(i, points) for i in range(8)] + [(8, None), (9, points), (9, points), (11, points), (13, points)]
+        frames = [
+            {"frame_number": frame, "interpolation": {"rotation": handles} if handles else {}}
+            for frame, handles in rows
+        ]
+        reference = cmds.createNode("animCurveTT")
+        times = [frame * 1.25 + 2. for frame, _ in rows]
+        for time in times:
+            cmds.setKeyframe(reference, time=time, value=time)
+        cmds.keyTangent(reference, edit=True, weightedTangents=True)
+        for index in range(1, len(rows)):
+            start, end = times[index - 1:index + 1]
+            handles = rows[index][1]
+            if end <= start or handles is None:
+                continue
+            x1, y1, x2, y2 = handles
+            dt = end - start
+            cmds.keyTangent(reference, edit=True, time=(start, start), lock=False, weightLock=False,
+                            outTangentType="fixed", outAngle=math.degrees(math.atan2(y1, x1)),
+                            outWeight=math.hypot(dt * x1, dt * y1))
+            cmds.keyTangent(reference, edit=True, time=(end, end), lock=False, weightLock=False,
+                            inTangentType="fixed", inAngle=math.degrees(math.atan2(1-y2, 1-x2)),
+                            inWeight=math.hypot(dt * (1-x2), dt * (1-y2)))
+        cmds.undoInfo(openChunk=True)
+        try:
+            record = apply_vmd_rotation_time_curve(frames, plugs, "bone", time_converter=lambda f: f * 1.25 + 2.)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        curve = cmds.ls(record["rotationTimeCurveUuid"], long=True)[0]
+        for flag in ("inTangentType", "outTangentType", "lock", "weightLock"):
+            self.assertEqual(cmds.keyTangent(curve, query=True, **{flag: True}),
+                             cmds.keyTangent(reference, query=True, **{flag: True}))
+        for flag in ("inAngle", "outAngle", "inWeight", "outWeight"):
+            for actual, expected in zip(cmds.keyTangent(curve, query=True, **{flag: True}),
+                                        cmds.keyTangent(reference, query=True, **{flag: True})):
+                self.assertAlmostEqual(actual, expected, places=8)
+        sample_times = [i * .25 for i in range(80)]
+        expected_values = [cmds.keyframe(reference, query=True, eval=True, time=(t,t))[0] for t in sample_times]
+        for t, expected in zip(sample_times, expected_values):
+            self.assertAlmostEqual(cmds.keyframe(curve, query=True, eval=True, time=(t,t))[0], expected, places=8)
+        cmds.undo()
+        self.assertFalse(cmds.objExists(curve))
+        cmds.redo()
+        for t, expected in zip(sample_times, expected_values):
+            self.assertAlmostEqual(cmds.keyframe(curve, query=True, eval=True, time=(t,t))[0], expected, places=8)
+
     def test_anim_layer_resolution_uses_the_layer_owned_curve(self):
         """Layer resolution must not depend on keyframe name traversal."""
         cmds.namespace(add="Potez_Pautaine")

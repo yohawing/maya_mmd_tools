@@ -157,11 +157,24 @@ def _author_vmd_rotation_time_curve(
             {"frame": vmd_frame, **_serialized_interpolation_payload(frame)}
         )
     cmds.keyTangent(time_curve, edit=True, weightedTangents=True)
+    pending = None
+
+    def flush_tangents():
+        """Apply identical handles across a contiguous run without changing keys."""
+        nonlocal pending
+        if pending is not None:
+            first_start, first_end, last_start, last_end, handles = pending
+            _set_segment_tangents(
+                time_curve, (first_start, last_start), (first_end, last_end), *handles
+            )
+            pending = None
+
     for previous, arriving in zip(ordered, ordered[1:]):
         start = float(time_converter(float(get_frame_number(previous))))
         end = float(time_converter(float(get_frame_number(arriving))))
         dt = end - start
         if dt <= 0.0:
+            flush_tangents()
             continue
         interpolation_source = get_frame_interpolation(arriving)
         interpolation = (
@@ -171,17 +184,16 @@ def _author_vmd_rotation_time_curve(
         )
         points = interpolation.get("rotation")
         if not points:
+            flush_tangents()
             continue
         x1, y1, x2, y2 = points
-        _set_segment_tangents(
-            time_curve,
-            start,
-            end,
-            dt * x1,
-            dt * y1,
-            dt * (1.0 - x2),
-            dt * (1.0 - y2),
-        )
+        handles = (dt * x1, dt * y1, dt * (1.0 - x2), dt * (1.0 - y2))
+        if pending is not None and pending[3] == start and pending[4] == handles:
+            pending = (pending[0], pending[1], start, end, handles)
+        else:
+            flush_tangents()
+            pending = (start, end, start, end, handles)
+    flush_tangents()
 
     control_uuid = _single_uuid(control)
     _set_marker(time_curve, _MARKER_ATTR, True, "bool")
@@ -663,8 +675,8 @@ def delete_vmd_rotation_time_curves_for_controls(
 
 def _set_segment_tangents(
     curve: str,
-    start: float,
-    end: float,
+    start: tuple[float, float],
+    end: tuple[float, float],
     out_dx: float,
     out_dy: float,
     in_dx: float,
@@ -673,7 +685,7 @@ def _set_segment_tangents(
     cmds.keyTangent(
         curve,
         edit=True,
-        time=(start, start),
+        time=start,
         lock=False,
         weightLock=False,
         outTangentType="fixed",
@@ -683,7 +695,7 @@ def _set_segment_tangents(
     cmds.keyTangent(
         curve,
         edit=True,
-        time=(end, end),
+        time=end,
         lock=False,
         weightLock=False,
         inTangentType="fixed",
