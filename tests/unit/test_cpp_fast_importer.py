@@ -194,7 +194,7 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
-        self.assertEqual(progress, [5, 10, 90])
+        self.assertEqual(progress, [5, 10, 97])
         self.mock_create_light.assert_called_once_with()
         self.mock_select.assert_called_once_with("cpp_root", replace=True)
 

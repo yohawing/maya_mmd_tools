@@ -34,6 +34,14 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             options=options or {},
         )
 
+    def test_progress_is_monotonic_deduplicated_and_callback_failure_is_nonfatal(self):
+        pipeline = self._make_pipeline(MagicMock())
+        callback = MagicMock(side_effect=[RuntimeError("paint failed"), None])
+        pipeline.progress_callback = callback
+        for value in (35, 35, 34, 36):
+            pipeline.emit_progress(value)
+        self.assertEqual([call.args[0] for call in callback.call_args_list], [35, 36])
+
     def test_custom_namespace_logs_at_debug_not_info(self):
         logger = MagicMock()
         pipeline = self._make_pipeline(logger, options={"use_namespace": True})

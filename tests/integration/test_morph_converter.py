@@ -1022,8 +1022,12 @@ class TestMorphConverter(MayaTestBase):
             faces=[SimpleNamespace(indices=[0, 1, 2]), SimpleNamespace(indices=[0, 2, 3])],
             materials=[SimpleNamespace(face_count=3), SimpleNamespace(face_count=3)], morphs=morphs,
         )
+        progress = []
         with patch.object(module, "collect_morph_delta", wraps=module.collect_morph_delta) as collect:
-            result = MorphConverter().convert_pmx_morphs(data, meshes)
+            result = MorphConverter().convert_pmx_morphs(data, meshes, progress_callback=progress.append)
+        self.assertEqual(progress, sorted(set(progress)))
+        self.assertGreater(len(progress), 2)
+        self.assertTrue(all(0 <= value < 100 for value in progress))
         self.assertEqual(collect.call_count, 3)
         self.assertEqual(result["morphs_converted"], 6)
         for blend in result["blend_shape_nodes"]:

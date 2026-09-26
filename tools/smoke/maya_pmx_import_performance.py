@@ -124,6 +124,11 @@ def probe(config_path):
     try:
         require_requested_plugin(cmds, plugin, print)
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
+        window = None
+        if config.get("verify_progress"):
+            from mmd_tools.ui.main_window import MainWindow
+            window = MainWindow()
+            window.show()
         converter, material_graph = pmx_importer.MorphConverter, pmx_importer.build_material_morph_graph
         bone_converter, mesh_converter = pmx_importer.BoneConverter, pmx_importer.MeshConverter
         if config.get("source_dir"):
@@ -158,7 +163,13 @@ def probe(config_path):
                     options = SettingsService().build_pmx_import_options()
                     options.update(separate_meshes_by_material=case["split"], profile={})
                     started = time.perf_counter()
-                    root = import_mmd_file(case["model"], options=options)
+                    progress = []
+                    def update_progress(value):
+                        window.app_state.emit_progress(value)
+                        progress.append({"value": value, "seconds": time.perf_counter() - started,
+                                         "displayed": window.progress_bar.value()})
+                    kwargs = {"progress_callback": update_progress} if window is not None else {}
+                    root = import_mmd_file(case["model"], options=options, **kwargs)
                     elapsed = time.perf_counter() - started
                     assert root and cmds.objExists(root)
                     profile = options["profile"]
@@ -170,6 +181,16 @@ def probe(config_path):
                            "import_seconds": elapsed, "phases": profile["phase_timings"],
                            "morph_profile": profile["morph_converter"], "morph_result": profile["morph_result"],
                            "native_material_bindings": sum(len(item["bindings"]) for item in native)}
+                    if window is not None:
+                        values = [event["value"] for event in progress]
+                        assert values == sorted(set(values)), values
+                        assert all(event["value"] == event["displayed"] for event in progress)
+                        assert len([value for value in values if 35 < value < 50]) >= 10, values
+                        assert values[-1] < 100, "Importer must not report UI completion early"
+                        window.app_state.emit_progress(100)
+                        assert window.progress_bar.isHidden()
+                        row["progress"] = progress
+                        row["progress_ui"] = "pass"
                     report["cases"].append(row)
                     (out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
                     if case.get("verify") and repeat == case.get("repeats", 1) - 1:

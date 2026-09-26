@@ -170,13 +170,16 @@ class MorphConverter:
                 "Load or reload the maya_mmd_tools plugin before importing a PMX with morphs."
             )
 
-    def convert_pmx_morphs(self, pmx_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
+    def convert_pmx_morphs(
+        self, pmx_data, mesh_node: Union[str, List[str]], progress_callback=None,
+    ) -> Dict[str, Any]:
         """
         PMXのモーフデータをMayaのブレンドシェイプに変換する。
 
         Args:
             pmx_data: 解析されたPMXデータオブジェクト
             mesh_node (str or list): ブレンドシェイプを適用するMayaのメッシュノード名、またはそのリスト。
+            progress_callback: Optional local percentage callback (0 through 100).
 
         Returns:
             Dict[str, Any]: 変換結果の辞書
@@ -234,7 +237,9 @@ class MorphConverter:
             )
             vertex_morph_nodes.append(morph_node)
 
-        for mn in mesh_nodes:
+        total_work = max(1, len(mesh_nodes) * len(pmx_data.morphs))
+        last_progress = -1
+        for mesh_index, mn in enumerate(mesh_nodes):
             mesh_material_index = self._get_mesh_material_index(mn)
             visible_vertex_indices = (
                 material_vertex_sets.get(mesh_material_index)
@@ -244,6 +249,13 @@ class MorphConverter:
             mesh_ctx = {}
             try:
                 for morph_index, morph in enumerate(pmx_data.morphs):
+                    progress = 100 * (mesh_index * len(pmx_data.morphs) + morph_index) // total_work
+                    if progress_callback is not None and progress != last_progress:
+                        last_progress = progress
+                        try:
+                            progress_callback(progress)
+                        except Exception:
+                            self.logger.debug("Progress callback failed", exc_info=True)
                     try:
                         if morph.morph_type == PmxMorphType.VertexMorph:
                             is_empty_vertex_morph = not getattr(morph, "offsets", None)

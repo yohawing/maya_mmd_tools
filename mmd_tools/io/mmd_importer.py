@@ -353,7 +353,7 @@ def import_mmd_file(
                 from maya import cmds
 
                 cmds.select(fast_root, replace=True)
-            _emit_progress(90)
+            _emit_progress(97)
             if vp2_ownership_requested:
                 diagnostics = _native_route_profile(options)
                 diagnostics.update(
