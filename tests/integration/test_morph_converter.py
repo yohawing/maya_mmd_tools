@@ -3,7 +3,7 @@ import os
 import re
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from maya import cmds
 
@@ -1000,6 +1000,43 @@ class TestMorphConverter(MayaTestBase):
         self.assertNotIn("mat1_only", mesh_a_aliases)
         self.assertIn("mat1_only", mesh_b_aliases)
         self.assertNotIn("mat0_only", mesh_b_aliases)
+
+    def test_material_split_reuses_deltas_without_dropping_zero_targets(self):
+        from types import SimpleNamespace
+        from mmd_tools.converters import morph_converter as module
+
+        meshes = [self._create_test_mesh(), self._create_test_mesh()]
+        for index, mesh in enumerate(meshes):
+            maya_attribute_utils.set_custom_attributes(mesh, {
+                "mmd_material_split_mesh": True, "mmd_material_index": index,
+            })
+        morphs = []
+        for name, values in (("move", [0.1]), ("zero", [0.0]), ("cancel", [0.1, -0.1])):
+            morph = SimpleNamespace(
+                name=name, name_english=name, panel=1, morph_type=PmxMorphType.VertexMorph,
+                offsets=[{"vertex_index": 0, "position_offset": (value, 0.0, 0.0)} for value in values],
+                get_name=lambda value=name: value,
+            )
+            morphs.append(morph)
+        data = SimpleNamespace(
+            faces=[SimpleNamespace(indices=[0, 1, 2]), SimpleNamespace(indices=[0, 2, 3])],
+            materials=[SimpleNamespace(face_count=3), SimpleNamespace(face_count=3)], morphs=morphs,
+        )
+        with patch.object(module, "collect_morph_delta", wraps=module.collect_morph_delta) as collect:
+            result = MorphConverter().convert_pmx_morphs(data, meshes)
+        self.assertEqual(collect.call_count, 3)
+        self.assertEqual(result["morphs_converted"], 6)
+        for blend in result["blend_shape_nodes"]:
+            self.assertEqual(cmds.getAttr(blend + ".weight", multiIndices=True), [0, 1, 2])
+            mesh = cmds.blendShape(blend, query=True, geometry=True)[0]
+            before = cmds.pointPosition(mesh + ".vtx[0]", local=True)
+            for index in (1, 2):
+                cmds.setAttr(f"{blend}.weight[{index}]", 1.0)
+                self.assertEqual(cmds.pointPosition(mesh + ".vtx[0]", local=True), before)
+                cmds.setAttr(f"{blend}.weight[{index}]", 0.0)
+            cmds.setAttr(blend + ".weight[0]", 1.0)
+            after = cmds.pointPosition(mesh + ".vtx[0]", local=True)
+            self.assertAlmostEqual(after[0] - before[0], 0.1, places=5)
 
     def test_material_split_empty_vertex_morph_keeps_single_destination(self):
         """空の vertex morph は material split mesh のいずれか一つにだけ作成する。"""

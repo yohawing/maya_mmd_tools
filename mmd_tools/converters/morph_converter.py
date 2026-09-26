@@ -33,7 +33,12 @@ from mmd_tools.core.morph_topology import (
     serialize_group_topology,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
-from mmd_tools.core.morph_delta_mapping import MorphDeltaMappingError, map_morph_deltas_to_local
+from mmd_tools.core.morph_delta_mapping import (
+    MorphDeltaMappingError,
+    collect_morph_delta,
+    map_collected_morph_delta,
+    map_morph_deltas_to_local,
+)
 from mmd_tools.converters.morph_scene_metadata import (
     iter_morph_network_metadata,
     read_blendshape_morph_entry_strings,
@@ -204,13 +209,17 @@ class MorphConverter:
         # name/index/panel/type binding metadata used by the controller and
         # authoring registry.
         vertex_morph_metadata = []
+        vertex_morph_sources = {}
+        vertex_morph_deltas = {}
         for morph_index, morph in enumerate(pmx_data.morphs):
             if morph.morph_type != PmxMorphType.VertexMorph:
                 continue
             offsets = self._normalize_vertex_morph_offsets(morph, morph_index)
-            vertex_morph_metadata.append((morph_index, morph, offsets))
+            vertex_morph_metadata.append((morph_index, morph))
+            # Include explicit zero/cancelling offsets: they still own targets.
+            vertex_morph_sources[morph_index] = {offset["vertex_index"] for offset in offsets}
 
-        for morph_index, morph, offsets in vertex_morph_metadata:
+        for morph_index, morph in vertex_morph_metadata:
             morph_name = self._raw_morph_name(morph)
             morph_node = self._create_or_get_morph_network_node(morph_name, "vertex")
             maya_attribute_utils.set_custom_attributes(
@@ -248,7 +257,7 @@ class MorphConverter:
                             if (
                                 visible_vertex_indices is not None
                                 and not is_empty_vertex_morph
-                                and not self._vertex_morph_affects_vertices(morph, visible_vertex_indices)
+                                and visible_vertex_indices.isdisjoint(vertex_morph_sources[morph_index])
                             ):
                                 skipped_vertex_morphs_by_material += 1
                                 self.logger.debug(
@@ -259,8 +268,16 @@ class MorphConverter:
                                 )
                                 continue
                             self.logger.debug(f"Converting vertex morph: {morph.name}")
+                            if morph_index not in vertex_morph_deltas:
+                                # Preserve the mapping path's inferred source bound;
+                                # this optimization does not add parser validation.
+                                source_count = max(vertex_morph_sources[morph_index], default=-1) + 1
+                                vertex_morph_deltas[morph_index] = collect_morph_delta(
+                                    morph, morph_index, source_count,
+                                )
                             result = self._convert_vertex_morph_pmx(
-                                morph, mn, morph_index=morph_index, template_ctx=template_ctx
+                                morph, mn, morph_index=morph_index, template_ctx=template_ctx,
+                                source_deltas=vertex_morph_deltas[morph_index],
                             )
                             if result["success"]:
                                 results.append(result)
@@ -523,17 +540,6 @@ class MorphConverter:
             return {source_index: local_index for local_index, source_index in enumerate(source_indices)}
         except Exception:
             return None
-
-    def _vertex_morph_affects_vertices(self, morph, vertex_indices: Set[int]) -> bool:
-        """Return True when a vertex morph touches at least one visible vertex."""
-        for offset in getattr(morph, "offsets", []) or []:
-            try:
-                vertex_index = int(offset.get("vertex_index"))
-            except Exception:
-                continue
-            if vertex_index in vertex_indices:
-                return True
-        return False
 
     @staticmethod
     def _normalize_vertex_morph_offsets(morph, morph_index: int) -> List[Dict[str, Any]]:
@@ -1054,6 +1060,7 @@ class MorphConverter:
         *,
         morph_index: int = -1,
         template_ctx: Optional[Dict[str, Any]] = None,
+        source_deltas: Optional[Dict[int, tuple]] = None,
     ) -> Dict[str, Any]:
         """PMX頂点モーフの変換
 
@@ -1102,6 +1109,7 @@ class MorphConverter:
                 template_ctx["source_to_local"],
                 self.scale,
                 morph_index=morph_index,
+                source_deltas=source_deltas,
             )
             template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
             self._add_profile_time("target_points_sec", target_points_start)
@@ -1224,16 +1232,18 @@ class MorphConverter:
         scale: float = 1.0,
         *,
         morph_index: int = 0,
+        source_deltas: Optional[Dict[int, tuple]] = None,
     ) -> om.MPointArray:
         """base_points + morph offsets → 新しい MPointArray を返す（メッシュ操作なし）。"""
         points = om.MPointArray(base_points)
         n_points = len(points)
-        for local_index, pos in MorphConverter._mapped_vertex_morph_deltas(
-            morph,
-            morph_index,
-            source_to_local,
-            n_points,
-        ).items():
+        if source_deltas is None:
+            mapped = MorphConverter._mapped_vertex_morph_deltas(
+                morph, morph_index, source_to_local, n_points,
+            )
+        else:
+            mapped = map_collected_morph_delta(source_deltas, morph_index, source_to_local, n_points)
+        for local_index, pos in mapped.items():
             points[local_index] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos, scale)
         return points
 
