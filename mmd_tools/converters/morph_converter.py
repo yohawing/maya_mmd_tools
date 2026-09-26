@@ -1091,6 +1091,13 @@ class MorphConverter:
                 template_ctx["base_points"] = mesh_fn.getPoints(om.MSpace.kObject)
                 template_ctx["source_to_local"] = self._get_mesh_source_vertex_map(mesh_node)
                 template_ctx["blend_shape_node"] = maya_mesh_utils.find_or_create_blendshape_node(mesh_node)
+                geometries = cmds.blendShape(template_ctx["blend_shape_node"], query=True, geometry=True) or []
+                geometry_indices = cmds.blendShape(template_ctx["blend_shape_node"], query=True, geometryIndices=True) or []
+                shape = cmds.ls(maya_mesh_utils.resolve_mesh_shape(mesh_node), long=True)[0]
+                template_ctx["geometry_index"] = next(
+                    index for geometry, index in zip(geometries, geometry_indices)
+                    if shape in (cmds.ls(geometry, long=True) or [])
+                )
                 template_ctx["next_target_index"] = 0
                 template_ctx["existing_aliases"] = self._existing_blendshape_aliases(
                     template_ctx["blend_shape_node"],
@@ -1114,14 +1121,7 @@ class MorphConverter:
             template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
             self._add_profile_time("target_points_sec", target_points_start)
 
-            target_mesh = cmds.duplicate(template_ctx["target_mesh"])[0]
-            target_name = maya_name_utils.sanitize_unique_name(
-                f"{morph_name}_target",
-                self._morph_node_name_used,
-                fallback=f"morph_{morph_index}_target",
-            )
-            target_mesh = cmds.rename(target_mesh, target_name)
-            maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+            target_mesh = template_ctx["target_mesh"]
             blend_shape_node = template_ctx["blend_shape_node"]
             target_index = template_ctx["next_target_index"]
             template_ctx["next_target_index"] = target_index + 1
@@ -1155,11 +1155,22 @@ class MorphConverter:
                 target=(mesh_node, target_index, target_mesh, 1.0),
             )
         except Exception:
-            if target_mesh and cmds.objExists(target_mesh):
+            if template_ctx is None and target_mesh and cmds.objExists(target_mesh):
                 cmds.delete(target_mesh)
             raise
         self._add_profile_time("blendshape_add_sec", blendshape_add_start)
-        if target_mesh and cmds.objExists(target_mesh):
+        if template_ctx is not None:
+            # Maya stores the target payload when adding it. Disconnect the
+            # live mesh before reusing the template for the next target.
+            geometry_plug = (
+                f"{blend_shape_node}.inputTarget[{template_ctx['geometry_index']}]"
+                f".inputTargetGroup[{target_index}].inputTargetItem[6000].inputGeomTarget"
+            )
+            sources = cmds.listConnections(geometry_plug, source=True, destination=False, plugs=True) or []
+            if len(sources) != 1:
+                raise RuntimeError(f"Vertex target {geometry_plug!r} has no unique template source")
+            cmds.disconnectAttr(sources[0], geometry_plug)
+        elif target_mesh and cmds.objExists(target_mesh):
             cmds.delete(target_mesh)
 
         existing_aliases = template_ctx.get("existing_aliases") if template_ctx is not None else None
