@@ -17,6 +17,7 @@ from mmd_tools.core.texture_path_cache import (
     find_resolvable_source,
     is_unreadable_file_texture_path,
     resolve_texture_to_cache,
+    texture_cache_dir,
 )
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.constants import (
@@ -1171,6 +1172,7 @@ class MeshConverter:
         self.unresolved_texture_count = 0
         self.unresolved_textures = []
         self.model_filepath = pmx_filepath
+        self._texture_cache_directory = None
         self.scale = float(scale)
         # material_index -> transparency mode ("opaque"/"cutout"/"blend"),
         # precomputed from per-material UV-region texture alpha (atlas-safe).
@@ -1877,6 +1879,8 @@ class MeshConverter:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
             str: 作成されたMayaメッシュノードの名前（分割時はリスト）。
         """
+        # Recompute on the next import, even if this converter is reused.
+        self._texture_cache_directory = None
         model_name = pmx_data.header.get_name()
         all_vertices = pmx_data.vertices
         all_faces = pmx_data.faces
@@ -2635,11 +2639,15 @@ class MeshConverter:
                 unresolved = is_unreadable_file_texture_path(full_texture_path)
                 cache_path = None
                 if unresolved and settings.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True):
+                    workspace_root = cmds.workspace(q=True, rootDirectory=True)
+                    if self._texture_cache_directory is None:
+                        self._texture_cache_directory = texture_cache_dir(workspace_root, self.model_filepath)
                     resolution = resolve_texture_to_cache(
                         original_path=raw_texture_path,
                         file_texture_path=full_texture_path,
                         model_path=self.model_filepath,
-                        workspace_root=cmds.workspace(q=True, rootDirectory=True),
+                        workspace_root=workspace_root,
+                        cache_dir=self._texture_cache_directory,
                     )
                     if resolution.status == "resolved" and resolution.cache_path:
                         file_texture_path = resolution.cache_path

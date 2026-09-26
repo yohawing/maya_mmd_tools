@@ -201,6 +201,7 @@ def resolve_texture_to_cache(
     file_texture_path,
     model_path,
     workspace_root,
+    cache_dir=None,
 ) -> TextureResolution:
     """Copy a resolvable texture into the workspace ASCII cache."""
 
@@ -218,6 +219,7 @@ def resolve_texture_to_cache(
             workspace_root,
             model_path,
             original_path=classified.original_path,
+            cache_dir=cache_dir,
         )
     except OSError:
         return TextureResolution(
@@ -340,23 +342,26 @@ def texture_cache_dir(workspace_root, model_path) -> Path:
     return Path(workspace_root) / "sourceimages" / "mmd_tools_texture_cache" / compute_model_hash(model_path)
 
 
-def cache_path_for_original_texture(original_path, workspace_root, model_path, source_path=None) -> Path:
+def cache_path_for_original_texture(original_path, workspace_root, model_path, source_path=None, *, cache_dir=None) -> Path:
     """Return the deterministic cache path for an original PMX texture path."""
 
     key = normalize_original_texture_key(original_path, model_path)
     suffix_source = Path(source_path) if source_path else Path(key)
     suffix = suffix_source.suffix.lower()
     stem = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-    return texture_cache_dir(workspace_root, model_path) / f"{stem}{suffix}"
+    directory = Path(cache_dir) if cache_dir is not None else texture_cache_dir(workspace_root, model_path)
+    return directory / f"{stem}{suffix}"
 
 
-def copy_texture_to_cache(source_path, workspace_root, model_path, original_path=None) -> Path:
+def copy_texture_to_cache(source_path, workspace_root, model_path, original_path=None, *, cache_dir=None) -> Path:
     """Copy source into the deterministic MMD texture cache, overwriting in place."""
 
     source = Path(source_path)
-    cache_dir = texture_cache_dir(workspace_root, model_path)
+    cache_dir = Path(cache_dir) if cache_dir is not None else texture_cache_dir(workspace_root, model_path)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    target = cache_path_for_original_texture(original_path or source.name, workspace_root, model_path, source_path=source)
+    target = cache_path_for_original_texture(
+        original_path or source.name, workspace_root, model_path, source_path=source, cache_dir=cache_dir,
+    )
     shutil.copy2(source, target)
     return target
 
