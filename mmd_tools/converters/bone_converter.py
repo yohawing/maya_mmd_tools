@@ -351,13 +351,17 @@ class BoneConverter:
                 parent_joint = maya_joints[bone.parent_bone_index]
 
                 try:
-                    # 親子関係を設定
+                    # Ancestor parenting can invalidate either stored DAG path.
+                    # Resolve only this pair; refresh the full list once below.
+                    child_joint = self._resolve_node_long_path(joint_uuids[i], child_joint)
+                    parent_joint = self._resolve_node_long_path(
+                        joint_uuids[bone.parent_bone_index], parent_joint,
+                    )
                     parent_result = cmds.parent(child_joint, parent_joint, absolute=True) or []
                     maya_joints[i] = self._resolve_node_long_path(
                         joint_uuids[i],
                         parent_result[0] if parent_result else child_joint,
                     )
-                    self._refresh_joint_paths(maya_joints, joint_uuids)
                 except Exception as e:
                     safe_log_error(
                         self.logger,
@@ -387,7 +391,6 @@ class BoneConverter:
                     joint_uuids[i],
                     parent_result[0] if parent_result else current_root_joint,
                 )
-                self._refresh_joint_paths(maya_joints, joint_uuids)
             else:
                 self.logger.error(f"Root joint '{current_root_joint}' does not exist in scene")
 
