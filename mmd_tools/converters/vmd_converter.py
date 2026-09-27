@@ -103,7 +103,7 @@ from .vmd_runtime_rig_helper import (
     has_live_mmd_rig_for_runtime_target,
     restore_joints_to_bind_pose_for_runtime_bake,
 )
-from .vmd_registered_sparse import registered_sparse_bone_frames
+from .vmd_registered_sparse import RegisteredSparseFrames, registered_sparse_bone_frames
 from .vmd_runtime_channels import (
     append_bone_locals_to_channel_arrays,
     create_runtime_joint_channel_arrays,
@@ -919,10 +919,10 @@ class VmdConverter:
                 _emit_progress(60)
 
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
-                    bone_frames = list(
+                    bone_frames = (
                         registered_sparse_frames
                         if route_plan.use_registered_sparse
-                        else import_context.vmd_data.bone_frames
+                        else list(import_context.vmd_data.bone_frames)
                     )
                     if import_context.create_mmd_control_rig:
                         # Identity-only optional roles are a VMD no-op and
@@ -1300,7 +1300,7 @@ class VmdConverter:
         mapping are also removed before key conversion so the legacy converter
         cannot report them as failed bones.
         """
-        frames = list(frames or [])
+        frames = frames if isinstance(frames, RegisteredSparseFrames) else list(frames or [])
         allowed_names = None if mapped_names is None else {str(name) for name in mapped_names}
         active_names = set()
         for frame in frames:
@@ -1313,6 +1313,8 @@ class VmdConverter:
                 and (allowed_names is None or name in allowed_names)
             ):
                 active_names.add(name)
+        if isinstance(frames, RegisteredSparseFrames):
+            return frames.for_names(active_names)
         return [
             frame
             for frame in frames

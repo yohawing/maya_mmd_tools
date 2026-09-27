@@ -9,6 +9,7 @@ import maya.cmds as cmds
 
 from . import vmd_profile
 from .vmd_context import VmdBoneAnimationContext
+from .vmd_registered_sparse import RegisteredSparseFrames
 from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 
 
@@ -219,19 +220,22 @@ def convert_bone_animation(
     """Convert VMD bone frames using explicit bone keying context."""
     bone_frame_map: Dict[object, List] = {}
 
-    with vmd_profile.scope("bone_frame_grouping", count=len(bone_frames)):
-        for frame in bone_frames:
-            if hasattr(frame, "bone_index"):
-                bone_name = ("index", int(frame.bone_index))
-            elif isinstance(frame, dict) and "bone_index" in frame:
-                bone_name = ("index", int(frame["bone_index"]))
-            elif hasattr(frame, "bone_name"):
-                bone_name = frame.bone_name
-            else:
-                bone_name = frame.get("bone_name", "")
-            if bone_name not in bone_frame_map:
-                bone_frame_map[bone_name] = []
-            bone_frame_map[bone_name].append(frame)
+    if isinstance(bone_frames, RegisteredSparseFrames):
+        bone_frame_map = bone_frames.by_bone
+    else:
+        with vmd_profile.scope("bone_frame_grouping", count=len(bone_frames)):
+            for frame in bone_frames:
+                if hasattr(frame, "bone_index"):
+                    bone_name = ("index", int(frame.bone_index))
+                elif isinstance(frame, dict) and "bone_index" in frame:
+                    bone_name = ("index", int(frame["bone_index"]))
+                elif hasattr(frame, "bone_name"):
+                    bone_name = frame.bone_name
+                else:
+                    bone_name = frame.get("bone_name", "")
+                if bone_name not in bone_frame_map:
+                    bone_frame_map[bone_name] = []
+                bone_frame_map[bone_name].append(frame)
     vmd_profile.set_extra("animated_bone_count", len(bone_frame_map))
 
     success_count = 0
