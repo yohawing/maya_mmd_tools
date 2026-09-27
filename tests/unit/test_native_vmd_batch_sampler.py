@@ -736,7 +736,9 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 bone_channel_sampler=native,
             )
         self.assertEqual(native.joints, ("dense",))
-        self.assertEqual(native.frames, (0, 1))
+        # Native sampling includes the subframes used to validate curve fitting;
+        # exported keys still remain at the two authored frames below.
+        self.assertEqual(native.frames, tuple(index / 16.0 for index in range(17)))
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]["position"], (1.0, 1.0, 1.0))
         self.assertEqual(result[1]["position"], (2.0, 2.0, 2.0))
