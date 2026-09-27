@@ -103,11 +103,6 @@ from .vmd_runtime_rig_helper import (
     restore_joints_to_bind_pose_for_runtime_bake,
 )
 from .vmd_registered_sparse import registered_sparse_bone_frames
-from .vmd_runtime_provenance import (
-    build_raw_vmd_source_provenance,
-    build_runtime_registration_provenance,
-    store_runtime_registration_provenance,
-)
 from .vmd_runtime_channels import (
     append_bone_locals_to_channel_arrays,
     create_runtime_joint_channel_arrays,
@@ -164,9 +159,7 @@ try:
         MmdRuntimeClip,
         MmdRuntimeInstance,
         MmdRuntimePhysicsWorld,
-        get_mmd_runtime_library,
         get_runtime_feature_flags,
-        get_runtime_library_path,
     )
     from ..core.native.mmd_anim_runtime_local_channels import (
         compute_maya_local_channels,
@@ -186,12 +179,6 @@ except Exception:
 
     def get_runtime_feature_flags():
         return 0
-
-    def get_mmd_runtime_library():
-        return None
-
-    def get_runtime_library_path():
-        return None
 
     MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = MmdRuntimePhysicsWorld = None  # type: ignore
     compute_maya_local_channels = None  # type: ignore
@@ -605,8 +592,6 @@ class VmdConverter:
         # or has an active Control Rig, with no implicit mode switching.
         self._enforce_humanik_import_gate(target_model)
         registered_sparse_frames = None
-        registered_sparse_provenance = None
-        raw_source_provenance = None
         runtime_bake_requested = False
         if not bake_mode and getattr(vmd_data, "bone_frames", None):
             # Resolve the imported PMX index table before any Control Rig or
@@ -650,16 +635,10 @@ class VmdConverter:
             if not runtime_bake_requested and (
                 create_mmd_control_rig or has_registered_source
             ):
-                registered_sparse_frames, registered_sparse_provenance = self._compiled_registered_sparse_frames(
+                registered_sparse_frames, _ = self._compiled_registered_sparse_frames(
                     vmd_bytes=sparse_vmd_bytes,
                     pmx_bytes=sparse_pmx_bytes,
                     pmx_path=sparse_pmx_path,
-                    vmd_source_path=getattr(vmd_data, "source_file", None),
-                    source_bone_frames=getattr(vmd_data, "bone_frames", None) or (),
-                    source_ik_frames=getattr(
-                        vmd_data, "ik_show_hide_frames", None
-                    )
-                    or (),
                     profile=profile,
                 )
         control_rig_transaction = None
@@ -837,17 +816,6 @@ class VmdConverter:
                 import_context.pmx_path,
                 import_context.target_namespace,
             )
-            raw_source_provenance = build_raw_vmd_source_provenance(
-                vmd_bytes=vmd_bytes,
-                pmx_bytes=pmx_bytes,
-                vmd_source_path=getattr(import_context.vmd_data, "source_file", None),
-                pmx_source_path=pmx_path,
-                raw_bone_frames=getattr(import_context.vmd_data, "bone_frames", None),
-                raw_ik_frames=getattr(
-                    import_context.vmd_data, "ik_show_hide_frames", None
-                ),
-            )
-            raw_source_provenance["target_model"] = str(import_context.target_model or "")
             _emit_progress(55)
 
             runtime_success = False
@@ -1080,21 +1048,6 @@ class VmdConverter:
                 )
                 self._discard_mmd_control_rig_detached_motion_curves(
                     control_rig_transaction
-                )
-            if registered_sparse_provenance is not None:
-                registered_sparse_provenance["scene_metadata_stored"] = (
-                    store_runtime_registration_provenance(
-                        import_context.target_model,
-                        registered_sparse_provenance,
-                    )
-                )
-            elif not runtime_success and raw_source_provenance is not None:
-                raw_source_provenance["status"] = "success"
-                raw_source_provenance["scene_metadata_stored"] = (
-                    store_runtime_registration_provenance(
-                        import_context.target_model,
-                        raw_source_provenance,
-                    )
                 )
             self.logger.info("VMD animation conversion completed")
             return True
@@ -2686,16 +2639,13 @@ class VmdConverter:
         vmd_bytes: bytes,
         pmx_bytes: bytes,
         pmx_path: str,
-        vmd_source_path: Optional[str],
         profile: Optional[Dict[str, Any]],
-        source_bone_frames=(),
-        source_ik_frames=(),
     ) -> Tuple[tuple, Dict[str, Any]]:
         """Build model-paired compiled sparse keys before scene mutation.
 
         The scene's persisted PMX bone indices are the consumer mapping
         authority. Raw VMD names and interpolation bytes are not consulted for
-        authored values; matching source bytes remain export authority only.
+        authored values. Export derives values and interpolation from Maya curves.
         """
         resolved_pmx_bytes, _ = resolve_runtime_pmx_bytes_and_morph_names(
             pmx_bytes,
@@ -2746,30 +2696,10 @@ class VmdConverter:
                     tracks,
                     bone_names_by_index=bone_names_by_index,
                     imported_bone_indices=self.bone_index_to_joint,
-                    source_interpolation_by_key=(
-                        self._source_interpolation_by_registered_key(
-                            source_bone_frames
-                        )
-                    ),
                 )
             except ValueError as exc:
                 fail("registered_sparse_bone_index_mismatch", str(exc))
-            runtime_library = get_mmd_runtime_library()
-            registration_profile = build_runtime_registration_provenance(
-                vmd_bytes=vmd_bytes,
-                pmx_bytes=resolved_pmx_bytes,
-                vmd_source_path=vmd_source_path,
-                pmx_source_path=pmx_path,
-                runtime_library_path=get_runtime_library_path(),
-                runtime_abi_version=(
-                    int(runtime_library.mmd_runtime_abi_version())
-                    if runtime_library is not None
-                    else 0
-                ),
-                runtime_feature_flags=int(get_runtime_feature_flags()),
-                raw_bone_frames=source_bone_frames,
-                raw_ik_frames=source_ik_frames,
-            )
+            registration_profile = {"status": "pending", "registration_mode": "model_paired_registered", "fallback": "none"}
             registration_profile.update(
                 {
                     "status": "success",
@@ -2793,36 +2723,6 @@ class VmdConverter:
                 clip.free()
             model.free()
 
-    def _source_interpolation_by_registered_key(
-        self,
-        source_bone_frames,
-    ) -> Dict[Tuple[int, int], bytes]:
-        """Return raw source interpolation for export without driving Maya keys."""
-        joint_to_index = {
-            str(joint): int(index)
-            for index, joint in self.bone_index_to_joint.items()
-        }
-        result = {}
-        for frame in source_bone_frames or ():
-            bone_name = getattr(frame, "bone_name", None)
-            frame_number = getattr(frame, "frame_number", None)
-            interpolation = getattr(frame, "interpolation", None)
-            if isinstance(frame, dict):
-                bone_name = frame.get("bone_name", bone_name)
-                frame_number = frame.get("frame_number", frame_number)
-                interpolation = frame.get("interpolation", interpolation)
-            joint = self.bone_name_mapping.get(str(bone_name or ""))
-            bone_index = joint_to_index.get(str(joint))
-            if bone_index is None:
-                continue
-            try:
-                raw = bytes(interpolation)
-                key = (bone_index, int(frame_number))
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if len(raw) == 64:
-                result[key] = raw
-        return result
 
     def _preflight_reduced_bake_keys(
         self,
@@ -2923,24 +2823,7 @@ class VmdConverter:
             self.logger.error("Could not get PMX data required for runtime bake")
             return False
 
-        runtime_library = get_mmd_runtime_library() if HAS_MMD_RUNTIME else None
-        runtime_abi_version = 0
-        if runtime_library is not None:
-            try:
-                runtime_abi_version = int(runtime_library.mmd_runtime_abi_version())
-            except Exception:
-                self.logger.debug("Failed to query mmd-anim runtime ABI", exc_info=True)
-        registration_profile = build_runtime_registration_provenance(
-            vmd_bytes=vmd_bytes,
-            pmx_bytes=resolved_pmx_bytes,
-            vmd_source_path=getattr(vmd_data, "source_file", None),
-            pmx_source_path=pmx_path,
-            runtime_library_path=get_runtime_library_path() if HAS_MMD_RUNTIME else None,
-            runtime_abi_version=runtime_abi_version,
-            runtime_feature_flags=int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
-            raw_bone_frames=getattr(vmd_data, "bone_frames", None),
-            raw_ik_frames=getattr(vmd_data, "ik_show_hide_frames", None),
-        )
+        registration_profile = {"status": "pending", "registration_mode": "model_paired_registered", "fallback": "none"}
         registration_profile["target_model"] = str(target_model or "")
         if isinstance(profile, dict):
             profile.setdefault("vmd_converter", {})["runtime_registration"] = registration_profile
@@ -3251,9 +3134,7 @@ class VmdConverter:
                 "batch" if runtime_cache.batch_mode else "frame"
             )
             registration_profile["frame_count"] = len(runtime_cache.baked_frames)
-            registration_profile["scene_metadata_stored"] = (
-                store_runtime_registration_provenance(target_model, registration_profile)
-            )
+
 
             return True
 

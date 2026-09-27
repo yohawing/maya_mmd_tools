@@ -19,7 +19,7 @@ from mmd_tools.converters.vmd_rotation_time_curve import (
     detach_and_delete_vmd_rotation_time_curve,
     record_vmd_rotation_time_curve_metadata,
     restore_vmd_rotation_time_curve_snapshot,
-    rotation_time_curve_interpolation_by_bone,
+    resolve_vmd_rotation_time_curve_record,
     stage_vmd_rotation_time_curve_disable,
 )
 from mmd_tools.core import mmd_control_rig_motion
@@ -145,13 +145,7 @@ class TestVmdRotationTimeCurve(MayaTestBase):
         self.assertEqual(cmds.nodeType(time_curve), "animCurveTT")
         self.assertEqual(cmds.keyframe(time_curve, query=True, timeChange=True), [0.0, 30.0])
         self.assertEqual(record["keyCount"], 2)
-        interpolation = rotation_time_curve_interpolation_by_bone(
-            {
-                "rotationInterpolationMode": "vmd_time_curve_experimental",
-                "rotationTimeCurves": [record],
-            }
-        )
-        self.assertEqual(interpolation["下半身"][30], _interpolation_bytes())
+        self.assertFalse(cmds.attributeQuery("mmdVmdRotationInterpolationJson", node=time_curve, exists=True))
         for plug in plugs:
             curve = cmds.listConnections(plug, source=True, destination=False)[0]
             self.assertEqual(
@@ -183,9 +177,8 @@ class TestVmdRotationTimeCurve(MayaTestBase):
         )
         cmds.delete(control, time_curve)
 
-    def test_registered_semantic_frames_keep_raw_export_interpolation(self):
+    def test_registered_semantic_frames_do_not_store_source_payload(self):
         control, plugs = self._quaternion_control()
-        raw = _interpolation_bytes((10, 80, 50, 120))
         semantic = {
             "translate_x": (0.0, 0.0, 1.0, 1.0),
             "translate_y": (0.0, 0.0, 1.0, 1.0),
@@ -195,20 +188,13 @@ class TestVmdRotationTimeCurve(MayaTestBase):
         frames = [
             RegisteredSparseBoneFrame(
                 "下半身", 1, frame, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0),
-                semantic, raw,
+                semantic,
             )
             for frame in (0, 30)
         ]
 
         record = apply_vmd_rotation_time_curve(frames, plugs, "下半身")
-        interpolation = rotation_time_curve_interpolation_by_bone(
-            {
-                "rotationInterpolationMode": "vmd_time_curve_experimental",
-                "rotationTimeCurves": [record],
-            }
-        )
 
-        self.assertEqual(interpolation["下半身"][30], raw)
         time_curve = cmds.ls(record["rotationTimeCurveUuid"], long=True)[0]
         cmds.delete(control, time_curve)
 
@@ -230,13 +216,6 @@ class TestVmdRotationTimeCurve(MayaTestBase):
             cmds.keyframe(time_curve, query=True, timeChange=True),
             [0.0, 60.0],
         )
-        interpolation = rotation_time_curve_interpolation_by_bone(
-            {
-                "rotationInterpolationMode": "vmd_time_curve_experimental",
-                "rotationTimeCurves": [record],
-            }
-        )
-        self.assertEqual(interpolation["下半身"][30], _interpolation_bytes())
         cmds.delete(control, time_curve)
 
     def test_new_time_curve_is_deleted_when_authoring_fails(self):
@@ -389,12 +368,7 @@ class TestVmdRotationTimeCurve(MayaTestBase):
         cmds.connectAttr("time1.outTime", f"{curve}.input")
 
         with self.assertRaisesRegex(RuntimeError, "not driven"):
-            rotation_time_curve_interpolation_by_bone(
-                {
-                    "rotationInterpolationMode": "vmd_time_curve_experimental",
-                    "rotationTimeCurves": [record],
-                }
-            )
+            resolve_vmd_rotation_time_curve_record(record)
         cmds.delete(control, time_curve)
 
     def test_sparse_bake_preserves_time_warped_pose(self):
@@ -481,7 +455,7 @@ class TestVmdRotationTimeCurve(MayaTestBase):
             )
         cmds.delete(control, joint, time_curve)
 
-    def test_collector_restores_original_interpolation_bytes(self):
+    def test_collector_generates_interpolation_from_current_curves(self):
         joint = cmds.joint(name="vmd_rotation_time_export_joint")
         cmds.addAttr(joint, longName="mmd_bone_name", dataType="string")
         cmds.setAttr(f"{joint}.mmd_bone_name", "下半身", type="string")
@@ -490,11 +464,11 @@ class TestVmdRotationTimeCurve(MayaTestBase):
             cmds.setKeyframe(joint, attribute=f"rotate{axis}", time=30, value=10.0)
         frames = VmdSceneCollector().collect_bone_frames(
             [joint],
-            rotation_interpolation={"下半身": {30: _interpolation_bytes()}},
             time_converter=lambda value: value,
         )
         arriving = next(frame for frame in frames if frame["frame_number"] == 30)
-        self.assertEqual(arriving["interpolation"], _interpolation_bytes())
+        self.assertEqual(len(arriving["interpolation"]), 64)
+        self.assertNotEqual(arriving["interpolation"], _interpolation_bytes())
         cmds.delete(joint)
 
     def test_removal_restores_default_time_input(self):

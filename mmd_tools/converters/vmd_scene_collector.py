@@ -5,12 +5,11 @@ model-scoped PMX network morph controller weights into the dict contract
 consumed by ``VmdExporter``. Bone translation can be converted back to VMD
 offsets when a bind-pose map is supplied, and XYZ joint rotations are
 converted back to VMD quaternions with jointOrient compensation. Explicit
-Bake Timeline requests sample the selected Maya frame range at one-frame intervals:
-bones use the native sampler while morph/IK/camera/light tracks advance Maya's
-normal Timeline and read current-frame values. Sampling failures block export.
-The current character scene is the sole export authority. Import provenance
-may remain attached to the scene for diagnostics, but is never materialized
-as an export payload.
+Character tracks are fitted and validated on a 1/16 VMD-frame grid, including
+source key times. Bake Timeline uses the native bone/morph sampler and normal
+Timeline IK evaluation. Sampling or tolerance failures block export.
+The current character scene is the sole export authority; saved source motion
+is never used as an export payload.
 """
 
 import json
@@ -66,6 +65,7 @@ from mmd_tools.converters.vmd_redirected_authoring_proxy import (
     resolve_redirected_authoring_proxy_authority,
 )
 from mmd_tools.validation.snapshot import fingerprint_payload
+from mmd_tools.converters.vmd_curve_fit import fit_scene_track, fit_step_track, validation_times
 
 
 _BONE_EXPORT_ATTRS = (
@@ -1528,11 +1528,6 @@ class VmdSceneCollector:
             )
             if direct_control_rig_plan is None and include_character:
                 self._control_rig_dense_export(target_model)
-            rotation_interpolation = (
-                self._rotation_time_curve_interpolation(target_model)
-                if include_character
-                else None
-            )
             selector_key_times_by_joint = None
             if not include_character:
                 authored_routes = {}
@@ -1600,7 +1595,6 @@ class VmdSceneCollector:
                     dense_sample=True,
                     force_dense_sample=True,
                     time_converter=maya_time_to_vmd,
-                    rotation_interpolation=rotation_interpolation,
                     dense_frame_samples=bake_timeline_dense_frames,
                     bone_channel_sampler=self._bone_channel_sampler,
                     frame_sink=lambda frame: emit("bones", frame),
@@ -1696,13 +1690,13 @@ class VmdSceneCollector:
             validation_frame_range = None
             if bake_timeline_dense_frames:
                 validation_frame_range = (
-                    _vmd_frame_number(bake_timeline_dense_frames[0], maya_time_to_vmd),
-                    _vmd_frame_number(bake_timeline_dense_frames[-1], maya_time_to_vmd),
+                    math.floor(maya_time_to_vmd(bake_timeline_dense_frames[0])),
+                    math.ceil(maya_time_to_vmd(bake_timeline_dense_frames[-1])),
                 )
             elif start_frame is not None and end_frame is not None:
                 validation_frame_range = (
-                    _vmd_frame_number(start_frame, maya_time_to_vmd),
-                    _vmd_frame_number(end_frame, maya_time_to_vmd),
+                    math.floor(maya_time_to_vmd(start_frame)),
+                    math.ceil(maya_time_to_vmd(end_frame)),
                 )
             elif emitted_frame_bounds[0] is not None:
                 validation_frame_range = tuple(emitted_frame_bounds)
@@ -1755,7 +1749,6 @@ class VmdSceneCollector:
         bone_bind_poses = options.get("bone_bind_poses") or {}
         maya_time_to_vmd = _scene_maya_time_to_vmd_frame()
         dense_control_rig_export = self._control_rig_dense_export(target_model)
-        rotation_interpolation = self._rotation_time_curve_interpolation(target_model)
         authored_routes = self._scene_authored_input_routes(
             joints,
             target_model,
@@ -1782,7 +1775,6 @@ class VmdSceneCollector:
             dense_sample=dense_control_rig_export,
             force_dense_sample=False,
             time_converter=maya_time_to_vmd,
-            rotation_interpolation=rotation_interpolation,
             dense_frame_samples=None,
             bone_channel_sampler=self._bone_channel_sampler,
         )
@@ -1983,7 +1975,6 @@ class VmdSceneCollector:
         input_routes: Optional[Mapping[str, Mapping[str, tuple[str, str]]]] = None,
         dense_sample: bool = False,
         time_converter=None,
-        rotation_interpolation: Optional[Mapping[str, Mapping[int, bytes]]] = None,
         force_dense_sample: bool = False,
         dense_frame_samples: Optional[Sequence[float]] = None,
         bone_channel_sampler=None,
@@ -2014,8 +2005,8 @@ class VmdSceneCollector:
         if selector_key_times_by_joint is not None:
             _validate_direct_rotation_export_indices(context_joints, joints)
         rotation_context = _build_rotation_export_context(context_joints)
-        rotation_interpolation = rotation_interpolation or {}
         native_samples = None
+        native_time_lookup = {}
         native_bulk_track_api = False
         native_bulk_track_count = 0
         native_bulk_track_frame_count = 0
@@ -2277,8 +2268,11 @@ class VmdSceneCollector:
                         )
                         if not callable(sampler_method):
                             raise RuntimeError("native sampler has no dense bone method")
+                        native_times = validation_times(
+                            list(dense_frames) + _filter_frame_range(all_keyed, start_frame, end_frame), time_converter)
+                        native_time_lookup = {round(float(t), 9): t for t in native_times}
                         native_samples = sampler_method(
-                            dense_frames,
+                            native_times,
                             native_joints,
                             input_routes,
                         )
@@ -2412,7 +2406,8 @@ class VmdSceneCollector:
             if use_native and native_samples is not None:
                 try:
                     scalar_native_value_read_count += 1
-                    value = float(native_samples.value(joint, attr, frame_number))
+                    sample_time = native_time_lookup[round(float(frame_number), 9)]
+                    value = float(native_samples.value(joint, attr, sample_time))
                     if not math.isfinite(value):
                         raise ValueError(
                             f"non-finite native value for {joint}.{attr}"
@@ -2474,17 +2469,12 @@ class VmdSceneCollector:
                     and not single_key
                     and joint in keyless_dependency_joints
                 )
-                preserve_sparse_rotation = (
-                    not force_dense_sample
-                    and bone_name in rotation_interpolation
-                )
                 keyed_frames = (
                     sparse_frames
                     if single_key
                     else dense_frames
                     if dense_frames is not None
                     and (all_joint_keyed or joint in keyless_dependency_joints)
-                    and not preserve_sparse_rotation
                     else sparse_frames
                 )
                 bulk_components = None
@@ -2652,19 +2642,33 @@ class VmdSceneCollector:
                             ),
                             "rotation": rotation,
                         }
-                    interpolation = rotation_interpolation.get(bone_name, {}).get(vmd_frame)
-                    if interpolation is not None:
-                        payload["interpolation"] = interpolation
                     return payload
 
                 def iter_payloads():
-                    last_vmd_frame = None
-                    for track_index, frame_number in enumerate(keyed_frames):
-                        vmd_frame = _vmd_frame_number(frame_number, time_converter)
-                        if track_frames is not None and vmd_frame == last_vmd_frame:
-                            continue
-                        last_vmd_frame = vmd_frame
-                        yield frame_number, build_payload(track_index, frame_number)
+                    if keyed_frames:
+                        offset = float(time_converter(0.))
+                        rate = float(time_converter(1.)) - offset
+                        keyed_indices = {frame: index for index, frame in enumerate(keyed_frames)}
+
+                        def sample_scene(vmd_frame):
+                            maya_frame = (vmd_frame - offset) / rate
+                            if bulk_components is not None and maya_frame in keyed_indices:
+                                payload = build_payload(keyed_indices[maya_frame], maya_frame)
+                                return payload["position"], payload["rotation"]
+                            values = [read_value(joint, attr, maya_frame, route, not single_key)
+                                      for attr in _BONE_EXPORT_ATTRS]
+                            return (
+                                _maya_translate_to_vmd_position(values[:3], bind_pose, motion_scale),
+                                _maya_joint_rotate_to_vmd_quaternion(
+                                    joint, *values[3:], rotation_context.get(str(long_names[0]))),
+                            )
+
+                        fitted = fit_scene_track(
+                            bone_name, [float(time_converter(t)) for t in sorted(set(keyed_frames) | set(sparse_frames))], sample_scene,
+                            authored_times=[float(time_converter(t)) for t in sparse_frames])
+                        for payload in fitted:
+                            yield (payload["frame_number"] - offset) / rate, payload
+                        return
 
                 for frame_number, payload in iter_payloads():
                     if single_key:
@@ -3000,20 +3004,15 @@ class VmdSceneCollector:
                                 "ik_states": baseline_states,
                             }
                         )
-            for frame in keyed_frames:
-                vmd_frame = _vmd_frame_number(frame, time_converter)
-                if vmd_frame < 0:
-                    continue
-                emit(
-                    {
-                        "frame_number": vmd_frame,
-                        "visible": True,
-                        "ik_states": [
-                            (name, read_enabled(node, attribute, frame))
-                            for name, (node, attribute) in sorted(routes_by_name.items())
-                        ],
-                    }
-                )
+            offset = float(time_converter(0.))
+            rate = float(time_converter(1.)) - offset
+            def sample_states(vmd_frame):
+                maya_frame = (vmd_frame-offset)/rate
+                return [(name, read_enabled(node, attribute, maya_frame))
+                        for name, (node, attribute) in sorted(routes_by_name.items())]
+            source_events = _filter_frame_range(all_keyed_frames, start_frame, end_frame)
+            for payload in fit_step_track([float(time_converter(t)) for t in sorted(set(keyed_frames) | set(source_events))], sample_states):
+                emit(payload)
         if frame_sink is not None:
             return []
         return _deduplicate_frames(frames, ("frame_number",))
@@ -3557,22 +3556,6 @@ class VmdSceneCollector:
             "ik_state_routes": dict(resolved.get("ikStateRoutes", {})),
             "diagnostics": diagnostics,
         }
-
-    @staticmethod
-    def _rotation_time_curve_interpolation(
-        target_model: Optional[str],
-    ) -> dict[str, dict[int, bytes]]:
-        """Resolve Experimental rotation interpolation for sparse export."""
-        if not target_model:
-            return {}
-        metadata = read_mmd_control_rig_metadata(target_model)
-        if not metadata:
-            return {}
-        from mmd_tools.converters.vmd_rotation_time_curve import (
-            rotation_time_curve_interpolation_by_bone,
-        )
-
-        return rotation_time_curve_interpolation_by_bone(metadata)
 
     def _scene_authored_input_routes(
         self,
@@ -4327,90 +4310,50 @@ class VmdSceneCollector:
                             for frame in frames_for_channel
                         }
                     )
+                sample_times = validation_times(
+                    list(sample_times) + [t for _, _, _, source, _ in channels for t in source], time_converter)
+                sample_index = {round(float(frame), 9): index for index, frame in enumerate(sample_times)}
                 if morph_channel_sampler is not None:
-                    sample_method = getattr(
-                        morph_channel_sampler,
-                        "sample_dense_scalar_channels",
-                        None,
-                    )
-                    if not callable(sample_method):
-                        raise RuntimeError(
-                            "native Morph sampler has no dense scalar method"
-                        )
-                    native_morph_samples = sample_method(
-                        sample_times,
-                        [
-                            (str(morph_name), str(node), str(attr))
-                            for node, attr, morph_name, _source_frames, _direct_single in channels
-                        ],
-                    )
-                    native_tracks = {
-                        str(morph_name): native_morph_samples.scalar_track(
-                            str(morph_name)
-                        )
-                        for _node, _attr, morph_name, _source_frames, _direct_single in channels
+                    native_morph_samples = morph_channel_sampler.sample_dense_scalar_channels(
+                        sample_times, [(str(name), str(node), str(attr))
+                                       for node, attr, name, _frames, _direct in channels])
+                    sampled = {
+                        (node, attr): native_morph_samples.scalar_track(str(name)).values
+                        for node, attr, name, _frames, _direct in channels
                     }
-                    self._diagnostics["native_morph_sampler"] = dict(
-                        getattr(native_morph_samples, "diagnostics", {}) or {}
-                    )
-                    for frame_index, frame_number in enumerate(sample_times):
-                        for node, attr, morph_name, ranged_source_frames, direct_single in channels:
-                            if not direct_single and dense_sample and dense_frame_samples is not None:
-                                selected = True
-                            else:
-                                selected = frame_number in ranged_source_frames
-                            if not selected:
-                                continue
-                            append_frame(
-                                node,
-                                attr,
-                                morph_name,
-                                frame_number,
-                                native_tracks[str(morph_name)].values[frame_index],
-                                ranged_source_frames,
-                                direct_single,
-                            )
+                    self._diagnostics["native_morph_sampler"] = dict(native_morph_samples.diagnostics or {})
                 else:
-                    # Retained for non-production legacy callers. Standard
-                    # streaming Bake Timeline always supplies the native sampler.
+                    sampled = {(node, attr): [] for node, attr, *_ in channels}
                     with _MayaTimelineReader() as timeline_reader:
-                        for frame_number in sample_times:
-                            timeline_reader.set_frame(frame_number)
-                            for node, attr, morph_name, ranged_source_frames, direct_single in channels:
-                                if not direct_single and dense_sample and dense_frame_samples is not None:
-                                    selected = True
-                                else:
-                                    selected = frame_number in ranged_source_frames
-                                if not selected:
-                                    continue
-                                append_frame(
-                                    node,
-                                    attr,
-                                    morph_name,
-                                    frame_number,
-                                    _current_plug_float(node, attr),
-                                    ranged_source_frames,
-                                    direct_single,
-                                )
+                        for frame in sample_times:
+                            timeline_reader.set_frame(frame)
+                            for node, attr, *_ in channels:
+                                sampled[node, attr].append(_current_plug_float(node, attr))
             else:
-                for node, attr, morph_name, ranged_source_frames, direct_single in channels:
-                    planned_frames = (
-                        ranged_source_frames
-                        if direct_single
-                        else sorted(set(dense_frame_samples))
-                        if dense_sample and dense_frame_samples is not None
-                        else ranged_source_frames
-                    )
-                    for frame_number in planned_frames:
-                        append_frame(
-                            node,
-                            attr,
-                            morph_name,
-                            frame_number,
-                            _plug_float(node, attr, frame_number),
-                            ranged_source_frames,
-                            direct_single,
-                        )
+                sampled = None
+                sample_index = {}
+            offset = float(time_converter(0.))
+            rate = float(time_converter(1.)) - offset
+            for node, attr, morph_name, ranged_source_frames, direct_single in channels:
+                planned_frames = (
+                    ranged_source_frames if direct_single
+                    else sorted(set(dense_frame_samples))
+                    if dense_sample and dense_frame_samples is not None
+                    else ranged_source_frames
+                )
+                def sample_weight(vmd_frame):
+                    maya_frame = (vmd_frame-offset)/rate
+                    if sampled is not None:
+                        return float(sampled[node, attr][sample_index[round(float(maya_frame), 9)]])
+                    return _plug_float(node, attr, maya_frame)
+
+                fitted = fit_scene_track(
+                    str(morph_name), [float(time_converter(t)) for t in sorted(set(planned_frames) | set(ranged_source_frames))],
+                    sample_weight, morph=True,
+                    authored_times=[float(time_converter(t)) for t in ranged_source_frames])
+                for payload in fitted:
+                    append_frame(node, attr, morph_name, (payload["frame_number"]-offset)/rate,
+                                 payload["weight"], ranged_source_frames, direct_single)
         except BaseException:
             if candidate_spool is not None:
                 candidate_spool.close()

@@ -28,7 +28,6 @@ ATTR_MMD_COMMENT_EN = "mmd_comment_en"
 ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
 ATTR_MMD_TEXTURE_TABLE_JSON = "mmd_texture_table_json"
 ATTR_MMD_CONTROL_RIG_JSON = "mmd_control_rig_json"
-ATTR_MMD_VMD_IMPORT_PROVENANCE_JSON = "mmd_vmd_import_provenance_json"
 ATTR_MMD_MORPH_DATA = "mmdMorphData"
 # Legacy reverse ownership link used by imported non-DAG nodes.  New scene
 # ownership registration will migrate away from root.message fan-out, but the

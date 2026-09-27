@@ -65,17 +65,14 @@ class TestRegisteredSparseAdapter(TestCase):
         self.assertEqual(frames[1].semantic_interpolation["rotation"], (0.25, 0.5, 0.75, 1.0))
         self.assertFalse(hasattr(frames[1], "interpolation"))
 
-    def test_keeps_raw_source_interpolation_only_as_export_authority(self):
-        raw = bytes(range(64))
+    def test_does_not_retain_raw_source_payload(self):
         frames = registered_sparse_bone_frames(
             (_track(),),
             bone_names_by_index={3: "左腕捩"},
             imported_bone_indices={3: "|model|leftArmTwist"},
-            source_interpolation_by_key={(3, 10): raw},
         )
 
-        self.assertIsNone(frames[0].source_interpolation)
-        self.assertEqual(frames[1].source_interpolation, raw)
+        self.assertFalse(hasattr(frames[1], "source_interpolation"))
         self.assertEqual(
             frames[1].semantic_interpolation["rotation"],
             (0.25, 0.5, 0.75, 1.0),
@@ -101,14 +98,6 @@ class TestRegisteredSparsePreflight(TestCase):
         model = SimpleNamespace(free=lambda: None)
         clip = SimpleNamespace(bone_tracks=lambda: (_track(),), free=lambda: None)
         profile = {}
-        raw_interpolation = bytes(range(64))
-        source_frames = [
-            SimpleNamespace(
-                bone_name="左腕捩",
-                frame_number=10,
-                interpolation=raw_interpolation,
-            )
-        ]
         with patch.object(
             converter_module,
             "resolve_runtime_pmx_bytes_and_morph_names",
@@ -122,20 +111,18 @@ class TestRegisteredSparsePreflight(TestCase):
             "from_vmd_bytes_for_model",
             return_value=clip,
         ) as clip_create:
-            frames, provenance = self.converter._compiled_registered_sparse_frames(
+            frames, registration = self.converter._compiled_registered_sparse_frames(
                 vmd_bytes=b"vmd",
                 pmx_bytes=b"pmx",
                 pmx_path="model.pmx",
-                vmd_source_path="motion.vmd",
                 profile=profile,
-                source_bone_frames=source_frames,
             )
 
         model_create.assert_called_once_with(b"pmx")
         clip_create.assert_called_once_with(model, b"vmd")
         self.assertEqual(len(frames), 2)
-        self.assertEqual(frames[1].source_interpolation, raw_interpolation)
-        self.assertEqual(provenance["evaluation_mode"], "authored_sparse_keys")
+        self.assertFalse(hasattr(frames[1], "source_interpolation"))
+        self.assertEqual(registration["evaluation_mode"], "authored_sparse_keys")
         self.assertEqual(profile["vmd_converter"]["registered_sparse"]["fallback"], "none")
 
     def test_missing_introspection_fails_without_raw_fallback(self):
@@ -159,7 +146,6 @@ class TestRegisteredSparsePreflight(TestCase):
                     vmd_bytes=b"vmd",
                     pmx_bytes=b"pmx",
                     pmx_path="model.pmx",
-                    vmd_source_path="motion.vmd",
                     profile={},
                 )
 

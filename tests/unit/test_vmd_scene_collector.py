@@ -268,6 +268,33 @@ class TestVmdSceneCollector(unittest.TestCase):
         )
 
     def setUp(self):
+        # This fake only stores endpoint values; it cannot evaluate Maya curves.
+        # Keep routing/ownership/spooling tests isolated from numeric fitting,
+        # which is covered by test_vmd_curve_fit and the real-Maya export tests.
+        def endpoint_rows(name, times, sample, *, morph=False, authored_times=None):
+            result = []
+            seen = set()
+            for time in times:
+                if round(time) in seen:
+                    continue
+                seen.add(round(time))
+                value = sample(time)
+                if morph:
+                    result.append({"morph_name": name, "frame_number": round(time), "weight": value})
+                else:
+                    result.append({"bone_name": name, "frame_number": round(time),
+                                   "position": value[0], "rotation": value[1]})
+            return result
+        fitter = mock.patch.object(collector_module, "fit_scene_track", side_effect=endpoint_rows)
+        grid = mock.patch.object(collector_module, "validation_times", side_effect=lambda times, converter: sorted(set(times)))
+        fitter.start()
+        grid.start()
+        self.addCleanup(fitter.stop)
+        self.addCleanup(grid.stop)
+        step = mock.patch.object(collector_module, "fit_step_track", side_effect=lambda times, sample: [
+            {"frame_number": round(t), "visible": True, "ik_states": sample(t)} for t in times])
+        step.start()
+        self.addCleanup(step.stop)
         self.cmds = FakeCmds()
         self.original_cmds = collector_module.cmds
         self.original_read_control_rig_metadata = collector_module.read_mmd_control_rig_metadata
@@ -4648,7 +4675,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual([row["frame_number"] for row in left_ik_frames], [0, 1, 2, 3])
         self.assertEqual(left_ik_frames[-1]["position"], (0.35, 0.0, 0.0))
 
-    def test_experimental_rotation_tracks_stay_sparse_while_other_bones_are_dense(self):
+    def test_rotation_tracks_do_not_use_saved_interpolation_to_bypass_sampling(self):
         self.cmds.node_types.update(
             {
                 "sparse_joint": "joint",
@@ -4671,7 +4698,6 @@ class TestVmdSceneCollector(unittest.TestCase):
         frames = VmdSceneCollector().collect_bone_frames(
             ["sparse_joint", "dense_joint"],
             dense_sample=True,
-            rotation_interpolation={"下半身": {2: bytes([20] * 64)}},
             time_converter=lambda value: value,
         )
 
@@ -4681,7 +4707,7 @@ class TestVmdSceneCollector(unittest.TestCase):
         dense_frames = [
             row["frame_number"] for row in frames if row["bone_name"] == "左足ＩＫ"
         ]
-        self.assertEqual(sparse_frames, [0, 2])
+        self.assertEqual(sparse_frames, [0, 1, 2])
         self.assertEqual(dense_frames, [0, 1, 2])
 
     def test_rejects_control_rig_export_while_editing(self):
