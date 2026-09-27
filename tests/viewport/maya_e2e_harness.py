@@ -14,6 +14,23 @@ from tests.common import maya_commandport
 LOG_POLL_INTERVAL = 0.5
 
 
+def _background_exit_code(out_dir: Path, process_id: int) -> int | None:
+    """Read only the exit record belonging to this run's launched child."""
+    path = out_dir / "background-launch.jsonl"
+    try:
+        records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    except (OSError, ValueError):
+        return None
+    owned = False
+    for record in records:
+        if record.get("event") == "started":
+            owned = record.get("pid") == process_id
+        elif owned and record.get("event") == "exited":
+            value = record.get("returncode")
+            return value if type(value) is int else None
+    return None
+
+
 def _print_log_line(line: str) -> None:
     """Stream one log line without letting a narrow Windows console abort E2E."""
 
@@ -97,6 +114,8 @@ def run_maya_e2e(
     maya_owned = False
     profile_owned = False
     process_exited = False
+    quit_requested = False
+    forced_termination = False
     maya_app_dir = (out_dir / f"maya-app-{version}-{port}").resolve()
     commandport_script = (out_dir / f"commandport_{port}.mel").resolve()
     try:
@@ -212,6 +231,7 @@ def run_maya_e2e(
                         except Exception:
                             detached_listener_owned = False
                 if detached_process_owned and detached_listener_owned:
+                    quit_requested = True
                     maya_commandport.quit_maya(port)
                     time.sleep(quit_delay)
             finally:
@@ -230,6 +250,7 @@ def run_maya_e2e(
                         except Exception:
                             process_exited = False
                         if not process_exited and terminate_process:
+                            forced_termination = True
                             try:
                                 process_exited = maya_commandport.terminate_maya_process(
                                     maya_process_id,
@@ -246,6 +267,7 @@ def run_maya_e2e(
                     elif proc is not None and proc.poll() is not None:
                         process_exited = True
                     elif proc is not None and terminate_process:
+                        forced_termination = True
                         proc.terminate()
                         proc.wait(timeout=30)
                         process_exited = True
@@ -253,7 +275,36 @@ def run_maya_e2e(
                     maya_commandport.close_process_logs(proc)
         if profile_owned and (not maya_owned or process_exited):
             shutil.rmtree(maya_app_dir, ignore_errors=True)
+        returncode = None
+        if maya_owned:
+            if proc is not None:
+                returncode = proc.poll()
+            elif maya_process_id is not None and process_exited:
+                # The guard can record the child exit just after the PID query.
+                deadline = time.monotonic() + 2.0
+                while True:
+                    returncode = _background_exit_code(out_dir, maya_process_id)
+                    if returncode is not None or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+            shutdown = {
+                "pid": maya_process_id,
+                "quit_requested": quit_requested,
+                "forced_termination": forced_termination,
+                "process_exited": process_exited,
+                "returncode": returncode,
+            }
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "shutdown.json").write_text(
+                json.dumps(shutdown, indent=2) + "\n", encoding="utf-8"
+            )
         if maya_owned and not process_exited and pending_error is None:
             raise RuntimeError(
                 f"Maya process exit was not verified for {commandport_script}"
+            )
+        if maya_owned and pending_error is None and (forced_termination or returncode != 0):
+            raise RuntimeError(
+                "Maya did not exit normally: "
+                f"forced_termination={forced_termination}, returncode={returncode}; "
+                f"see {out_dir / 'shutdown.json'}"
             )

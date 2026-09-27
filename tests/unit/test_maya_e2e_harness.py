@@ -11,6 +11,45 @@ from tests.viewport import maya_e2e_harness as harness
 
 
 class TestMayaE2EHarness(unittest.TestCase):
+    def test_background_exit_code_requires_matching_child(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            path = root / "background-launch.jsonl"
+            self.assertIsNone(harness._background_exit_code(root, 123))
+            path.write_text('{"event":"started","pid":456}\n'
+                            '{"event":"exited","returncode":0}\n', encoding="utf-8")
+            self.assertIsNone(harness._background_exit_code(root, 123))
+            path.write_text('{"event":"started","pid":123}\n'
+                            '{"event":"exited","returncode":4294967295}\n', encoding="utf-8")
+            self.assertEqual(4294967295, harness._background_exit_code(root, 123))
+
+    def test_pass_report_does_not_hide_failed_shutdown(self):
+        for code, forced in ((1, False), (None, True)):
+            with self.subTest(code=code, forced=forced), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                process = mock.Mock()
+                process.poll.return_value = code
+                with mock.patch.object(harness.sys, "platform", "linux"), \
+                     mock.patch.object(harness.maya_commandport, "is_port_open", return_value=False), \
+                     mock.patch.object(harness.maya_commandport, "launch_maya", return_value=process), \
+                     mock.patch.object(harness.maya_commandport, "wait_for_port"), \
+                     mock.patch.object(harness.maya_commandport, "send_python"), \
+                     mock.patch.object(harness, "monitor_result", return_value={"status": "pass"}), \
+                     mock.patch.object(harness.maya_commandport, "quit_maya"), \
+                     mock.patch.object(harness.maya_commandport, "close_process_logs"), \
+                     mock.patch.object(harness.time, "sleep"):
+                    with self.assertRaisesRegex(RuntimeError, "did not exit normally"):
+                        harness.run_maya_e2e(
+                            project_root=root, version="2024", out_dir=root / "out",
+                            port=7788, timeout=1, log_path=root / "probe.log",
+                            report_path=root / "probe.json", command="run()",
+                            marker="DONE", send_label="<unit>", quit_delay=0,
+                        )
+                shutdown = json.loads((root / "out/shutdown.json").read_text())
+                self.assertEqual(forced, shutdown["forced_termination"])
+                self.assertEqual(code, shutdown["returncode"])
+                self.assertTrue(shutdown["process_exited"])
+
     def test_monitor_escapes_log_lines_for_cp932_console(self):
         class Cp932Console(io.StringIO):
             encoding = "cp932"
@@ -61,7 +100,8 @@ class TestMayaE2EHarness(unittest.TestCase):
     def test_run_orders_cleanup_launch_send_and_close(self):
         events = []
         process = mock.Mock()
-        process.poll.return_value = None
+        process.poll.return_value = 0
+        process.returncode = 0
 
         def record(name, result=None):
             def call(*_args, **_kwargs):
@@ -128,13 +168,11 @@ class TestMayaE2EHarness(unittest.TestCase):
                 "monitor",
                 "quit",
                 "sleep",
-                "terminate",
-                "process-wait",
                 "close",
             ],
             events,
         )
-        process.terminate.assert_called_once_with()
+        process.terminate.assert_not_called()
         maya_app_dir = Path(launch.call_args.kwargs["env_overrides"]["MAYA_APP_DIR"])
         self.assertTrue(maya_app_dir.is_absolute())
         self.assertFalse(maya_app_dir.exists())
@@ -254,7 +292,8 @@ class TestMayaE2EHarness(unittest.TestCase):
 
             self.assertFalse(profile.exists())
 
-    def test_run_waits_for_detached_maya_before_profile_cleanup(self):
+    @mock.patch.object(harness, "_background_exit_code", return_value=0)
+    def test_run_waits_for_detached_maya_before_profile_cleanup(self, _exit_code):
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = Path(temp_dir) / "out"
             profile = out_dir / "maya-app-2024-7788"
