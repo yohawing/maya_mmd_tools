@@ -147,15 +147,22 @@ def _author_vmd_rotation_time_curve(
     time_converter: Callable[[float], float],
 ) -> dict[str, Any]:
     """Populate and connect a validated TT node."""
-    cmds.cutKey(time_curve, clear=True)
     serialized_interpolation = []
+    times = []
     for frame in ordered:
         vmd_frame = float(get_frame_number(frame))
         time = float(time_converter(vmd_frame))
-        cmds.setKeyframe(time_curve, time=time, value=time)
+        times.append(time)
         serialized_interpolation.append(
             {"frame": vmd_frame, **_serialized_interpolation_payload(frame)}
         )
+    native_keys = getattr(cmds, "mmdVmdTimeCurveKeys", None)
+    if callable(native_keys):
+        native_keys(payload=json.dumps({"curve": time_curve, "times": times}, allow_nan=False))
+    else:
+        cmds.cutKey(time_curve, clear=True)
+        for time in times:
+            cmds.setKeyframe(time_curve, time=time, value=time)
     cmds.keyTangent(time_curve, edit=True, weightedTangents=True)
     pending = None
 

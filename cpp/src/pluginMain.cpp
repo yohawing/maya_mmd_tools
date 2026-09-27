@@ -36,6 +36,7 @@
 #include "MmdAuthoringMaterialValueCommand.h"
 #include "MmdAuthoringMaterialOutlineCommand.h"
 #include "MmdVmdBatchSamplerCommand.h"
+#include "MmdVmdTimeCurveCommand.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -56,6 +57,7 @@ static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialValueCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
 static bool sCppRegisteredMmdVmdBatchSamplerCommand = false;
+static bool sCppRegisteredMmdVmdTimeCurveCommand = false;
 static MmdOrderedRenderOverride* sMmdOrderedOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -416,6 +418,14 @@ MStatus initializePlugin(MObject obj)
         sCppRegisteredMmdVmdBatchSamplerCommand = true;
     }
 
+    status = plugin.registerCommand("mmdVmdTimeCurveKeys",
+                                    MmdVmdTimeCurveCommand::creator,
+                                    MmdVmdTimeCurveCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning("mmdVmdTimeCurveKeys registration failed.");
+    } else {
+        sCppRegisteredMmdVmdTimeCurveCommand = true;
+    }
     return MS::kSuccess;
 }
 
@@ -452,6 +462,11 @@ MStatus uninitializePlugin(MObject obj)
             MGlobal::displayWarning("Failed to deregister mmdVmdBatchSample command.");
         }
         sCppRegisteredMmdVmdBatchSamplerCommand = false;
+    }
+    if (sCppRegisteredMmdVmdTimeCurveCommand) {
+        status = plugin.deregisterCommand("mmdVmdTimeCurveKeys");
+        if (!status) return status;
+        sCppRegisteredMmdVmdTimeCurveCommand = false;
     }
 
     // Receiver body shaders keep a supported MRenderTargetAssignment to the
