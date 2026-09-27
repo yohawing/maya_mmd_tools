@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, Optional, Tuple
 
@@ -156,3 +157,39 @@ def convert_vmd_quat_to_bind_space_rotate(
         if q_jo is not None:
             return q_jo * q_maya * q_jo.inverse()
         return q_maya
+
+
+def convert_vmd_quats_to_joint_rotates(converter, joint_name, quaternions, key_route=None):
+    """Convert one authored track in C++; return None when the command is absent.
+
+    Only plain numerical inputs cross the command boundary. Bind terms and
+    rotation orders are read once, so the command never evaluates or edits DG.
+    """
+    command = getattr(cmds, "mmdVmdRotationSamples", None)
+    if not callable(command):
+        return None
+    q_jo, rotate_order = get_joint_orient_cache(converter, joint_name)
+    try:
+        terms = _bind_space_terms(converter, joint_name)
+    except Exception:
+        # Retain the scalar converter's fallback for missing bind information.
+        terms = None
+    request = {
+        "quaternions": [float(v) for q in quaternions for v in q],
+        "joint_orient": list(q_jo) if q_jo is not None else [0., 0., 0., 1.],
+        "rotate_order": rotate_order,
+    }
+    if terms is not None:
+        translation, correction, parent, inverse_parent = terms
+        request["bind"] = {"translation": list(translation), "correction": list(correction),
+                           "parent": list(parent), "inverse_parent": list(inverse_parent)}
+    basis = (key_route or {}).get("authoring_basis")
+    if basis:
+        from ..core.mmd_control_rig_basis import _coerce_quaternion
+        request["basis"] = _coerce_quaternion(basis, "basis quaternion")
+        control = key_route.get("attr_targets", {}).get("rotateX", (joint_name, "rotateX"))[0]
+        request["control_order"] = int(cmds.getAttr(f"{control}.rotateOrder"))
+    result = command(payload=json.dumps(request, allow_nan=False)) or []
+    if len(result) != len(quaternions)*3:
+        raise RuntimeError("Native VMD rotation batch returned an invalid sample count")
+    return [tuple(result[i:i+3]) for i in range(0, len(result), 3)]

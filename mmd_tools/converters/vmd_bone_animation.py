@@ -36,6 +36,17 @@ def _sparse_rotation_samples(
     key_route: Optional[dict] = None,
 ) -> List[tuple]:
     """Convert only authored VMD rotation keys for editable rig curves."""
+    batch = getattr(context, "convert_vmd_quats_to_joint_rotates", None)
+    if batch is not None and len(frames) >= 32:
+        quaternions = [frame.rotation if hasattr(frame, "rotation") else frame.get("rotation", [0,0,0,1])
+                       for frame in frames]
+        rotations = batch(joint, quaternions, key_route)
+        if rotations is not None:
+            samples = {}
+            for frame, rotation in zip(frames, rotations):
+                time = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+                samples[float(context.vmd_frame_to_maya_time(time))] = rotation
+            return sorted(samples.items())
     samples_by_time = {}
     basis = (key_route or {}).get("authoring_basis")
     if basis and frames:

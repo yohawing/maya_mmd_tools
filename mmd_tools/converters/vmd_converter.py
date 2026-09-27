@@ -79,6 +79,7 @@ from .vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nod
 from .vmd_ik_passthrough import collect_mmd_ik_passthrough_info, key_mmd_ik_passthrough_rotation
 from .vmd_joint_rotation import (
     convert_vmd_quat_to_joint_rotate,
+    convert_vmd_quats_to_joint_rotates,
     get_joint_orient_cache,
 )
 from .vmd_legacy_bone_routes import (
@@ -281,6 +282,7 @@ class VmdConverter:
             samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
             batch_key_scalar_channels=self._batch_key_scalar_channels,
             apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
+            convert_vmd_quats_to_joint_rotates=partial(convert_vmd_quats_to_joint_rotates, self),
         )
 
     def _import_context(

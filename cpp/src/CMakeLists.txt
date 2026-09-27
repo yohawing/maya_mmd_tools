@@ -83,6 +83,7 @@ set(SOURCES
     MmdAuthoringMaterialOutlineCommand.cpp
     MmdVmdBatchSamplerCommand.cpp
     MmdVmdTimeCurveCommand.cpp
+    MmdVmdRotationCommand.cpp
 )
 
 set(HEADERS
@@ -108,6 +109,7 @@ set(HEADERS
     MmdAuthoringMaterialOutlineCommand.h
     MmdVmdBatchSamplerCommand.h
     MmdVmdTimeCurveCommand.h
+    MmdVmdRotationCommand.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})
