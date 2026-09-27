@@ -151,14 +151,7 @@ def _author_vmd_rotation_time_curve(
         vmd_frame = float(get_frame_number(frame))
         time = float(time_converter(vmd_frame))
         times.append(time)
-    native_keys = getattr(cmds, "mmdVmdTimeCurveKeys", None)
-    if callable(native_keys):
-        native_keys(payload=json.dumps({"curve": time_curve, "times": times}, allow_nan=False))
-    else:
-        cmds.cutKey(time_curve, clear=True)
-        for time in times:
-            cmds.setKeyframe(time_curve, time=time, value=time)
-    cmds.keyTangent(time_curve, edit=True, weightedTangents=True)
+    tangent_runs = []
     pending = None
 
     def flush_tangents():
@@ -166,9 +159,7 @@ def _author_vmd_rotation_time_curve(
         nonlocal pending
         if pending is not None:
             first_start, first_end, last_start, last_end, handles = pending
-            _set_segment_tangents(
-                time_curve, (first_start, last_start), (first_end, last_end), *handles
-            )
+            tangent_runs.append((first_start, last_start, first_end, last_end, *handles))
             pending = None
 
     for previous, arriving in zip(ordered, ordered[1:]):
@@ -196,6 +187,27 @@ def _author_vmd_rotation_time_curve(
             flush_tangents()
             pending = (start, end, start, end, handles)
     flush_tangents()
+
+    native_keys = getattr(cmds, "mmdVmdTimeCurveKeys", None)
+    native_tangents = False
+    if callable(native_keys):
+        try:
+            native_tangents = native_keys(version=True) >= 2
+        except RuntimeError:
+            # An older loaded plugin can still batch keys; retain its tangent path.
+            pass
+        payload = {"curve": time_curve, "times": times}
+        if native_tangents:
+            payload["tangent_runs"] = tangent_runs
+        native_keys(payload=json.dumps(payload, allow_nan=False))
+    else:
+        cmds.cutKey(time_curve, clear=True)
+        for time in times:
+            cmds.setKeyframe(time_curve, time=time, value=time)
+    if not native_tangents:
+        cmds.keyTangent(time_curve, edit=True, weightedTangents=True)
+        for first_start, last_start, first_end, last_end, *handles in tangent_runs:
+            _set_segment_tangents(time_curve, (first_start, last_start), (first_end, last_end), *handles)
 
     control_uuid = _single_uuid(control)
     _set_marker(time_curve, _MARKER_ATTR, True, "bool")

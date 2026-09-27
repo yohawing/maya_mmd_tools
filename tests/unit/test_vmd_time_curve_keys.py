@@ -63,3 +63,45 @@ class TestVmdTimeCurveKeys(MayaTestBase):
         with self.assertRaises(RuntimeError):
             cmds.mmdVmdTimeCurveKeys(payload=json.dumps({"curve": curve, "times": [1, 2]}))
         self.assertEqual(cmds.keyframe(curve, query=True, valueChange=True), [5.])
+
+    def test_native_tangents_match_commands_with_units_and_undo(self):
+        from mmd_tools.converters.vmd_rotation_time_curve import _set_segment_tangents
+        old_unit = cmds.currentUnit(query=True, time=True)
+        try:
+            for unit in ("film", "ntsc", "ntscf"):
+                with self.subTest(unit=unit):
+                    cmds.currentUnit(time=unit)
+                    times = [0., 1.25, 2.5, 9., 9.]
+                    runs = [[0., 1.25, 1.25, 2.5, .1, .8, .3, .15],
+                            [2.5, 2.5, 9., 9., 3., .5, .01, 2.]]
+                    reference = cmds.createNode("animCurveTT")
+                    curve = cmds.createNode("animCurveTT")
+                    for time in times:
+                        cmds.setKeyframe(reference, time=time, value=time)
+                    cmds.keyTangent(reference, edit=True, weightedTangents=True)
+                    for a, b, c, d, *handles in runs:
+                        _set_segment_tangents(reference, (a,b), (c,d), *handles)
+                    cmds.setKeyframe(curve, time=7., value=13.)
+                    cmds.mmdVmdTimeCurveKeys(payload=json.dumps({"curve":curve, "times":times, "tangent_runs":runs}))
+                    def verify():
+                        for time in (.125, .6, 1.5, 2.4, 3., 5., 8.5):
+                            self.assertAlmostEqual(cmds.keyframe(curve, query=True, eval=True, time=(time,time))[0],
+                                                   cmds.keyframe(reference, query=True, eval=True, time=(time,time))[0], places=6)
+                        for flag in ("inAngle", "outAngle", "inWeight", "outWeight"):
+                            actual = cmds.keyTangent(curve, query=True, **{flag:True})
+                            expected = cmds.keyTangent(reference, query=True, **{flag:True})
+                            for a,b in zip(actual,expected):
+                                self.assertAlmostEqual(a,b,places=5)
+                    verify()
+                    cmds.undo()
+                    self.assertEqual(cmds.keyframe(curve, query=True, timeChange=True), [7.])
+                    self.assertEqual(cmds.keyframe(curve, query=True, valueChange=True), [13.])
+                    cmds.redo()
+                    verify()
+                    before = cmds.keyframe(curve, query=True, valueChange=True)
+                    with self.assertRaises(RuntimeError):
+                        cmds.mmdVmdTimeCurveKeys(payload=json.dumps({"curve":curve, "times":times,
+                            "tangent_runs":[[0,0,100,100,1,1,1,1]]}))
+                    self.assertEqual(cmds.keyframe(curve, query=True, valueChange=True), before)
+        finally:
+            cmds.currentUnit(time=old_unit)

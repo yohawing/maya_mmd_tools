@@ -2563,3 +2563,12 @@ def tda_semistandard_reference(session: nox.Session) -> None:
     if out_path:
         args.extend(("--out", out_path))
     session.run(sys.executable, *args, external=True)
+
+
+@nox.session(venv_backend="none")
+def vmd_import_batch(session: nox.Session) -> None:
+    """Measure reference/native VMD import batches in one Maya process."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    args = _without_option(list(session.posargs), "--maya")
+    _run_mayapy_probe(session, _mayapy(version), "tools/probes/vmd_import_batch.py",
+                      args, {"--out"}, utf8=True)
