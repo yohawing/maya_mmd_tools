@@ -1067,8 +1067,10 @@ unsigned int buildVertexMorphBlendShapes(
 
     std::string blendShapeNode;   // created lazily on first attached target
     unsigned int created = 0;
+    MIntArray sourceMorphIndices;
 
-    for (const json& morph : morphs) {
+    for (size_t morphIndex = 0; morphIndex < morphs.size(); ++morphIndex) {
+        const json& morph = morphs[morphIndex];
         if (!morph.is_object()) {
             continue;
         }
@@ -1246,7 +1248,30 @@ unsigned int buildVertexMorphBlendShapes(
                 targetName.c_str());
             return created;
         }
+        sourceMorphIndices.append(static_cast<int>(morphIndex));
         ++created;
+    }
+
+    if (created > 0) {
+        // Preserve the actual target order, including skipped malformed or
+        // welded-away morphs, for the Python Unicode alias bridge.
+        MSelectionList selection;
+        MObject node;
+        MStatus status = selection.add(blendShapeNode.c_str());
+        if (status) status = selection.getDependNode(0, node);
+        MFnDependencyNode dependency(node, &status);
+        if (status) {
+            MFnIntArrayData data;
+            MObject value = data.create(sourceMorphIndices, &status);
+            MFnTypedAttribute attribute;
+            MObject attr = attribute.create("mmd_source_morph_indices",
+                                           "mmd_source_morph_indices",
+                                           MFnData::kIntArray, value, &status);
+            if (status) status = dependency.addAttribute(attr);
+        }
+        if (!status) {
+            MGlobal::displayWarning("[mmdFastLoad] Failed to persist morph target indices.");
+        }
     }
 
     return created;

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Kept VMD IK solver inputs on their Animation Layer so layer weight and motion clearing respect ownership.
 - Preserved empty indexed vertex morphs in PMX export and bone morph ownership during name translation.
+- Preserved source morph identities and unique aliases when native import filters vertex morph targets.
 - Corrected model overview counts for intermediate meshes and registry-owned morphs.
 - Preserved editable smoothing across welded UV seams and restored transparent material passes after scene reload.
 - Corrected left finger control placement and curl axes, and synchronized edits across selected Animator Toolset morph rows.

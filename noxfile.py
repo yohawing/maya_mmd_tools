@@ -1268,6 +1268,25 @@ def ccdik_cache_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def fast_morph_indices_smoke(session: nox.Session) -> None:
+    """Verify native morph target identity, aliases, and scene reload."""
+    _run_cpp_plugin_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        scripts=("tools/smoke/maya_fast_morph_indices.py",),
+        require_plugin=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def fast_load_normals_smoke(session: nox.Session) -> None:
     """Verify authored normals in mmdFastLoad and its skinned import path."""
     _run_cpp_plugin_smoke(

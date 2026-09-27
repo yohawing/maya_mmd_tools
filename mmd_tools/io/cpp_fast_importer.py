@@ -814,7 +814,25 @@ def _apply_fast_morph_metadata(
         if weight_count == 0:
             return blend_shapes
 
-        candidates = _fast_vertex_morph_candidates(source)
+        if cmds_module.attributeQuery("mmd_source_morph_indices", node=blend_shape, exists=True):
+            # C++ owns target filtering (including per-mesh weld conflicts).
+            # Resolve its recorded indices against parsed PMX metadata instead
+            # of inferring target identity from matching candidate counts.
+            indices = cmds_module.getAttr(f"{blend_shape}.mmd_source_morph_indices")
+            morphs = source.get("morphs")
+            if (
+                not isinstance(indices, (list, tuple))
+                or not isinstance(morphs, list)
+                or len(indices) != weight_count
+                or any(type(index) is not int or not 0 <= index < len(morphs) for index in indices)
+                or len(set(indices)) != len(indices)
+                or any(not isinstance(morphs[index], dict) or morphs[index].get("type") != "vertex" for index in indices)
+            ):
+                logger.debug("Fast morph metadata skipped: invalid C++ source morph indices")
+                return blend_shapes
+            candidates = [{"index": index, "name": morphs[index].get("name", "")} for index in indices]
+        else:
+            candidates = _fast_vertex_morph_candidates(source)
         if candidates is None or len(candidates) != weight_count:
             logger.debug(
                 "Fast morph metadata skipped: C++ target count %d does not match parsed candidates %s",

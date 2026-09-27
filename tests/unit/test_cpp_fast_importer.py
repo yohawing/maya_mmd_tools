@@ -1163,6 +1163,41 @@ class TestFastMorphMetadata(unittest.TestCase):
         )
 
     @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_cpp_target_indices_preserve_aliases_after_filtered_morphs(self, mock_source):
+        source = self._source()
+        # These source entries can be rejected by C++ for malformed positions,
+        # non-finite deltas, or a conflicting weld. The bridge must use the
+        # actual target list, without repeating the native filtering policy.
+        source["morphs"][0]["vertexOffsets"] = [{"vertexIndex": 0, "position": []}]
+        source["morphs"][2]["vertexOffsets"] = [{"vertexIndex": 1, "position": [float("nan"), 0, 0]}]
+        mock_source.return_value = source
+        cmds = self._cmds(2, {0: "cpp_valid", 1: "cpp_empty"})
+        cmds.attributeQuery.side_effect = lambda name, **_kwargs: name == "mmd_source_morph_indices"
+        cmds.getAttr.return_value = [3, 4]
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(cmds._alias_state["blendShape1.weight[0]"], "a_b")
+        self.assertEqual(cmds._alias_state["blendShape1.weight[1]"], "morph_1")
+        mapping = json.loads(cmds.setAttr.call_args.args[1])
+        self.assertEqual(mapping, {"0": {"name": "a_b", "index": 3}})
+        mock_source.assert_called_once()
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_invalid_cpp_target_indices_do_not_fall_back_to_equal_counts(self, mock_source):
+        mock_source.return_value = self._source()
+        for indices in ([0, 2, 3, 99], [0, 2, 3, 3], [0, 1, 3, 4], [0, 2, 3]):
+            with self.subTest(indices=indices):
+                cmds = self._cmds(4, {0: "cpp_alias"})
+                cmds.attributeQuery.return_value = True
+                cmds.getAttr.return_value = indices
+
+                _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+                self.assertEqual(cmds._alias_state, {"blendShape1.weight[0]": "cpp_alias"})
+                cmds.setAttr.assert_not_called()
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
     def test_count_mismatch_does_not_mutate_aliases_or_json(self, mock_source):
         mock_source.return_value = self._source()
         cmds = self._cmds(3, {0: "cpp_a", 1: "cpp_b", 2: "cpp_c"})
