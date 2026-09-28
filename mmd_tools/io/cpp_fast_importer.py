@@ -272,16 +272,20 @@ def fast_import(
             command_args["sp"] = True
         if vp2_ownership:
             command_args["vp2Ownership"] = True
-        try:
-            native_mesh = cmds.mmdFastLoad(**command_args)
-        except RuntimeError as exc:
-            if vp2_ownership:
-                raise
-            logger.debug("Fast native geometry unavailable: %s", exc)
-            return None
-        expected = 1 if split else (3 if vp2_ownership else 2)
-        if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
-            raise RuntimeError("mmdFastLoad returned an invalid geometry result")
+        native_mesh = []
+        # Bone-only PMX files still use native parsing and shared authoring,
+        # but have no geometry for MFnMesh to create.
+        if pmx.vertices or pmx.faces:
+            try:
+                native_mesh = cmds.mmdFastLoad(**command_args)
+            except RuntimeError as exc:
+                if vp2_ownership:
+                    raise
+                logger.debug("Fast native geometry unavailable: %s", exc)
+                return None
+            expected = 1 if split else (3 if vp2_ownership else 2)
+            if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
+                raise RuntimeError("mmdFastLoad returned an invalid geometry result")
         if options is not None:
             _record_physics_compatibility_warnings(pmx, options)
         import_options = dict(options or {})
@@ -290,9 +294,9 @@ def fast_import(
             "_cpp_fast_load_geometry": native_mesh,
             "use_cpp_vp2_ownership": vp2_ownership,
         })
-        native_identity = cmds.ls(native_mesh[0], uuid=True)
+        native_identity = cmds.ls(native_mesh[0], uuid=True) if native_mesh else []
         proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
-        if split:
+        if split and native_mesh:
             # Split source transforms leave their temporary group during
             # authoring; render shapes can then leave those source transforms.
             sources = cmds.listRelatives(

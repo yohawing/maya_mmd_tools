@@ -560,7 +560,7 @@ class TestFastImportMetadata(unittest.TestCase):
     def test_full_fast_import_shares_options_and_scale_with_pmx_pipeline(self):
         """Native geometry retains ordinary physics, morph and scale options."""
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
-        parsed = object()
+        parsed = SimpleNamespace(vertices=[object()], faces=[])
         options = {"import_physics": True, "setup_rig": False, "custom_namespace": "hero",
                    "separate_meshes_by_material": False}
         progress = MagicMock()
@@ -591,12 +591,31 @@ class TestFastImportMetadata(unittest.TestCase):
             ), patch.object(Path, "exists", return_value=True), patch.object(
                 cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
             ), patch.object(
-                cpp_fast_importer, "parse_pmx_native", return_value=None if failure == "parse" else object()
+                cpp_fast_importer, "parse_pmx_native", return_value=None if failure == "parse" else SimpleNamespace(vertices=[object()], faces=[])
             ), patch("maya.cmds.mmdFastLoad", create=True, side_effect=RuntimeError("unavailable")), patch(
                 "mmd_tools.io.pmx_importer.import_pmx_file"
             ) as author:
                 self.assertIsNone(fast_import("model.pmx", mesh_only=False))
                 author.assert_not_called()
+
+    def test_bone_only_native_import_skips_mesh_creation(self):
+        """Empty geometry still authors native-parsed bones via the shared pipeline."""
+        parsed = PmxData()
+        for split in (False, True):
+            with self.subTest(split=split), patch.object(
+                cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]
+            ), patch.object(Path, "exists", return_value=True), patch.object(
+                cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
+            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=parsed), patch(
+                "maya.cmds.mmdFastLoad", create=True
+            ) as geometry, patch(
+                "mmd_tools.io.pmx_importer.import_pmx_file", return_value="bone_root"
+            ) as author:
+                self.assertEqual(fast_import("bones.pmx", mesh_only=False,
+                                             options={"separate_meshes_by_material": split}), "bone_root")
+                geometry.assert_not_called()
+                self.assertIs(author.call_args.args[0], parsed)
+                self.assertEqual(author.call_args.args[3]["_cpp_fast_load_geometry"], [])
 
     def test_vp2_command_failure_preserves_original_error(self):
         """Required VP2 imports must surface the command's actual rejection."""
@@ -605,7 +624,7 @@ class TestFastImportMetadata(unittest.TestCase):
                 cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]
             ), patch.object(Path, "exists", return_value=True), patch.object(
                 cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
-            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=object()), patch.object(
+            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])), patch.object(
                 cpp_fast_importer, "_require_dx11_for_vp2_ownership"
             ), patch("maya.cmds.mmdFastLoad", create=True, side_effect=RuntimeError("non-finite normal")):
                 with self.assertRaisesRegex(RuntimeError, "non-finite normal"):
@@ -614,7 +633,7 @@ class TestFastImportMetadata(unittest.TestCase):
     def test_failed_full_import_removes_separated_proxy_owner(self):
         with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]), patch.object(
             Path, "exists", return_value=True
-        ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=object()), patch.object(
+        ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])), patch.object(
             cpp_fast_importer, "_require_dx11_for_vp2_ownership"
         ), patch.object(cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True), patch(
             "maya.cmds.mmdFastLoad", create=True, return_value=["source", "mesh", "proxy"]
