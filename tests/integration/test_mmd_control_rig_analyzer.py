@@ -2888,14 +2888,14 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
 
     def test_baked_collector_exports_append_inputs_and_ik_states(self):
         root = self._import_fixture()
-        self.assertTrue(
-            import_mmd_file(
-                _VMD_PATH,
-                options={"target_model": root, "pmx_path": _PMX_PATH},
-            )
-        )
-        build_mmd_control_rig(root)
+        rig = build_mmd_control_rig(root)
         enter_mmd_control_rig_edit(root)
+        # Keep the success fixture representable in VMD. The full imported
+        # Euler motion's subframe rejection is covered by the next test.
+        center = rig.controls["center"]
+        cmds.setKeyframe(center, attribute="translateX", time=0, value=0.0)
+        cmds.setKeyframe(center, attribute="translateX", time=10, value=0.5)
+        cmds.keyTangent(center, attribute="translateX", inTangentType="linear", outTangentType="linear")
         bake_mmd_control_rig(root)
         append_node = (cmds.ls(type="mmdAppend") or [None])[0]
         self.assertTrue(append_node)
@@ -2911,6 +2911,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         append_bone = cmds.getAttr(f"{append_joint}.mmd_bone_name")
         cmds.setKeyframe(append_node, attribute="baseRotateX", time=0, value=0.0)
         cmds.setKeyframe(append_node, attribute="baseRotateX", time=10, value=15.0)
+        cmds.keyTangent(append_node, attribute="baseRotateX", inTangentType="linear", outTangentType="linear")
         collected = VmdSceneCollector().collect({"target_model": root})
         output_path = self.get_temp_filename("mmd_control_rig_baked.vmd")
         VmdExporter().export_vmd_animation(output_path, collected)
@@ -2918,6 +2919,9 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
 
         exported_bones = {frame.bone_name for frame in parsed.bone_frames}
         self.assertIn(append_bone, exported_bones)
+        append_frames = [frame for frame in parsed.bone_frames if frame.bone_name == append_bone]
+        self.assertGreaterEqual(len(append_frames), 2)
+        self.assertNotEqual(append_frames[0].rotation, append_frames[-1].rotation)
         # The current collector contract does not export the unsupported IK
         # show/hide section from this baked Control Rig route.
         self.assertEqual(parsed.ik_show_hide_frames, [])

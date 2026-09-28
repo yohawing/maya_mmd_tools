@@ -12,9 +12,6 @@ from mmd_tools.converters.vmd_camera_animation import get_or_create_camera
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_light_animation import get_or_create_light
 from mmd_tools.converters.vmd_import_state import clear_existing_motion
-from mmd_tools.converters.vmd_rotation_time_curve import (
-    rotation_time_curve_interpolation_by_bone,
-)
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.core import mmd_control_rig_builder
@@ -249,14 +246,18 @@ class TestCr06103SceneTransaction(MayaTestBase):
         self.assertEqual(metadata_after["owner"], "CONTROL_OWNED")
         self.assertEqual(metadata_after["controls"], metadata_a["controls"])
 
-    def test_registered_control_rig_rotation_time_curve_uses_raw_export_bytes(self):
-        """Semantic registered curves must not be coerced to raw bytes."""
+    def test_registered_control_rig_rotation_time_curve_authors_scene_keys(self):
+        """Registered rotation interpolation must author an editable time curve."""
         target_root = self._import_control_fixture("cr06103_registered_time_curve")
         motion = _synthetic_motion(
             ("センター", 0, (0.25, 0.0, 0.0)),
             ("センター", 30, (0.75, 0.0, 0.0)),
         )
-        expected = bytes(motion.bone_frames[1].interpolation)
+        interpolation = bytearray(motion.bone_frames[1].interpolation)
+        # Model-paired registration reads rotation from the fourth block.
+        interpolation[52], interpolation[60] = 100, 120
+        motion.bone_frames[1].interpolation = bytes(interpolation)
+        motion.bone_frames[1].rotation = (0.0, 0.0, 0.5, 0.8660254037844386)
         converter = VmdConverter()
         converter.use_quaternion_interpolation = True
         converter.use_vmd_rotation_time_curve = True
@@ -272,8 +273,17 @@ class TestCr06103SceneTransaction(MayaTestBase):
 
         metadata = json.loads(cmds.getAttr(f"{target_root}.mmd_control_rig_json"))
         self.assertEqual(metadata["rotationInterpolationMode"], "vmd_time_curve_experimental")
-        interpolation = rotation_time_curve_interpolation_by_bone(metadata)
-        self.assertEqual(interpolation["センター"][30], expected)
+        record = next(row for row in metadata["rotationTimeCurves"] if row["boneName"] == "センター")
+        curve = cmds.ls(record["rotationTimeCurveUuid"])[0]
+        self.assertEqual(cmds.nodeType(curve), "animCurveTT")
+        self.assertEqual(cmds.keyframe(curve, query=True, timeChange=True), [0.0, 30.0])
+        self.assertTrue(all(cmds.keyTangent(curve, query=True, weightedTangents=True)))
+        midpoint = cmds.keyframe(curve, query=True, eval=True, time=(15, 15))[0]
+        self.assertGreater(midpoint, 15.0)
+        self.assertLess(midpoint, 30.0)
+        for curve_uuid in record["rotationCurveUuids"]:
+            rotation_curve = cmds.ls(curve_uuid)[0]
+            self.assertTrue(cmds.isConnected(curve + ".output", rotation_curve + ".input"))
 
     def test_convert_control_rig_late_failure_restores_exact_a_transaction_state(self):
         """A late failure after clear and partial B keys restores the full A state."""
