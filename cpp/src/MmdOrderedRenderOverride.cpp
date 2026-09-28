@@ -2210,6 +2210,7 @@ std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
            << (gRegistered ? "true" : "false")
            << ",\"state\":\"" << (!fallbackReason.empty() || notice.missingRenderData ? "fallback" : "idle")
            << "\",\"drawCount\":0"
+           << ",\"casterDrawCount\":0,\"receiverDrawCount\":0"
            << ",\"missingRenderData\":" << (notice.missingRenderData ? "true" : "false")
            << ",\"reasonCode\":\"" << (!fallbackReason.empty() ? "render_failed" :
                                       notice.missingRenderData ? "missing_render_data" : "no_drawables") << "\""
