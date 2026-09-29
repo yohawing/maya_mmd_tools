@@ -16,6 +16,42 @@ if str(ROOT) not in sys.path:
 MARKER = "MORPH_ROUNDTRIP_COMPLETE"
 
 
+def _material_deformation(cmds, pmx, controller):
+    """Exercise a real material morph and preserve its authored base through Undo."""
+    from mmd_tools.converters.export_scene_collector import _collect_mmd_material_dict
+
+    index = next((i for i, morph in enumerate(pmx.morphs)
+                  if int(morph.morph_type) == 8 and morph.offsets), None)
+    if index is None:
+        return None
+    evaluators = cmds.ls(type="mmdMaterialMorphEval") or []
+    assert evaluators, "material morph has no evaluator"
+    shaders = [s for s in cmds.ls(type="standardSurface")
+               if cmds.attributeQuery("diffuse_color", node=s, exists=True)]
+    authored = {s: _collect_mmd_material_dict(s) for s in shaders}
+
+    def evaluated():
+        return {node: [cmds.getAttr(node + "." + attr) for attr in (
+            "outputDiffuse", "outputDiffuseAlpha", "outputSpecular", "outputAmbient", "outputEdgeColor",
+            "outputSpecularCoefficient", "outputEdgeSize")]
+                for node in evaluators}
+
+    plug = f"{controller}.outputWeight[{index}]"
+    cmds.setAttr(plug, 0.0)
+    zero = evaluated()
+    cmds.setAttr(plug, 1.0)
+    one = evaluated()
+    assert one != zero, f"material morph {index} did not change evaluator output"
+    assert {s: _collect_mmd_material_dict(s) for s in shaders} == authored
+    cmds.undo()
+    assert evaluated() == zero
+    cmds.redo()
+    assert evaluated() == one
+    cmds.setAttr(plug, 0.0)
+    assert evaluated() == zero
+    return {"index": index, "evaluators": len(evaluators), "zero": zero, "one": one}
+
+
 def _deformation(cmds, pmx, root, controller, index):
     """Check weight propagation and one source vertex through its weld mapping."""
     from mmd_tools.core.morph_delta_mapping import collect_morph_delta
@@ -44,6 +80,7 @@ def _deformation(cmds, pmx, root, controller, index):
 def run_probe(config_path):
     """Validate both mesh layouts in the same isolated GUI host."""
     from maya import cmds
+    from maya.api import OpenMaya as om
     from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
     from mmd_tools.core.mmd_parser import parse_pmx_file
     from mmd_tools.ui.main_window import MainWindow
@@ -72,10 +109,20 @@ def run_probe(config_path):
             row = {"split": split, "source": base["source"], "stages": []}
             for reopened in (False, True):
                 if reopened:
-                    scene = case_out / "roundtrip.ma"
+                    scene_format = config.get("sceneFormat", "mayaAscii")
+                    scene = case_out / ("roundtrip.mb" if scene_format == "mayaBinary" else "roundtrip.ma")
                     cmds.file(rename=str(scene))
-                    cmds.file(save=True, type="mayaAscii", force=True)
-                    cmds.file(str(scene), open=True, force=True)
+                    cmds.file(save=True, type=scene_format, force=True)
+                    errors = []
+                    callback = om.MCommandMessage.addCommandOutputCallback(
+                        lambda message, kind, *_: errors.append(message) if kind == om.MCommandMessage.kError else None
+                    )
+                    try:
+                        cmds.file(str(scene), open=True, force=True)
+                    finally:
+                        om.MMessage.removeCallback(callback)
+                    row["reloadErrors"] = errors
+                    assert not errors, errors[:5]
                 window.app_state.refresh_model_list()
                 window.app_state.current_model_root = root
                 window.morph_presenter.load_morphs()
@@ -95,7 +142,10 @@ def run_probe(config_path):
                     indices_to_test.append(next(i for i, morph in enumerate(pmx.morphs)
                                                 if int(morph.morph_type) == 1 and morph.offsets))
                 measured = [_deformation(cmds, pmx, root, controller, index) for index in indices_to_test]
-                row["stages"].append({"reopened": reopened, "listCount": widget.count(), "deformation": measured})
+                material = _material_deformation(cmds, pmx, controller)
+                row["stages"].append({"reopened": reopened, "listCount": widget.count(),
+                                      "deformation": measured, "material": material})
+            assert row["stages"][0]["material"] == row["stages"][1]["material"]
             before, after = (stage["deformation"] for stage in row["stages"])
             assert len(before) == len(after)
             for left, right in zip(before, after):
@@ -135,6 +185,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="model, morphIndex and sourceVertex JSON")
     parser.add_argument("--maya", default="2024")
+    parser.add_argument("--scene-format", choices=("mayaAscii", "mayaBinary"), default="mayaAscii")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--port", type=int, default=7793)
     args = parser.parse_args()
@@ -143,7 +194,7 @@ def main():
     plugin = ROOT / f"plug-ins/{args.maya}/Release/mmd_tools_cpp.mll"
     config = out / "input.json"
     payload = json.loads(args.input.read_text(encoding="utf-8"))
-    payload.update(out=str(out), plugin=str(plugin))
+    payload.update(out=str(out), plugin=str(plugin), sceneFormat=args.scene_format)
     config.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     result = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=out, port=args.port, timeout=900,
