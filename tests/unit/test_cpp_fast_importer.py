@@ -2002,10 +2002,6 @@ class TestCppPluginLocatorIntegration(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestNativeRenderDevice(unittest.TestCase):
     def test_only_dx11_creates_native_render_shape(self):
         for api in (0, 1, 2, 4):
@@ -2014,3 +2010,7 @@ class TestNativeRenderDevice(unittest.TestCase):
                 "maya.api.OpenMayaRender.MRenderer", renderer,
             ):
                 self.assertEqual(cpp_fast_importer.uses_native_render_shape(), api == 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

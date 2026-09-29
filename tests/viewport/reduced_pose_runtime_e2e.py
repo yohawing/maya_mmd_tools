@@ -317,7 +317,6 @@ def _import_scene(
     settings.set("import.model.create_mmd_shaders", False)
     settings.set("import.rig.add_semi_standard_bones", False)
     settings.set("import.native.require_native_pmx_parse", False)
-    settings.set("import.native.use_cpp_fast_load", False)
     settings.set("logging.level", "INFO")
     root = import_mmd_file(
         str(pmx_path),
