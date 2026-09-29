@@ -40,6 +40,12 @@ def main(*, standalone: bool = True) -> dict:
         empty.offsets = []
         valid = copy.deepcopy(original)
         valid.name = "surviving target"
+        invalid = copy.deepcopy(original)
+        invalid.name = "invalid_source"
+        invalid.offsets = [{"vertex_index": len(pmx.vertices), "position_offset": (0.1, 0.0, 0.0)}]
+        nonfinite = copy.deepcopy(original)
+        nonfinite.name = "nonfinite_delta"
+        nonfinite.offsets[0]["position_offset"] = (float("nan"), 0.0, 0.0)
         pmx.morphs = [empty, valid, copy.deepcopy(empty), copy.deepcopy(valid)]
         pmx.morphs[-1].name = "surviving_target"
         with tempfile.TemporaryDirectory() as temporary:
@@ -71,7 +77,22 @@ def main(*, standalone: bool = True) -> dict:
                     assert list(cmds.getAttr(blend + ".mmd_source_morph_indices")) == [1, 3]
                     assert json.loads(cmds.getAttr(blend + ".mmd_blendshape_morph_names_json"))["1"]["index"] == 3
                 reports.append({"split": split, "blendShapes": len(blends), "indices": [1, 3], "reopen": "pass"})
-            result = {"status": "pass", "cases": reports}
+            rejected = []
+            for malformed in (invalid, nonfinite):
+                pmx.morphs = [malformed, valid]
+                pmx.write_file(str(fixture))
+                for split in (False, True):
+                    cmds.file(new=True, force=True)
+                    before = set(cmds.ls(long=True))
+                    try:
+                        cmds.mmdFastLoad(f=str(fixture), n="rejected", s=1.0, sp=split, mo=True)
+                    except RuntimeError:
+                        pass  # Maya may replace the native diagnostic with a localized command error.
+                    else:
+                        raise AssertionError("malformed source morph was accepted")
+                    assert set(cmds.ls(long=True)) == before, "rejected import leaked scene nodes"
+                    rejected.append({"name": malformed.name, "split": split, "status": "rejected_without_nodes"})
+            result = {"status": "pass", "cases": reports, "malformed": rejected}
             print(json.dumps(result))
             return result
     finally:

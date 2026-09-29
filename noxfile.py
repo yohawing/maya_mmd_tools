@@ -1893,6 +1893,12 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def morph_binding_roundtrip(session: nox.Session) -> None:
+    """Verify reported morphs through GUI lists, deformation and PMX export."""
+    session.run(sys.executable, "tools/smoke/maya_morph_binding_roundtrip.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def model_identity_ui(session: nox.Session) -> None:
     """Check model-owned GUI lists through duplicate import and scene reopen."""
     session.run(sys.executable, "tools/smoke/maya_model_identity_ui.py", *session.posargs)
