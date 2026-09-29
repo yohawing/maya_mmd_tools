@@ -454,11 +454,9 @@ class TestOrderedViewportAfterImport(unittest.TestCase):
                 })
                 self.assertEqual(result, "cpp_root")
                 setup.assert_not_called()
-                if vp2:
-                    self.assertTrue(fast.call_args.kwargs["vp2_ownership"])
-                else:
-                    self.assertNotIn("vp2_ownership", fast.call_args.kwargs)
+                self.assertNotIn("vp2_ownership", fast.call_args.kwargs)
 
+    @patch("mmd_tools.io.cpp_fast_importer.uses_native_render_shape", new=lambda: True)
     def test_failed_vp2_import_does_not_select_ordered_or_fallback(self):
         for error in (None, RuntimeError("native failure")):
             with self.subTest(error=error), patch(

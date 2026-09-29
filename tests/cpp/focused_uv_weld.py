@@ -287,9 +287,12 @@ def main() -> int:
                 raise RuntimeError(f"mmdWeldUvSeamVertices lacks {capability}")
 
         loaded = cmds.mmdFastLoad(f=str(FIXTURE), n="focused_uv_weld", s=1.0)
-        if not loaded or len(loaded) != 2:
+        from mmd_tools.io.cpp_fast_importer import uses_native_render_shape
+
+        expected = 3 if uses_native_render_shape() else 2
+        if not loaded or len(loaded) != expected:
             raise RuntimeError(f"mmdFastLoad returned unexpected result: {loaded!r}")
-        transform, mesh = loaded
+        transform, mesh = loaded[:2]
         mesh_fn = _mesh_fn(om, mesh)
         old_vertex_count = int(cmds.polyEvaluate(mesh, vertex=True))
         old_face_count = int(cmds.polyEvaluate(mesh, face=True))

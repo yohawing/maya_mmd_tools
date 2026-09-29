@@ -1007,7 +1007,7 @@ class TestImportExportPresenter(unittest.TestCase):
             options = action.requests[0].options
             self.assertNotIn("use_cpp_fast_load", options)
             self.assertFalse(options["cpp_fast_load_mesh_only"])
-            self.assertTrue(options["use_cpp_vp2_ownership"])
+            self.assertNotIn("use_cpp_vp2_ownership", options)
             self.assertFalse(options["use_native_pmx_parse"])
             self.assertFalse(options["require_native_pmx_parse"])
         finally:
@@ -1042,7 +1042,7 @@ class TestImportExportPresenter(unittest.TestCase):
             options = action.requests[0].options
             self.assertNotIn("use_cpp_fast_load", options)
             self.assertFalse(options["cpp_fast_load_mesh_only"])
-            self.assertTrue(options["use_cpp_vp2_ownership"])
+            self.assertNotIn("use_cpp_vp2_ownership", options)
             self.assertTrue(options["use_native_pmx_parse"])
         finally:
             for key, value in saved.items():

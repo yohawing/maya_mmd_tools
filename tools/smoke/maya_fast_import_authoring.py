@@ -293,8 +293,6 @@ def _capture_ui_snapshot(window, route, out, label):
 
 def _validate_ui_import_options(window, route, config, options):
     """Require the options consumed by the presenter to match visible controls."""
-    from mmd_tools.converters.material_morph_runtime import detect_effective_vp2_draw_api
-
     view = window.import_export_tab
     expected = {
         "scale": float(view.scale_spin.value()),
@@ -302,7 +300,6 @@ def _validate_ui_import_options(window, route, config, options):
         "separate_meshes_by_material": bool(view.separate_meshes_check.isChecked()),
         "import_physics": bool(view.import_physics_check.isChecked()),
         "import_morphs": bool(view.import_morphs_check.isChecked()),
-        "use_cpp_vp2_ownership": detect_effective_vp2_draw_api() not in {"opengl", "openglcore"},
         "cpp_fast_load_mesh_only": False,
     }
     mismatches = {
@@ -1172,7 +1169,9 @@ def _call_native(command, calls, *args, **kwargs):
     entry = {"arguments": kwargs, "success": False}
     calls.append(entry)
     result = command(*args, **kwargs)
-    expected = 1 if kwargs.get("sp") else (3 if kwargs.get("vp2Ownership") else 2)
+    from mmd_tools.io.cpp_fast_importer import uses_native_render_shape
+
+    expected = 1 if kwargs.get("sp") else (3 if uses_native_render_shape() else 2)
     entry["success"] = isinstance(result, (list, tuple)) and len(result) == expected
     return result
 

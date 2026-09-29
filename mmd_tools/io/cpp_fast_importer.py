@@ -1,7 +1,7 @@
 """
 Fast mesh import path using the compiled C++ mmdFastLoad command.
 
-This module is an explicit opt-in: when enabled, :func:`fast_import`
+This module is an explicit device-selected: when enabled, :func:`fast_import`
 attempts to load the compiled C++ plugin (mmd_tools_cpp.mll / .bundle / .so)
 and call ``cmds.mmdFastLoad(f=filepath, n=base_name, s=scale)`` for *pmx*
 files.  If the plugin is unavailable or the command fails, ``None`` is
@@ -91,68 +91,11 @@ def _setup_plugin_directory(plugin_dir: Path) -> None:
     cpp_plugin_locator.prepare_plugin_directory(plugin_dir / "mmd_tools_cpp.mll")
 
 
-def _require_dx11_for_vp2_ownership(cmds) -> None:
-    """Reject a confirmed OpenGL VP2 device before native ownership import.
+def uses_native_render_shape() -> bool:
+    """Use the same live MRenderer device as the native mmdFastLoad command."""
+    from maya.api import OpenMayaRender as omr
 
-    ``mmdRenderShape`` currently owns draw data only on DirectX 11.  Unknown
-    device information is deliberately allowed so non-Maya test doubles and
-    Maya sessions where ``ogs`` is unavailable retain the existing behavior.
-    """
-    ogs = getattr(cmds, "ogs", None)
-    if not callable(ogs):
-        return
-
-    try:
-        raw = ogs(deviceInformation=True)
-    except Exception:
-        return
-
-    if isinstance(raw, str):
-        device_lines = raw.splitlines()
-    elif isinstance(raw, (list, tuple)) and all(
-        isinstance(part, str) for part in raw
-    ):
-        device_lines = [
-            line for part in raw for line in part.splitlines()
-        ]
-    else:
-        # In particular, do not interpret MagicMock string representations as
-        # real Maya device diagnostics.
-        return
-
-    api_line = next(
-        (
-            line.strip()
-            for line in device_lines
-            if line.strip().lower().replace(" ", "").startswith("api:")
-        ),
-        "",
-    )
-    api_lowered = api_line.lower()
-    if any(
-        token in api_lowered
-        for token in ("directx v.11", "directx11", "direct3d11", "dx11", "d3d11")
-    ):
-        return
-    device_text = " ".join(device_lines)
-    if api_line or any(
-        token in device_text.lower()
-        for token in (
-            "opengl",
-            "open gl",
-            "openglcore",
-            "glcore",
-            "core profile",
-            "virtualdevicegl",
-        )
-    ):
-        active_api = (api_line or "OpenGL").rstrip(".")
-        raise RuntimeError(
-            "C++ VP2 RenderOverride requires DirectX 11, but Maya is using "
-            f"{active_api}. "
-            "In Maya Preferences, open Display > Viewport 2.0, set Rendering "
-            "engine to DirectX 11, then restart Maya before importing the model."
-        )
+    return omr.MRenderer.drawAPI() == omr.MRenderer.kDirectX11
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +109,6 @@ def fast_import(
     scale: float = 1.0,
     mesh_only: bool = True,
     include_morphs: bool = True,
-    vp2_ownership: bool = False,
     options: Optional[dict] = None,
     progress_callback=None,
 ) -> Optional[str]:
@@ -189,11 +131,8 @@ def fast_import(
         blendShape targets. With VP2 ownership, the Python bridge also creates
         material morph authoring nodes and binds native material values and
         alpha through the existing evaluator.
-    vp2_ownership:
-        If True, asks the C++ command to create the opt-in ``mmdRenderShape``
-        alongside an ordinary source mesh and let the VP2 geometry override
-        own the draw data. Material, morph, and skeleton post-processing use
-        that source mesh while the proxy stays render-only.
+    DX11 imports create a render-only ``mmdRenderShape`` beside the editable
+    source mesh. Other devices retain the ordinary mesh path.
 
     Returns
     -------
@@ -241,8 +180,7 @@ def fast_import(
         )
         return None
 
-    if vp2_ownership:
-        _require_dx11_for_vp2_ownership(cmds)
+    vp2_ownership = uses_native_render_shape()
 
     if not mesh_only:
         # Keep the ordinary authoring contract in one place. Only geometry
@@ -270,8 +208,6 @@ def fast_import(
         ))
         if split:
             command_args["sp"] = True
-        if vp2_ownership:
-            command_args["vp2Ownership"] = True
         native_mesh = []
         # Bone-only PMX files still use native parsing and shared authoring,
         # but have no geometry for MFnMesh to create.
@@ -292,7 +228,6 @@ def fast_import(
         import_options.update({
             "import_morphs": include_morphs,
             "_cpp_fast_load_geometry": native_mesh,
-            "use_cpp_vp2_ownership": vp2_ownership,
         })
         native_identity = cmds.ls(native_mesh[0], uuid=True) if native_mesh else []
         proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
@@ -337,11 +272,6 @@ def fast_import(
             "s": scale,
             "mo": include_morphs,
         }
-        # Keep the flag absent for the normal fast-load path so an older
-        # plugin binary remains compatible.  The VP2 path is an explicit
-        # opt-in and therefore requires a plugin that supports the flag.
-        if vp2_ownership:
-            command_args["vp2Ownership"] = True
         result = cmds.mmdFastLoad(**command_args)
     except RuntimeError as exc:
         if vp2_ownership:

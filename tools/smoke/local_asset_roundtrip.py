@@ -1317,7 +1317,6 @@ def _import_options() -> dict[str, Any]:
         "setup_bone_orientation": True,
         "create_mmd_control_rig": False,
         "create_mmd_shaders": False,
-        "use_cpp_fast_load": False,
         "use_native_pmx_parse": False,
         "require_native_pmx_parse": False,
     }

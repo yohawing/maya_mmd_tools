@@ -198,6 +198,7 @@ class TestCppFastImportRouting(unittest.TestCase):
         self.mock_create_light.assert_called_once_with()
         self.mock_select.assert_called_once_with("cpp_root", replace=True)
 
+    @patch("mmd_tools.io.cpp_fast_importer.uses_native_render_shape", new=lambda: True)
     @patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management")
     @patch("mmd_tools.io.mmd_importer.fast_import")
     def test_native_vp2_import_sets_native_color_management(
@@ -223,7 +224,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             scale=1.0,
             mesh_only=False,
             include_morphs=True,
-            vp2_ownership=True,
+
             options={"scale": 1.0, "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
                      "profile": {"native_import": {"requested": True, "route": "cpp_fast_load_vp2",
                                                   "status": "succeeded", "fallback": "not_used"}}},
@@ -243,6 +244,7 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_fast.assert_called_once()
         self.mock_create_light.assert_not_called()
 
+    @patch("mmd_tools.io.cpp_fast_importer.uses_native_render_shape", new=lambda: True)
     @patch("mmd_tools.io.mmd_importer.fast_import", return_value=None)
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
@@ -277,6 +279,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             },
         )
 
+    @patch("mmd_tools.io.cpp_fast_importer.uses_native_render_shape", new=lambda: True)
     @patch(
         "mmd_tools.io.mmd_importer.fast_import",
         side_effect=RuntimeError(
@@ -307,6 +310,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             "restart Maya",
         )
 
+    @patch("mmd_tools.io.cpp_fast_importer.uses_native_render_shape", new=lambda: True)
     @patch("mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management")
@@ -446,10 +450,11 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
 
+    @patch("mmd_tools.io.cpp_fast_importer.uses_native_render_shape", new=lambda: True)
     @patch("mmd_tools.io.mmd_importer.fast_import")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
-    def test_fast_import_vp2_ownership_passes_render_override_flag(
+    def test_dx11_import_does_not_pass_render_override_flag(
         self,
         mock_import_pmx: MagicMock,
         mock_parse: MagicMock,
@@ -473,7 +478,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             scale=1.0,
             mesh_only=False,
             include_morphs=True,
-            vp2_ownership=True,
+
             options={"scale": 1.0, "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
                      "profile": {"native_import": {"requested": True, "route": "cpp_fast_load_vp2",
                                                   "status": "succeeded", "fallback": "not_used"}}},
@@ -625,16 +630,16 @@ class TestFastImportMetadata(unittest.TestCase):
             ), patch.object(Path, "exists", return_value=True), patch.object(
                 cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
             ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])), patch.object(
-                cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+                cpp_fast_importer, "uses_native_render_shape", return_value=True
             ), patch("maya.cmds.mmdFastLoad", create=True, side_effect=RuntimeError("non-finite normal")):
                 with self.assertRaisesRegex(RuntimeError, "non-finite normal"):
-                    fast_import("model.pmx", mesh_only=mesh_only, vp2_ownership=True)
+                    fast_import("model.pmx", mesh_only=mesh_only)
 
     def test_failed_full_import_removes_separated_proxy_owner(self):
         with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]), patch.object(
             Path, "exists", return_value=True
         ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])), patch.object(
-            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+            cpp_fast_importer, "uses_native_render_shape", return_value=True
         ), patch.object(cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True), patch(
             "maya.cmds.mmdFastLoad", create=True, return_value=["source", "mesh", "proxy"]
         ), patch("maya.cmds.ls", side_effect=[["sourceUuid"], ["proxyUuid"], ["renamedSource"], ["movedProxy"]]), patch(
@@ -643,7 +648,7 @@ class TestFastImportMetadata(unittest.TestCase):
             "mmd_tools.io.pmx_importer.import_pmx_file", side_effect=RuntimeError("authoring rejected")
         ):
             with self.assertRaisesRegex(RuntimeError, "authoring rejected"):
-                fast_import("model.pmx", mesh_only=False, vp2_ownership=True,
+                fast_import("model.pmx", mesh_only=False,
                             options={"separate_meshes_by_material": False})
         delete.assert_called_once_with(["renamedSource", "proxyOwner"])
 
@@ -1382,7 +1387,7 @@ class TestFastMorphMetadata(unittest.TestCase):
     @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
     @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
     @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
-    def test_vp2_ownership_passes_only_when_explicitly_enabled(
+    def test_dx11_import_uses_render_shape_without_selection_flag(
         self,
         _setup,
         candidates,
@@ -1396,7 +1401,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         basic_materials.return_value = None
         cmds_mod = sys.modules["maya.cmds"]
         with patch.object(
-            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+            cpp_fast_importer, "uses_native_render_shape", return_value=True
         ), patch.object(
             Path, "exists", return_value=True
         ), patch.object(
@@ -1413,7 +1418,7 @@ class TestFastMorphMetadata(unittest.TestCase):
             "_apply_fast_material_morph_runtime",
             return_value={"success": True},
         ):
-            result = fast_import("model.pmx", vp2_ownership=True)
+            result = fast_import("model.pmx")
 
         self.assertEqual(result, "root")
         node_type.assert_called_once_with("renderShape")
@@ -1423,76 +1428,10 @@ class TestFastMorphMetadata(unittest.TestCase):
             n="mmd_fast_model",
             s=1.0,
             mo=True,
-            vp2Ownership=True,
         )
         root_metadata.assert_called_once()
 
-    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
-    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
-    def test_vp2_ownership_rejects_confirmed_opengl_before_fast_load(
-        self,
-        _setup,
-        candidates,
-    ):
-        """OpenGL must explain the required preference instead of showing clay."""
-        import sys
 
-        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
-        candidates.return_value = [plugin_path]
-        cmds_mod = sys.modules["maya.cmds"]
-        with patch.object(Path, "exists", return_value=True), patch.object(
-            cmds_mod, "loadPlugin", create=True
-        ), patch.object(
-            cmds_mod,
-            "ogs",
-            create=True,
-            return_value="API : OpenGL V.4.6",
-        ), patch.object(
-            cmds_mod,
-            "mmdFastLoad",
-            create=True,
-        ) as fast_load:
-            with self.assertRaisesRegex(
-                RuntimeError,
-                r"requires DirectX 11.*Display > Viewport 2\.0.*restart Maya",
-            ):
-                fast_import("model.pmx", vp2_ownership=True)
-
-        fast_load.assert_not_called()
-
-    @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
-    @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
-    def test_vp2_ownership_rejects_any_confirmed_non_dx11_api(
-        self,
-        _setup,
-        candidates,
-    ):
-        """A confirmed Metal device must not fall through to a gray proxy."""
-        import sys
-
-        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
-        candidates.return_value = [plugin_path]
-        cmds_mod = sys.modules["maya.cmds"]
-        for device_info in (
-            ["Adapter : Apple GPU", "API : Metal"],
-            "API: Metal",
-            ["Adapter supports DX11 translation", "API : Metal"],
-        ):
-            with self.subTest(device_info=device_info), patch.object(
-                Path, "exists", return_value=True
-            ), patch.object(
-                cmds_mod, "loadPlugin", create=True
-            ), patch.object(
-                cmds_mod, "ogs", create=True, return_value=device_info
-            ), patch.object(
-                cmds_mod, "mmdFastLoad", create=True
-            ) as fast_load:
-                with self.assertRaisesRegex(
-                    RuntimeError, r"requires DirectX 11.*Metal"
-                ):
-                    fast_import("model.pmx", vp2_ownership=True)
-
-            fast_load.assert_not_called()
 
     @patch("mmd_tools.io.cpp_fast_importer._apply_fast_root_metadata")
     @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
@@ -1505,7 +1444,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         basic_materials,
         root_metadata,
     ):
-        """The device guard applies only to explicit RenderOverride ownership."""
+        """OpenGL selects the ordinary mesh route automatically."""
         import sys
 
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
@@ -1535,7 +1474,7 @@ class TestFastMorphMetadata(unittest.TestCase):
     @patch("mmd_tools.io.cpp_fast_importer._apply_basic_materials")
     @patch("mmd_tools.io.cpp_fast_importer._candidate_plugin_paths")
     @patch("mmd_tools.io.cpp_fast_importer._setup_plugin_directory")
-    def test_vp2_rejects_legacy_two_item_plugin_result(
+    def test_dx11_rejects_missing_render_shape(
         self,
         _setup,
         candidates,
@@ -1549,7 +1488,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         candidates.return_value = [plugin_path]
         cmds_mod = sys.modules["maya.cmds"]
         with patch.object(
-            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+            cpp_fast_importer, "uses_native_render_shape", return_value=True
         ), patch.object(
             Path, "exists", return_value=True
         ), patch.object(cmds_mod, "delete") as delete, patch.object(
@@ -1557,7 +1496,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         ), patch.object(
             cmds_mod, "mmdFastLoad", create=True, return_value=["root", "mesh"]
         ) as fast_load:
-            result = fast_import("model.pmx", vp2_ownership=True)
+            result = fast_import("model.pmx")
 
         self.assertIsNone(result)
         fast_load.assert_called_once()
@@ -1583,7 +1522,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         candidates.return_value = [plugin_path]
         cmds_mod = sys.modules["maya.cmds"]
         with patch.object(
-            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+            cpp_fast_importer, "uses_native_render_shape", return_value=True
         ), patch.object(
             Path, "exists", return_value=True
         ), patch.object(
@@ -1596,7 +1535,7 @@ class TestFastMorphMetadata(unittest.TestCase):
             create=True,
             return_value=["root", "sourceMesh", "wrongShape"],
         ) as fast_load:
-            result = fast_import("model.pmx", vp2_ownership=True)
+            result = fast_import("model.pmx")
 
         self.assertIsNone(result)
         fast_load.assert_called_once()
@@ -1631,7 +1570,7 @@ class TestFastMorphMetadata(unittest.TestCase):
         cmds_mod = sys.modules["maya.cmds"]
         shared_pmx = SimpleNamespace()
         with patch.object(
-            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+            cpp_fast_importer, "uses_native_render_shape", return_value=True
         ), patch.object(
             Path, "exists", return_value=True
         ), patch.object(
@@ -1651,7 +1590,7 @@ class TestFastMorphMetadata(unittest.TestCase):
                 base_name="demo",
                 mesh_only=True,
                 include_morphs=True,
-                vp2_ownership=True,
+
             )
 
         self.assertEqual(result, "root")
@@ -1701,7 +1640,7 @@ class TestFastMorphMetadata(unittest.TestCase):
             return "mmdMorphController" if node == "partialController" else "mmdRenderShape"
 
         with patch.object(
-            cpp_fast_importer, "_require_dx11_for_vp2_ownership"
+            cpp_fast_importer, "uses_native_render_shape", return_value=True
         ), patch.object(
             Path, "exists", return_value=True
         ), patch.object(
@@ -1726,7 +1665,7 @@ class TestFastMorphMetadata(unittest.TestCase):
             with self.assertRaisesRegex(
                 RuntimeError, "Fast VP2 material morph runtime failed"
             ):
-                fast_import("model.pmx", include_morphs=True, vp2_ownership=True)
+                fast_import("model.pmx", include_morphs=True)
 
         deleted = [entry[0][0] for entry in delete.call_args_list]
         self.assertEqual(
@@ -2065,3 +2004,13 @@ class TestCppPluginLocatorIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNativeRenderDevice(unittest.TestCase):
+    def test_only_dx11_creates_native_render_shape(self):
+        for api in (0, 1, 2, 4):
+            renderer = SimpleNamespace(drawAPI=lambda: api, kDirectX11=2)
+            with self.subTest(api=api), patch(
+                "maya.api.OpenMayaRender.MRenderer", renderer,
+            ):
+                self.assertEqual(cpp_fast_importer.uses_native_render_shape(), api == 2)

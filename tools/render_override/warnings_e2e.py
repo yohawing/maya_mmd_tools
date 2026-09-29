@@ -92,8 +92,10 @@ def probe_steps(out, plugin, failure):
 
         def import_model(native, activate=True):
             cmds.modelEditor(panel, edit=True, rendererOverrideName="")
-            root = import_mmd_file(str(ROOT / "tests/data/yw_test_model.pmx"), options={
-                "use_cpp_fast_load": True, "use_cpp_vp2_ownership": native,
+            from tests.common.import_route import import_python_pmx_reference
+
+            importer = import_mmd_file if native else import_python_pmx_reference
+            root = importer(str(ROOT / "tests/data/yw_test_model.pmx"), options={
                 "import_morphs": False, "import_physics": False})
             assert root
             cmds.select(root)

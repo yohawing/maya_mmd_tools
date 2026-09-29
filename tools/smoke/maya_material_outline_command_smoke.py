@@ -90,7 +90,6 @@ try:
             "create_mmd_control_rig": False,
             "import_morphs": True,
             "create_mmd_shaders": True,
-            "use_cpp_fast_load": False,
             "use_native_pmx_parse": False,
             "require_native_pmx_parse": False,
         },

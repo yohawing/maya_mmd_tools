@@ -42,6 +42,7 @@
 #include <maya/MPlug.h>
 #include <maya/MSelectionList.h>
 #include <maya/MStringArray.h>
+#include <maya/MViewport2Renderer.h>
 
 // mmd-anim-ffi C ABI header (path set by CMake)
 #include "mmd_runtime.h"
@@ -136,10 +137,6 @@ MSyntax MmdFastLoad::newSyntax()
     // -split / -sp <bool> (optional, default false)
     syntax.addFlag("-sp", "-split", MSyntax::kBoolean);
 
-    // -vp2Ownership / -vo <bool> (optional, default false)
-    // Explicit opt-in to the custom DAG shape and VP2 geometry override.
-    syntax.addFlag("-vo", "-vp2Ownership", MSyntax::kBoolean);
-
     syntax.enableEdit(false);
 
     return syntax;
@@ -180,9 +177,8 @@ bool MmdFastLoad::parseArgs(const MArgList& args)
         enableSplit_ = argData.flagArgumentBool("-sp", 0);
     }
 
-    if (argData.isFlagSet("-vo")) {
-        enableVp2Ownership_ = argData.flagArgumentBool("-vo", 0);
-    }
+    const auto* renderer = MHWRender::MRenderer::theRenderer();
+    createRenderProxy_ = renderer && renderer->drawAPI() == MHWRender::kDirectX11;
 
     if (scale_ <= 0.0) {
         MGlobal::displayError("[mmdFastLoad] -scale must be > 0.0");
@@ -1323,7 +1319,7 @@ MStatus MmdFastLoad::redoIt()
     const size_t   len  = pmxBytes.size();
 
     if (enableSplit_) return loadSplit(safeName, data, len);
-    return enableVp2Ownership_ ? loadVp2Ownership(safeName, data, len)
+    return createRenderProxy_ ? loadVp2Ownership(safeName, data, len)
                                : loadSingle(safeName, data, len);
 }
 
@@ -1537,7 +1533,7 @@ MStatus MmdFastLoad::loadSplit(const std::string& safeName,
                 buildVertexMorphBlendShapes(nonGeo["morphs"], transformFn.fullPathName(),
                     mesh.points, mesh.polygonCounts, mesh.polygonConnects, scale_, &mapping);
             }
-            if (enableVp2Ownership_) {
+            if (createRenderProxy_) {
                 mmd::MmdRenderQueueInput input;
                 input.materialIndex = materialIndex;
                 input.submeshIndex = 0;

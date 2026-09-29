@@ -71,7 +71,6 @@ def main() -> int:
             options={
                 "setup_rig": True,
                 "setup_bone_orientation": True,
-                "use_cpp_fast_load": False,
                 "import_physics": False,
                 "auto_resolve_textures": False,
             },

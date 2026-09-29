@@ -61,8 +61,7 @@ def _probe_steps(output, plugin):
             material.texture_index = 0
         model = out / "textured.pmx"
         fixture.write_file(str(model))
-        root = import_mmd_file(str(model), options={"use_cpp_fast_load": True,
-            "use_cpp_vp2_ownership": False, "import_morphs": True, "import_physics": False})
+        root = import_mmd_file(str(model), options={"import_morphs": True, "import_physics": False})
         assert root
         shaders = _collect_shaders_by_material_index(root)
         assert len(shaders) == 2 and all(cmds.nodeType(s) == "standardSurface" for s in shaders.values())

@@ -1048,7 +1048,6 @@ def probe_steps(config: dict[str, Any]):
     from maya import cmds
     from maya.api import OpenMayaUI as omui
     from mmd_tools.core.settings import settings
-    from mmd_tools.io.mmd_importer import import_mmd_file
 
     out = Path(config["output"])
     report: dict[str, Any] = {
@@ -1127,11 +1126,11 @@ def probe_steps(config: dict[str, Any]):
             )
             report["sceneSaved"] = False
         else:
-            root = import_mmd_file(
+            from tests.common.import_route import import_python_pmx_reference
+
+            root = import_python_pmx_reference(
                 config["model"],
                 options={
-                    "use_cpp_fast_load": False,
-                    "use_cpp_vp2_ownership": False,
                     "import_morphs": False,
                     "import_physics": False,
                     "separate_meshes_by_material": True,
@@ -1148,7 +1147,7 @@ def probe_steps(config: dict[str, Any]):
                 root, allDescendents=True, type="mmdRenderShape", fullPath=True
             ) or []
             if proxies:
-                raise RuntimeError(f"PMX import unexpectedly created {len(proxies)} render proxies")
+                raise RuntimeError(f"Python reference unexpectedly created {len(proxies)} render proxies")
             report["hashes"] = {
                 "inputModelSha256": sha256_file(Path(config["model"])),
                 "probeSha256": sha256_file(Path(__file__)),

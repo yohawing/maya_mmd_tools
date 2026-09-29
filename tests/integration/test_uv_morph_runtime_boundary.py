@@ -104,7 +104,6 @@ class TestUVMorphRuntimeBoundary(MayaTestBase):
                     "import_physics": False,
                     "setup_rig": False,
                     "setup_bone_orientation": False,
-                    "use_cpp_fast_load": False,
                     "use_native_pmx_parse": False,
                     "require_native_pmx_parse": False,
                 },

@@ -325,7 +325,6 @@ def _base_options() -> Dict[str, Any]:
         "import_physics": False,
         "import_morphs": True,
         "create_mmd_shaders": False,
-        "use_cpp_fast_load": False,
         "use_native_pmx_parse": False,
         "require_native_pmx_parse": False,
         "bake_mode": False,

@@ -48,7 +48,7 @@ class TestFastImportCleanup(unittest.TestCase):
                     Path, "exists", return_value=True
                 ), patch.object(cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True), patch.object(
                     cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])
-                ), patch.object(cpp_fast_importer, "_require_dx11_for_vp2_ownership"), patch(
+                ), patch.object(cpp_fast_importer, "uses_native_render_shape", return_value=vp2), patch(
                     "maya.cmds.mmdFastLoad", create=True, return_value=["native"]
                 ), patch("maya.cmds.ls", side_effect=lookup), patch(
                     "maya.cmds.listRelatives", side_effect=relatives
@@ -57,7 +57,7 @@ class TestFastImportCleanup(unittest.TestCase):
                 ):
                     with self.assertRaises(RuntimeError) as caught:
                         cpp_fast_importer.fast_import(
-                            "model.pmx", mesh_only=False, vp2_ownership=vp2,
+                            "model.pmx", mesh_only=False,
                             options={"separate_meshes_by_material": True},
                         )
                     self.assertIs(caught.exception, rejection)

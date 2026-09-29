@@ -82,7 +82,6 @@ def probe_steps(config):
             initial_passes = None
             cmds.file(new=True, force=True)
             root = import_mmd_file(config["model"], options={
-                "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
                 "import_morphs": False, "import_physics": False,
                 "separate_meshes_by_material": split,
             })

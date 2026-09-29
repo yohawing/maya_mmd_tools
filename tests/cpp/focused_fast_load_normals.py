@@ -66,8 +66,10 @@ def _assert_unused_material_split(cmds):
     with tempfile.TemporaryDirectory() as directory:
         fixture = Path(directory) / "unused-material.pmx"
         pmx.write_file(str(fixture))
-        for vp2 in (False, True):
-            result = cmds.mmdFastLoad(f=str(fixture), n="unused_material", sp=True, mo=False, vp2Ownership=vp2)
+        from mmd_tools.io.cpp_fast_importer import uses_native_render_shape
+
+        for vp2 in (uses_native_render_shape(),):
+            result = cmds.mmdFastLoad(f=str(fixture), n="unused_material", sp=True, mo=False,)
             group = result[0]
             meshes = cmds.listRelatives(group, children=True, type="transform", fullPath=True) or []
             indices = sorted(cmds.getAttr(mesh + ".mmd_material_index") for mesh in meshes)
@@ -94,12 +96,14 @@ def _assert_zero_authored_normals(cmds, om):
         pmx.write_file(str(fixture))
         for split in (False, True):
             result = cmds.mmdFastLoad(
-                f=str(fixture), n="zero_normals", sp=split, mo=False, vp2Ownership=True
+                f=str(fixture), n="zero_normals", sp=split, mo=False,
             )
             group = result[0]
             meshes = cmds.listRelatives(group, allDescendents=True, type="mesh", fullPath=True) or []
             proxies = cmds.listRelatives(group, allDescendents=True, type="mmdRenderShape") or []
-            if not meshes or len(proxies) != len(meshes):
+            from mmd_tools.io.cpp_fast_importer import uses_native_render_shape
+
+            if not meshes or len(proxies) != (len(meshes) if uses_native_render_shape() else 0):
                 raise RuntimeError("Zero normals prevented VP2 ownership")
             for mesh in meshes:
                 _assert_vertex_normals_are_finite_and_nonzero(om, _mesh_fn(om, mesh))
@@ -198,14 +202,20 @@ def main() -> int:
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(str(plugin_path.parent))
 
+    # Proxy checks exercise the same device-selected path as GUI imports.
+    if sys.platform == "win32":
+        os.environ.setdefault("MAYA_VP2_DEVICE_OVERRIDE", "VirtualDeviceDx11")
     maya.standalone.initialize(name="python")
     try:
         cmds.loadPlugin(str(plugin_path), quiet=True)
 
         single = cmds.mmdFastLoad(f=str(SINGLE_FIXTURE), n="focused_fast_normals", s=1.0)
-        if not single or len(single) != 2:
+        from mmd_tools.io.cpp_fast_importer import uses_native_render_shape
+
+        expected = 3 if uses_native_render_shape() else 2
+        if not single or len(single) != expected:
             raise RuntimeError(f"single mmdFastLoad returned unexpected result: {single!r}")
-        single_transform, single_mesh = single
+        single_transform, single_mesh = single[:2]
         local_vertex_count = int(cmds.polyEvaluate(single_mesh, vertex=True))
         if local_vertex_count != 1814 or cmds.polyEvaluate(single_mesh, face=True) != 3516:
             raise RuntimeError("single mmdFastLoad fixture counts changed")

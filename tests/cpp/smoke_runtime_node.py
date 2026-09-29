@@ -427,6 +427,9 @@ def main() -> int:
     if hasattr(os, "add_dll_directory"):
         os.add_dll_directory(str(plugin_path.parent))
 
+    # Proxy checks exercise the same device-selected path as GUI imports.
+    if sys.platform == "win32":
+        os.environ.setdefault("MAYA_VP2_DEVICE_OVERRIDE", "VirtualDeviceDx11")
     maya.standalone.initialize(name="python")
     try:
         cmds.loadPlugin(str(plugin_path), quiet=True)
@@ -468,10 +471,13 @@ def main() -> int:
         print("OK: RigConverter returns unified rig node type names")
 
         result = cmds.mmdFastLoad(f=str(FAST_LOAD_MODEL), n="mmt_fast_smoke", s=1.0)
-        if not result or len(result) != 2:
+        from mmd_tools.io.cpp_fast_importer import uses_native_render_shape
+
+        expected = 3 if uses_native_render_shape() else 2
+        if not result or len(result) != expected:
             raise RuntimeError(f"mmdFastLoad returned unexpected result: {result!r}")
 
-        transform, mesh = result
+        transform, mesh = result[:2]
         if not cmds.objExists(transform) or not cmds.objExists(mesh):
             raise RuntimeError(f"mmdFastLoad result nodes do not exist: {result!r}")
 
@@ -488,83 +494,86 @@ def main() -> int:
 
         print(f"OK: mmdFastLoad created {vertex_count} vertices / {face_count} faces and undo succeeded")
 
-        vp2_result = cmds.mmdFastLoad(
-            f=str(FAST_LOAD_MODEL),
-            n="mmt_fast_vp2_smoke",
-            s=1.0,
-            vp2Ownership=True,
-        )
-        if not vp2_result or len(vp2_result) != 3:
-            raise RuntimeError(
-                f"mmdFastLoad(vp2Ownership=True) returned unexpected result: {vp2_result!r}"
+        if uses_native_render_shape():
+            vp2_result = cmds.mmdFastLoad(
+                f=str(FAST_LOAD_MODEL),
+                n="mmt_fast_vp2_smoke",
+                s=1.0,
             )
-        vp2_transform, vp2_source_mesh, vp2_render_shape = vp2_result
-        if cmds.nodeType(vp2_source_mesh) != "mesh":
-            raise RuntimeError(f"VP2 source is not a Maya mesh: {vp2_source_mesh}")
-        if cmds.nodeType(vp2_render_shape) != "mmdRenderShape":
-            raise RuntimeError(f"VP2 proxy has wrong type: {vp2_render_shape}")
-        source_parent = cmds.listRelatives(vp2_source_mesh, parent=True, fullPath=True) or []
-        proxy_parent = cmds.listRelatives(vp2_render_shape, parent=True, fullPath=True) or []
-        if source_parent != proxy_parent or not source_parent:
-            raise RuntimeError(
-                f"VP2 source/proxy are not sibling shapes: source={source_parent}, proxy={proxy_parent}"
-            )
-        if not cmds.isConnected(
-            f"{vp2_source_mesh}.outMesh",
-            f"{vp2_render_shape}.inputMesh",
-        ):
-            raise RuntimeError(
-                "VP2 proxy input is not driven by source outMesh"
-            )
-        if cmds.listConnections(f"{vp2_source_mesh}.visibility", source=True, destination=False):
-            raise RuntimeError("VP2 source visibility must remain independently editable")
-        if bool(cmds.getAttr(f"{vp2_source_mesh}.intermediateObject")):
-            raise RuntimeError("VP2 source mesh must not be marked intermediate")
-        if not bool(cmds.getAttr(f"{vp2_source_mesh}.visibility")):
-            raise RuntimeError("VP2 source must remain visible until proxy buffers are ready")
-
-        with tempfile.TemporaryDirectory(prefix="mmd_tools_vp2_smoke_") as temp_dir:
-            scene_path = Path(temp_dir) / "vp2_reopen_fallback.ma"
-            cmds.file(rename=str(scene_path))
-            cmds.file(save=True, type="mayaAscii", force=True)
-            cmds.file(new=True, force=True)
-            cmds.file(str(scene_path), open=True, force=True)
-
-            reopened_proxies = cmds.ls(type="mmdRenderShape", long=True) or []
-            if len(reopened_proxies) != 1:
+            if not vp2_result or len(vp2_result) != 3:
                 raise RuntimeError(
-                    f"VP2 reopen expected one proxy shape, got {reopened_proxies!r}"
+                    f"mmdFastLoad() returned unexpected result: {vp2_result!r}"
                 )
-            reopened_sources = cmds.listConnections(
-                f"{reopened_proxies[0]}.inputMesh", source=True, destination=False, shapes=True,
-            ) or []
-            if len(reopened_sources) != 1:
-                raise RuntimeError(f"VP2 reopen lost source mesh: {reopened_sources!r}")
-            visibility = reopened_sources[0] + ".visibility"
-            if cmds.listConnections(visibility, source=True, destination=False):
-                raise RuntimeError("VP2 source visibility acquired an unexpected driver")
-            if not bool(cmds.getAttr(visibility)):
-                raise RuntimeError("VP2 source must reopen visible")
-            vp2_transform = (cmds.listRelatives(
-                reopened_proxies[0], parent=True, fullPath=True
-            ) or [None])[0]
+            vp2_transform, vp2_source_mesh, vp2_render_shape = vp2_result
+            if cmds.nodeType(vp2_source_mesh) != "mesh":
+                raise RuntimeError(f"VP2 source is not a Maya mesh: {vp2_source_mesh}")
+            if cmds.nodeType(vp2_render_shape) != "mmdRenderShape":
+                raise RuntimeError(f"VP2 proxy has wrong type: {vp2_render_shape}")
+            source_parent = cmds.listRelatives(vp2_source_mesh, parent=True, fullPath=True) or []
+            proxy_parent = cmds.listRelatives(vp2_render_shape, parent=True, fullPath=True) or []
+            if source_parent != proxy_parent or not source_parent:
+                raise RuntimeError(
+                    f"VP2 source/proxy are not sibling shapes: source={source_parent}, proxy={proxy_parent}"
+                )
+            if not cmds.isConnected(
+                f"{vp2_source_mesh}.outMesh",
+                f"{vp2_render_shape}.inputMesh",
+            ):
+                raise RuntimeError(
+                    "VP2 proxy input is not driven by source outMesh"
+                )
+            if cmds.listConnections(f"{vp2_source_mesh}.visibility", source=True, destination=False):
+                raise RuntimeError("VP2 source visibility must remain independently editable")
+            if bool(cmds.getAttr(f"{vp2_source_mesh}.intermediateObject")):
+                raise RuntimeError("VP2 source mesh must not be marked intermediate")
+            if not bool(cmds.getAttr(f"{vp2_source_mesh}.visibility")):
+                raise RuntimeError("VP2 source must remain visible until proxy buffers are ready")
 
-        if not vp2_transform:
-            raise RuntimeError("VP2 reopen proxy has no parent transform")
-        cmds.delete(vp2_transform)
-        if cmds.objExists(vp2_transform):
-            raise RuntimeError(
-                f"mmdFastLoad(vp2Ownership=True) cleanup did not delete root: {vp2_transform}"
+            with tempfile.TemporaryDirectory(prefix="mmd_tools_vp2_smoke_") as temp_dir:
+                scene_path = Path(temp_dir) / "vp2_reopen_fallback.ma"
+                cmds.file(rename=str(scene_path))
+                cmds.file(save=True, type="mayaAscii", force=True)
+                cmds.file(new=True, force=True)
+                cmds.file(str(scene_path), open=True, force=True)
+
+                reopened_proxies = cmds.ls(type="mmdRenderShape", long=True) or []
+                if len(reopened_proxies) != 1:
+                    raise RuntimeError(
+                        f"VP2 reopen expected one proxy shape, got {reopened_proxies!r}"
+                    )
+                reopened_sources = cmds.listConnections(
+                    f"{reopened_proxies[0]}.inputMesh", source=True, destination=False, shapes=True,
+                ) or []
+                if len(reopened_sources) != 1:
+                    raise RuntimeError(f"VP2 reopen lost source mesh: {reopened_sources!r}")
+                visibility = reopened_sources[0] + ".visibility"
+                if cmds.listConnections(visibility, source=True, destination=False):
+                    raise RuntimeError("VP2 source visibility acquired an unexpected driver")
+                if not bool(cmds.getAttr(visibility)):
+                    raise RuntimeError("VP2 source must reopen visible")
+                vp2_transform = (cmds.listRelatives(
+                    reopened_proxies[0], parent=True, fullPath=True
+                ) or [None])[0]
+
+            if not vp2_transform:
+                raise RuntimeError("VP2 reopen proxy has no parent transform")
+            cmds.delete(vp2_transform)
+            if cmds.objExists(vp2_transform):
+                raise RuntimeError(
+                    f"mmdFastLoad() cleanup did not delete root: {vp2_transform}"
+                )
+            print(
+                "OK: VP2 fast load created source/proxy siblings, kept source visible, "
+                "and preserved the legacy visibility compatibility output across scene reopen"
             )
-        print(
-            "OK: VP2 fast load created source/proxy siblings, kept source visible, "
-            "and preserved the legacy visibility compatibility output across scene reopen"
-        )
+
+        else:
+            print("VP2 proxy checks not_run: active device is not DirectX 11; ordinary mesh checked above")
 
         morph_result = cmds.mmdFastLoad(f=str(FAST_LOAD_MORPH_MODEL), n="mmd_fast_morph_smoke", s=1.0, mo=True)
-        if not morph_result or len(morph_result) != 2:
+        if not morph_result or len(morph_result) != expected:
             raise RuntimeError(f"mmdFastLoad morph smoke returned unexpected result: {morph_result!r}")
-        morph_transform, morph_mesh = morph_result
+        morph_transform, morph_mesh = morph_result[:2]
         blend_shapes = cmds.ls(type="blendShape") or []
         if not blend_shapes:
             raise RuntimeError("mmdFastLoad(morphs=True) did not create a blendShape")
@@ -1481,7 +1490,6 @@ def main() -> int:
             options={
                 "setup_rig": True,
                 "setup_bone_orientation": True,
-                "use_cpp_fast_load": False,
                 "import_physics": False,
                 "auto_resolve_textures": False,
             },
@@ -1613,7 +1621,7 @@ def main() -> int:
         runtime_nodes_before = set(cmds.ls(type=NODE_TYPE) or [])
         runtime_model_root = import_mmd_file(
             str(FAST_IMPORT_SKIN_MODEL),
-            options={"use_cpp_fast_load": False},
+            options={},
         )
         if not runtime_model_root or not cmds.objExists(runtime_model_root):
             raise RuntimeError(f"import_mmd_file(model) did not create root: {runtime_model_root!r}")
@@ -2007,7 +2015,6 @@ def main() -> int:
                 morph_root = import_mmd_file(
                     str(morph_pmx_path),
                     options={
-                        "use_cpp_fast_load": False,
                         "use_namespace": True,
                         "custom_namespace": "track4_morph_dg",
                     },
@@ -2204,27 +2211,27 @@ def main() -> int:
             cmds.delete(runtime_node)
         cmds.delete(runtime_model_root)
 
-        unload_result = cmds.mmdFastLoad(
-            f=str(FAST_LOAD_MODEL),
-            n="mmt_fast_vp2_unload_smoke",
-            s=1.0,
-            vp2Ownership=True,
-        )
-        if not unload_result or len(unload_result) != 3:
-            raise RuntimeError(f"VP2 unload setup failed: {unload_result!r}")
-        unload_root, unload_source, _unload_proxy = unload_result
-        try:
-            cmds.unloadPlugin(plugin_name, force=False)
-        except RuntimeError:
-            pass
-        if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
-            raise RuntimeError("VP2 plugin unloaded while a live proxy still existed")
-        if not bool(cmds.getAttr(f"{unload_source}.visibility")):
-            raise RuntimeError("VP2 refused unload without restoring source visibility")
-        cmds.delete(unload_root)
-        print(
-            "OK: VP2 live-node unload was refused with the ordinary source mesh visible"
-        )
+        if uses_native_render_shape():
+            unload_result = cmds.mmdFastLoad(
+                f=str(FAST_LOAD_MODEL),
+                n="mmt_fast_vp2_unload_smoke",
+                s=1.0,
+            )
+            if not unload_result or len(unload_result) != 3:
+                raise RuntimeError(f"VP2 unload setup failed: {unload_result!r}")
+            unload_root, unload_source, _unload_proxy = unload_result
+            try:
+                cmds.unloadPlugin(plugin_name, force=False)
+            except RuntimeError:
+                pass
+            if not cmds.pluginInfo(plugin_name, query=True, loaded=True):
+                raise RuntimeError("VP2 plugin unloaded while a live proxy still existed")
+            if not bool(cmds.getAttr(f"{unload_source}.visibility")):
+                raise RuntimeError("VP2 refused unload without restoring source visibility")
+            cmds.delete(unload_root)
+            print(
+                "OK: VP2 live-node unload was refused with the ordinary source mesh visible"
+            )
         return 0
     finally:
         maya.standalone.uninitialize()

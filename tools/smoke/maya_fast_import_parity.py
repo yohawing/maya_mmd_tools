@@ -231,8 +231,7 @@ def _run_import(cmds: Any, om: Any, model: Path, route: str, scale: float) -> di
         common.update(
             {
                 "cpp_fast_load_mesh_only": False,
-                "use_cpp_vp2_ownership": True,
-            }
+                }
         )
         root = import_mmd_file(str(model), options=common)
     if not root:

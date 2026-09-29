@@ -234,7 +234,7 @@ def test_normalize_playback_callbacks_rejects_missing_order_and_n_samples(
 
 def test_runner_source_keeps_native_route_and_evidence_contract() -> None:
     source = Path(profile.__file__).read_text(encoding="utf-8")
-    assert '"use_cpp_vp2_ownership": False' in source
+    assert "root = import_python_pmx_reference(" in source
     assert '"separate_meshes_by_material": True' in source
     assert 'rendererOverrideName=""' in source
     assert 'settings.set("import.model.create_mmd_shaders", True)' in source

@@ -309,18 +309,6 @@ class SettingsService:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
         # UI imports always include ordinary PMX authoring.
         opts["cpp_fast_load_mesh_only"] = False
-        opts["use_cpp_vp2_ownership"] = True
-        if opts["use_cpp_vp2_ownership"]:
-            from ..converters.material_morph_runtime import (
-                VP2_API_OPENGL,
-                VP2_API_OPENGL_CORE,
-                detect_effective_vp2_draw_api,
-            )
-
-            # The ordinary UI must remain usable on OpenGL, including macOS.
-            # Explicit API requests retain the importer's strict DX11 check.
-            if detect_effective_vp2_draw_api() in {VP2_API_OPENGL, VP2_API_OPENGL_CORE}:
-                opts["use_cpp_vp2_ownership"] = False
         if is_dev:
             opts["use_native_pmx_parse"] = True
             opts["require_native_pmx_parse"] = self.get(

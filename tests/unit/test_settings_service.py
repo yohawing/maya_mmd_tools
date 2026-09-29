@@ -277,7 +277,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_bone_orientation", options)
         self.assertNotIn("use_cpp_fast_load", options)
         self.assertFalse(options["cpp_fast_load_mesh_only"])
-        self.assertTrue(options["use_cpp_vp2_ownership"])
+        self.assertNotIn("use_cpp_vp2_ownership", options)
         self.assertFalse(options["use_native_pmx_parse"])
         self.assertFalse(options["require_native_pmx_parse"])
         self.assertFalse(options["use_cpp_rig_nodes"])
@@ -304,7 +304,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["translate_names"])
         self.assertNotIn("use_cpp_fast_load", options)
         self.assertFalse(options["cpp_fast_load_mesh_only"])
-        self.assertTrue(options["use_cpp_vp2_ownership"])
+        self.assertNotIn("use_cpp_vp2_ownership", options)
         self.assertTrue(options["use_native_pmx_parse"])
         self.assertTrue(options["use_cpp_rig_nodes"])
         self.assertNotIn("setup_rig", options)
@@ -319,7 +319,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         options = self.service.build_pmx_import_options()
 
         self.assertNotIn("use_cpp_fast_load", options)
-        self.assertTrue(options["use_cpp_vp2_ownership"])
+        self.assertNotIn("use_cpp_vp2_ownership", options)
 
     def test_saved_native_switches_do_not_select_import_route(self):
         for development_mode in (False, True):
@@ -331,7 +331,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
                         self.service.set("import.native.use_cpp_vp2_ownership", vp2)
                         options = self.service.build_pmx_import_options()
                         self.assertNotIn("use_cpp_fast_load", options)
-                        self.assertTrue(options["use_cpp_vp2_ownership"])
+                        self.assertNotIn("use_cpp_vp2_ownership", options)
 
     def test_opengl_ui_uses_fast_load_without_render_override(self):
         from mmd_tools.converters.material_morph_runtime import VP2_API_OPENGL, VP2_API_OPENGL_CORE
@@ -343,7 +343,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
             ):
                 options = self.service.build_pmx_import_options()
                 self.assertNotIn("use_cpp_fast_load", options)
-                self.assertFalse(options["use_cpp_vp2_ownership"])
+                self.assertNotIn("use_cpp_vp2_ownership", options)
                 self.assertTrue(self.service.get("import.native.use_cpp_vp2_ownership"))
 
     def test_model_control_rig_setting_feeds_pmx_and_vmd_options(self):

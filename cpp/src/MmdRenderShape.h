@@ -3,7 +3,7 @@
  * @brief Opt-in custom DAG shape used by the native VP2 ownership witness.
  *
  * The ordinary importer continues to create MFnMesh nodes.  This shape is
- * created only by ``mmdFastLoad -vp2Ownership true`` and owns the
+ * created by ``mmdFastLoad`` on DirectX 11 and owns the
  * material-split vertex/index data until the matching MPxGeometryOverride
  * has handed it to Viewport 2.0.  The override creates one render item per
  * material/submesh queue entry so the native ordering contract is observable

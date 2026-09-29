@@ -120,7 +120,7 @@ class TestVmdMorphRealGate(MayaTestBase):
         self.assertEqual(len(motion.morph_frames), 8)
         self.assertEqual(sorted({frame.frame_number for frame in motion.morph_frames}), [0, 10])
 
-        import_options = {"create_mmd_shaders": False, "import_morphs": True, "use_cpp_fast_load": False}
+        import_options = {"create_mmd_shaders": False, "import_morphs": True, }
         root_a = import_mmd_file(str(PMX), options=import_options)
         root_b = import_mmd_file(str(PMX), options=import_options)
         self.assertTrue(root_a)

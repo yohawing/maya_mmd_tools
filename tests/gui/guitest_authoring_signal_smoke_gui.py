@@ -727,7 +727,6 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
                     "setup_bone_orientation": False,
                     "create_mmd_control_rig": False,
                     "create_mmd_shaders": True,
-                    "use_cpp_fast_load": False,
                     "use_native_pmx_parse": False,
                     "require_native_pmx_parse": False,
                 },

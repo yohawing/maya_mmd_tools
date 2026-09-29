@@ -26,7 +26,7 @@ logger = get_logger("mmd_tools.io.mmd_importer")
 
 _OPTION_TO_SETTINGS_KEY = settings_keys.MODEL_OPTION_TO_SETTINGS_KEY
 
-# A VP2-owned import is an explicit UI route.  Falling through to the Python
+# DX11 imports require the native render route.  Falling through to the Python
 # importer after that route fails creates a valid-looking ordinary Maya mesh,
 # which is materially different from what the caller requested.  Keep the
 # code stable so presenters and tests can surface an actionable failure.
@@ -43,7 +43,7 @@ def _native_route_profile(options: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _raise_native_vp2_failure(options: Dict[str, Any], reason: str, error: Optional[Exception] = None) -> None:
-    """Fail closed when an explicitly requested VP2 route cannot be used."""
+    """Fail closed when the device-selected native render route cannot be used."""
     diagnostics = _native_route_profile(options)
     diagnostics.update(
         {
@@ -306,7 +306,9 @@ def import_mmd_file(
         import_scale = SettingsService().resolve_import_scale()
 
     # PMX always uses C++ geometry; PMD/VMD retain their format-specific parsers.
-    vp2_ownership_requested = bool(options.get("use_cpp_vp2_ownership", False))
+    from .cpp_fast_importer import uses_native_render_shape
+
+    vp2_ownership_requested = suffix == ".pmx" and uses_native_render_shape()
     if suffix == ".pmx":
         _emit_progress(10)
         mesh_only = options.get("cpp_fast_load_mesh_only", False)
@@ -326,10 +328,6 @@ def import_mmd_file(
             "mesh_only": mesh_only,
             "include_morphs": include_morphs,
         }
-        # VP2 ownership remains a separate option until its API is retired.
-        # The UI chooses it from the active viewport device.
-        if options.get("use_cpp_vp2_ownership", False):
-            fast_kwargs["vp2_ownership"] = True
         if not mesh_only:
             fast_kwargs["options"] = options
             if progress_callback is not None:
@@ -341,6 +339,7 @@ def import_mmd_file(
                 _raise_native_vp2_failure(options, f"fast importer error: {exc}", exc)
             raise
         if fast_root is not None:
+            vp2_ownership_requested = uses_native_render_shape()
             # Fast Load returns before the Python importer's scene setup.
             # Reuse its shared light policy, including get-or-create and opt-out.
             light_controller = ModelImportPipeline(

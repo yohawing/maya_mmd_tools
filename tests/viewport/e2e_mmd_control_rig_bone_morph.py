@@ -429,8 +429,7 @@ def _fresh_eye_import_parity(
             "setup_bone_orientation": True,
             "import_physics": False,
             "import_morphs": True,
-            "use_cpp_fast_load": False,
-        },
+            },
     )
     if not fresh_root:
         raise RuntimeError("fresh PMX import returned no model root")
@@ -1016,7 +1015,7 @@ def run_probe(log_path: str, model_path: str, report_path: str) -> None:
         )
         from mmd_tools.converters.bone_morph_runtime import probe_bone_morph_accum_availability
 
-        root = str(import_mmd_file(str(model_path), options={"setup_rig": True, "setup_bone_orientation": True, "import_physics": False, "import_morphs": True, "use_cpp_fast_load": False}))
+        root = str(import_mmd_file(str(model_path), options={"setup_rig": True, "setup_bone_orientation": True, "import_physics": False, "import_morphs": True, }))
         if not root:
             raise RuntimeError("PMX import returned no model root")
         report["cycles"].append(_cycle("after_import", cmds))

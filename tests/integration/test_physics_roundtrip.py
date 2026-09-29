@@ -126,7 +126,6 @@ class TestPhysicsRoundTrip(MayaTestBase):
                 "import_physics": True,
                 "create_mmd_shaders": False,
                 "setup_rig": False,
-                "use_cpp_fast_load": False,
                 "use_native_pmx_parse": False,
                 "require_native_pmx_parse": False,
             },

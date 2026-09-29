@@ -110,7 +110,6 @@ def probe_steps(config):
                       mayaVersion=cmds.about(version=True), device=cmds.ogs(deviceInformation=True))
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
         root = import_mmd_file(config["model"], options={
-            "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
             "import_morphs": False, "import_physics": False,
             "separate_meshes_by_material": config.get("splitMaterials", False),
         })
