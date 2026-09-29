@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expanded readable bone and morph name conversion through the 500 most frequent names.
 
 ### Fixed
+- Restored bone-only PMX import through the native authoring path.
 - Kept VMD IK solver inputs on their Animation Layer so layer weight and motion clearing respect ownership.
 - Preserved empty indexed vertex morphs in PMX export and bone morph ownership during name translation.
 - Preserved source morph identities and unique aliases when native import filters vertex morph targets.
