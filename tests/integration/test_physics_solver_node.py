@@ -138,6 +138,22 @@ class TestPhysicsSolverNode(MayaTestBase):
         solver = self._create_solver(root)
         self.assertEqual(cmds.nodeType(solver), "mmdPhysicsSolver")
 
+    def test_imported_world_preserves_native_mmd_gravity(self):
+        """Creating a Maya world must not weaken native gravity by ten times."""
+        from mmd_tools.core.physics_descriptor import build_descriptors_from_pmx
+        from mmd_tools.core.native.mmd_anim_runtime_handles import MmdRuntimePhysicsWorld
+
+        descriptors = build_descriptors_from_pmx(self.pmx.rigid_bodies, self.pmx.joints, self.pmx.bones)
+        native = MmdRuntimePhysicsWorld.from_descriptors(descriptors.rigid_bodies, descriptors.joints)
+        self.assertIsNotNone(native)
+        try:
+            root, _ = self._build_scene()
+            solver = self._create_solver(root)
+            for actual, expected in zip(_solver_world_gravity(solver), native.get_gravity()):
+                self.assertAlmostEqual(actual, expected, places=4)
+        finally:
+            native.free()
+
     def test_ui_enable_moves_solver_joints_and_skinned_mesh(self):
         """The Physics-tab enable path must produce visible scene motion."""
         from types import SimpleNamespace
@@ -275,7 +291,9 @@ class TestPhysicsSolverNode(MayaTestBase):
 
         scale = 0.5
         root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH, scale=scale)
-        _connect_enabled_world(solver)
+        world = _connect_enabled_world(solver)
+        # This checks rest geometry scaling, not the gravity-driven settle step.
+        cmds.setAttr(f"{world}.gravity", 0.0, 0.0, 0.0)
         cmds.currentTime(0)
         solver_flat = list(cmds.getAttr(f"{solver}.outBoneMatrices"))
 

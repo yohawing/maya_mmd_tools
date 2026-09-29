@@ -74,7 +74,8 @@ def initialize():
     # --- Gravity (input) ---
     MmdPhysicsWorldShape.aGravityX = nAttr.create("gravityX", "grx", om.MFnNumericData.kDouble, 0.0)
     _hide_attribute(nAttr)
-    MmdPhysicsWorldShape.aGravityY = nAttr.create("gravityY", "gry", om.MFnNumericData.kDouble, -9.8)
+    # Descriptors use PMX length units; match the native MMD world's acceleration.
+    MmdPhysicsWorldShape.aGravityY = nAttr.create("gravityY", "gry", om.MFnNumericData.kDouble, -98.0)
     _hide_attribute(nAttr)
     MmdPhysicsWorldShape.aGravityZ = nAttr.create("gravityZ", "grz", om.MFnNumericData.kDouble, 0.0)
     _hide_attribute(nAttr)
