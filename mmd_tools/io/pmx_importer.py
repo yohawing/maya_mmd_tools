@@ -206,6 +206,8 @@ def import_pmx_file(
             )
             model_registry = pipeline.create_model_registry(root_group)
 
+            pipeline.emit_progress(18)
+
             # メッシュを変換
             logger.debug("Converting mesh...")
             mesh_converter = MeshConverter(filepath, scale=scale)
@@ -238,6 +240,9 @@ def import_pmx_file(
 
             logger.debug("Converting morphs...")
             phase_start = time.perf_counter()
+            # Plug-in reloads can retain a converter with the original two-argument
+            # method. Optional progress must not invalidate that import contract.
+            morph_converter.progress_callback = lambda value: pipeline.emit_progress(35 + value * 15 // 100)
             morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
             pipeline.record_phase("morph_conversion_sec", phase_start)
             pipeline.emit_progress(50)
@@ -249,7 +254,9 @@ def import_pmx_file(
                 morph_result,
                 model_registry=model_registry,
             )
+            pipeline.emit_progress(52)
             morph_converter.build_morph_controller(parser, root_group, morph_result)
+            pipeline.emit_progress(55)
 
             # ボーンを変換
             logger.debug("Converting bones...")
@@ -283,6 +290,7 @@ def import_pmx_file(
                     warning.get("detail"),
                 )
 
+            pipeline.emit_progress(72)
             pipeline.convert_physics(
                 file_kind="pmx",
                 parser=parser,
@@ -290,6 +298,8 @@ def import_pmx_file(
                 root_group=root_group,
                 model_registry=model_registry,
             )
+
+            pipeline.emit_progress(80)
 
             # MMD ライトコントローラ（操作可能なヌル）を作成（get-or-create）。
             # シェーダーへの結線は dx11 uniform 生成（refresh）後に行うため、
@@ -304,6 +314,8 @@ def import_pmx_file(
                 pipeline.sync_dx11_uniforms(mesh_converter, refresh_if_dx11=True)
             except Exception:
                 logger.debug("Failed to synchronize dx11 generated uniforms", exc_info=True)
+
+            pipeline.emit_progress(84)
 
             # Material morph colour route needs post-sync plugs; do not re-sync.
             logger.debug("Building material morph runtime graph...")

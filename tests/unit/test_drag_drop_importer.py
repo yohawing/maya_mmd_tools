@@ -190,7 +190,7 @@ class TestDragDropImporter(unittest.TestCase):
             model.write_text("", encoding="utf-8")
 
             def importer(_file_path, options=None):
-                self.assertTrue(options["use_cpp_fast_load"])
+                self.assertNotIn("use_cpp_fast_load", options)
                 self.assertTrue(options["use_cpp_vp2_ownership"])
                 raise RuntimeError("NATIVE_VP2_OWNERSHIP_UNAVAILABLE")
 
@@ -199,7 +199,6 @@ class TestDragDropImporter(unittest.TestCase):
                 importer=importer,
                 settings_service=_FakeSettingsService(
                     pmx_options={
-                        "use_cpp_fast_load": True,
                         "use_cpp_vp2_ownership": True,
                     }
                 ),
@@ -225,7 +224,6 @@ class TestDragDropImporter(unittest.TestCase):
                 importer=importer,
                 settings_service=_FakeSettingsService(
                     pmx_options={
-                        "use_cpp_fast_load": True,
                         "use_cpp_vp2_ownership": True,
                     }
                 ),
@@ -235,7 +233,6 @@ class TestDragDropImporter(unittest.TestCase):
         importer.assert_called_once_with(
             str(model),
             options={
-                "use_cpp_fast_load": True,
                 "use_cpp_vp2_ownership": True,
                 "custom_namespace": None,
                 "profile": {},

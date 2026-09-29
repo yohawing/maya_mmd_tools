@@ -10,7 +10,7 @@ import math
 
 from ..core import settings_keys as setting_keys
 from ..core.constants import DEFAULT_IMPORT_PHYSICS, DEFAULT_SCALE_FACTOR
-from ..core.settings import get_settings
+from ..core.settings import get_settings, remove_legacy_native_import_settings
 
 
 _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
@@ -175,6 +175,7 @@ class SettingsService:
             category: copy.deepcopy(all_settings.get(category, {}))
             for category in _SETTINGS_EXPORT_CATEGORIES
         }
+        remove_legacy_native_import_settings(exported)
         import_settings = exported.get("import")
         if isinstance(import_settings, dict):
             import_model = import_settings.get("model")
@@ -202,6 +203,7 @@ class SettingsService:
     def import_settings_data(self, data):
         """Import settings data for supported top-level categories."""
         normalized_data = copy.deepcopy(data)
+        remove_legacy_native_import_settings(normalized_data)
         import_settings = normalized_data.get("import")
         if isinstance(import_settings, dict):
             model_settings = import_settings.get("model")
@@ -305,13 +307,9 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
         # UI imports always include ordinary PMX authoring.
         opts["cpp_fast_load_mesh_only"] = False
-        opts["use_cpp_vp2_ownership"] = bool(
-            opts["use_cpp_fast_load"]
-            and self.get(setting_keys.IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP, True)
-        )
+        opts["use_cpp_vp2_ownership"] = True
         if opts["use_cpp_vp2_ownership"]:
             from ..converters.material_morph_runtime import (
                 VP2_API_OPENGL,

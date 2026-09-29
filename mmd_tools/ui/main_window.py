@@ -212,6 +212,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
             if value >= 100:
                 self.progress_bar.setValue(100)
+        self._flush_progress_paint()
 
     def update_progress_state(self, state):
         """Render structured workflow progress without changing legacy progress."""

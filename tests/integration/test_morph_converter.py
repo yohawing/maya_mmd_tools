@@ -3,7 +3,7 @@ import os
 import re
 from copy import deepcopy
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from maya import cmds
 
@@ -1001,6 +1001,119 @@ class TestMorphConverter(MayaTestBase):
         self.assertIn("mat1_only", mesh_b_aliases)
         self.assertNotIn("mat0_only", mesh_b_aliases)
 
+    def test_material_split_reuses_deltas_without_dropping_zero_targets(self):
+        from types import SimpleNamespace
+        from mmd_tools.converters import morph_converter as module
+
+        meshes = [self._create_test_mesh(), self._create_test_mesh()]
+        for index, mesh in enumerate(meshes):
+            maya_attribute_utils.set_custom_attributes(mesh, {
+                "mmd_material_split_mesh": True, "mmd_material_index": index,
+            })
+        morphs = []
+        for name, values in (("move", [0.1]), ("zero", [0.0]), ("cancel", [0.1, -0.1])):
+            morph = SimpleNamespace(
+                name=name, name_english=name, panel=1, morph_type=PmxMorphType.VertexMorph,
+                offsets=[{"vertex_index": 0, "position_offset": (value, 0.0, 0.0)} for value in values],
+                get_name=lambda value=name: value,
+            )
+            morphs.append(morph)
+        data = SimpleNamespace(
+            faces=[SimpleNamespace(indices=[0, 1, 2]), SimpleNamespace(indices=[0, 2, 3])],
+            materials=[SimpleNamespace(face_count=3), SimpleNamespace(face_count=3)], morphs=morphs,
+        )
+        progress = []
+        with patch.object(module, "collect_morph_delta", wraps=module.collect_morph_delta) as collect:
+            result = MorphConverter().convert_pmx_morphs(data, meshes, progress_callback=progress.append)
+        self.assertEqual(progress, sorted(set(progress)))
+        self.assertGreater(len(progress), 2)
+        self.assertTrue(all(0 <= value < 100 for value in progress))
+        self.assertEqual(collect.call_count, 3)
+        self.assertEqual(result["morphs_converted"], 6)
+        for blend in result["blend_shape_nodes"]:
+            self.assertEqual(cmds.getAttr(blend + ".weight", multiIndices=True), [0, 1, 2])
+            mesh = cmds.blendShape(blend, query=True, geometry=True)[0]
+            before = cmds.pointPosition(mesh + ".vtx[0]", local=True)
+            for index in (1, 2):
+                cmds.setAttr(f"{blend}.weight[{index}]", 1.0)
+                self.assertEqual(cmds.pointPosition(mesh + ".vtx[0]", local=True), before)
+                cmds.setAttr(f"{blend}.weight[{index}]", 0.0)
+            cmds.setAttr(blend + ".weight[0]", 1.0)
+            after = cmds.pointPosition(mesh + ".vtx[0]", local=True)
+            self.assertAlmostEqual(after[0] - before[0], 0.1, places=5)
+
+    def test_sparse_target_stays_within_rounding_tolerance_and_supports_sculpt_undo(self):
+        """Bound float32 rounding differences while preserving sculpt and Undo/Redo."""
+        from types import SimpleNamespace
+        from maya.api import OpenMaya as om
+
+        for delta_x in (0.1, 1e-9, 0.0):
+            with self.subTest(delta_x=delta_x):
+                cmds.file(new=True, force=True)
+                mesh = cmds.polyPlane(sx=1, sy=1)[0]
+                cmds.delete(mesh, constructionHistory=True)
+                selection = om.MSelectionList()
+                selection.add(maya_mesh_utils.resolve_mesh_shape(mesh))
+                mesh_fn = om.MFnMesh(selection.getDagPath(0))
+                base = mesh_fn.getPoints()
+                for index, x in enumerate((1.234567, 1e8, -1.234567, 0.0)):
+                    base[index].x = x
+                mesh_fn.setPoints(base)
+                base = mesh_fn.getPoints()
+                reference = cmds.duplicate(mesh)[0]
+                target = cmds.duplicate(mesh)[0]
+                selection = om.MSelectionList()
+                selection.add(maya_mesh_utils.resolve_mesh_shape(target))
+                target_fn = om.MFnMesh(selection.getDagPath(0))
+                target_points = om.MPointArray(base)
+                for index in range(4):
+                    target_points[index] += om.MVector(delta_x, 0.0, 0.0)
+                target_fn.setPoints(target_points)
+                old_blend = cmds.blendShape(target, reference)[0]
+                cmds.delete(target)
+                morph = SimpleNamespace(
+                    get_name=lambda: "Sparse", name="Sparse", morph_type=PmxMorphType.VertexMorph,
+                    offsets=[{"vertex_index": i, "position_offset": (delta_x, 0.0, 0.0)} for i in (3, 1, 2, 0)],
+                )
+                with patch("mmd_tools.converters.morph_converter.cmds.duplicate", wraps=cmds.duplicate) as duplicate:
+                    converter = MorphConverter()
+                    context = {}
+                    result = converter._convert_vertex_morph_pmx(morph, mesh, morph_index=0, mesh_ctx=context)
+                self.assertEqual(duplicate.call_count, 0)
+                blend = result["blend_shape_node"]
+                suffix = ".inputTarget[0].inputTargetGroup[0].inputTargetItem[6000].inputPointsTarget"
+                for weight in (0.0, 0.5, 1.0):
+                    cmds.setAttr(blend + ".weight[0]", weight)
+                    cmds.setAttr(old_blend + ".weight[0]", weight)
+                    actual = cmds.xform(mesh + ".vtx[*]", query=True, objectSpace=True, translation=True)
+                    expected = cmds.xform(reference + ".vtx[*]", query=True, objectSpace=True, translation=True)
+                    # 1e-6 Maya units: a strict absolute bound, not a tolerance
+                    # proportional to the deliberately huge 1e8 base coordinate.
+                    self.assertEqual(len(actual), len(expected))
+                    for x, y in zip(actual, expected):
+                        self.assertLessEqual(abs(x - y), 1e-6)
+                before = cmds.getAttr(blend + suffix) or []
+                cmds.undoInfo(state=True)
+                cmds.undoInfo(openChunk=True)
+                try:
+                    cmds.sculptTarget(blend, edit=True, target=0)
+                    cmds.move(0.25, 0.0, 0.0, mesh + ".vtx[0]", relative=True)
+                    cmds.sculptTarget(blend, edit=True, target=-1)
+                finally:
+                    cmds.undoInfo(closeChunk=True)
+                edited = cmds.getAttr(blend + suffix) or []
+                self.assertNotEqual(edited, before)
+                cmds.undo()
+                undone = [p for p in (cmds.getAttr(blend + suffix) or []) if any(p[:3])]
+                original = [p for p in before if any(p[:3])]
+                self.assertEqual(len(undone), len(original))
+                for actual, expected in zip(undone, original):
+                    for x, y in zip(actual, expected):
+                        # Maya sculpt undo subtracts the edit in double precision.
+                        self.assertLessEqual(abs(x - y), 1e-12)
+                cmds.redo()
+                self.assertEqual(cmds.getAttr(blend + suffix) or [], edited)
+
     def test_material_split_empty_vertex_morph_keeps_single_destination(self):
         """空の vertex morph は material split mesh のいずれか一つにだけ作成する。"""
         mesh_a = self._create_test_mesh()
@@ -1404,7 +1517,9 @@ class TestMorphConverter(MayaTestBase):
             },
         )()
 
-        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+        with patch("mmd_tools.converters.morph_converter.cmds.duplicate", wraps=cmds.duplicate) as duplicate:
+            result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+        self.assertEqual(duplicate.call_count, 0)
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(result.get("morphs_converted"), 2)

@@ -650,8 +650,8 @@ class TestControlRigSettingSourceInspection(unittest.TestCase):
 
         self.assertFalse(defaults["import"]["rig"]["bake_mode"])
         self.assertTrue(defaults["import"]["animation"]["vmd_rotation_time_curve"])
-        self.assertTrue(defaults["import"]["native"]["use_cpp_fast_load"])
-        self.assertTrue(defaults["import"]["native"]["use_cpp_vp2_ownership"])
+        self.assertNotIn("use_cpp_fast_load", defaults["import"]["native"])
+        self.assertNotIn("use_cpp_vp2_ownership", defaults["import"]["native"])
 
     def test_japanese_control_rig_label_uses_katakana(self):
         translation_path = (

@@ -832,13 +832,10 @@ class TestVmdMotionClear(MayaTestBase):
         motion_b.light_frames = []
         motion_b.ik_show_hide_frames = []
 
-        def compiled_frames(**kwargs):
-            return tuple(kwargs["source_bone_frames"]), {}
-
         with patch.object(
             self.converter,
             "_compiled_registered_sparse_frames",
-            side_effect=compiled_frames,
+            side_effect=[(tuple(motion_a.bone_frames), {}), (tuple(motion_b.bone_frames), {})],
         ):
             self.assertTrue(self.converter.convert(motion_a, target_model=target_model))
             self.assertTrue(

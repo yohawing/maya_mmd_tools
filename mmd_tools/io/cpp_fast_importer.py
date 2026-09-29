@@ -272,16 +272,20 @@ def fast_import(
             command_args["sp"] = True
         if vp2_ownership:
             command_args["vp2Ownership"] = True
-        try:
-            native_mesh = cmds.mmdFastLoad(**command_args)
-        except RuntimeError as exc:
-            if vp2_ownership:
-                raise
-            logger.debug("Fast native geometry unavailable: %s", exc)
-            return None
-        expected = 1 if split else (3 if vp2_ownership else 2)
-        if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
-            raise RuntimeError("mmdFastLoad returned an invalid geometry result")
+        native_mesh = []
+        # Bone-only PMX files still use native parsing and shared authoring,
+        # but have no geometry for MFnMesh to create.
+        if pmx.vertices or pmx.faces:
+            try:
+                native_mesh = cmds.mmdFastLoad(**command_args)
+            except RuntimeError as exc:
+                if vp2_ownership:
+                    raise
+                logger.debug("Fast native geometry unavailable: %s", exc)
+                return None
+            expected = 1 if split else (3 if vp2_ownership else 2)
+            if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
+                raise RuntimeError("mmdFastLoad returned an invalid geometry result")
         if options is not None:
             _record_physics_compatibility_warnings(pmx, options)
         import_options = dict(options or {})
@@ -290,9 +294,9 @@ def fast_import(
             "_cpp_fast_load_geometry": native_mesh,
             "use_cpp_vp2_ownership": vp2_ownership,
         })
-        native_identity = cmds.ls(native_mesh[0], uuid=True)
+        native_identity = cmds.ls(native_mesh[0], uuid=True) if native_mesh else []
         proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
-        if split:
+        if split and native_mesh:
             # Split source transforms leave their temporary group during
             # authoring; render shapes can then leave those source transforms.
             sources = cmds.listRelatives(
@@ -814,7 +818,25 @@ def _apply_fast_morph_metadata(
         if weight_count == 0:
             return blend_shapes
 
-        candidates = _fast_vertex_morph_candidates(source)
+        if cmds_module.attributeQuery("mmd_source_morph_indices", node=blend_shape, exists=True):
+            # C++ owns target filtering (including per-mesh weld conflicts).
+            # Resolve its recorded indices against parsed PMX metadata instead
+            # of inferring target identity from matching candidate counts.
+            indices = cmds_module.getAttr(f"{blend_shape}.mmd_source_morph_indices")
+            morphs = source.get("morphs")
+            if (
+                not isinstance(indices, (list, tuple))
+                or not isinstance(morphs, list)
+                or len(indices) != weight_count
+                or any(type(index) is not int or not 0 <= index < len(morphs) for index in indices)
+                or len(set(indices)) != len(indices)
+                or any(not isinstance(morphs[index], dict) or morphs[index].get("type") != "vertex" for index in indices)
+            ):
+                logger.debug("Fast morph metadata skipped: invalid C++ source morph indices")
+                return blend_shapes
+            candidates = [{"index": index, "name": morphs[index].get("name", "")} for index in indices]
+        else:
+            candidates = _fast_vertex_morph_candidates(source)
         if candidates is None or len(candidates) != weight_count:
             logger.debug(
                 "Fast morph metadata skipped: C++ target count %d does not match parsed candidates %s",

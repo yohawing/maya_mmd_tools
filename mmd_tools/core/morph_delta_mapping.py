@@ -123,8 +123,21 @@ def map_morph_deltas_to_local(
         + 1,
     )
 
+    return map_collected_morph_delta(
+        collect_morph_delta(morph, morph_index, source_count),
+        morph_index, source_to_local, local_count,
+    )
+
+
+def map_collected_morph_delta(
+    source_deltas: Mapping[int, Tuple[float, ...]],
+    morph_index: int,
+    source_to_local: Optional[Mapping[int, int]],
+    local_count: int,
+) -> Dict[int, Tuple[float, ...]]:
+    """Map validated source deltas, retaining per-mesh bounds/weld checks."""
     mapped: Dict[int, Tuple[float, ...]] = {}
-    for source_index, delta in collect_morph_delta(morph, morph_index, source_count).items():
+    for source_index, delta in source_deltas.items():
         local_index = source_to_local.get(source_index) if source_to_local is not None else source_index
         if local_index is None:
             continue

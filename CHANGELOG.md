@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-27
+
+### Changed
+- Reduced PMX import work when creating vertex morphs, resolving bone paths, hashing textures, and binding material morphs. Added progress updates during morph conversion.
+- Reduced VMD import overhead by batching key replacement, tangent authoring, and rotation conversion, and reusing sparse key groups and static bind transforms.
+- Exported model VMD motion from the current Maya animation curves with validation and interpolation fitting.
+- Required native geometry loading for PMX imports and retired persisted native-import route switches.
+- Expanded readable bone and morph name conversion through the 500 most frequent names.
+
+### Fixed
+- Kept VMD IK solver inputs on their Animation Layer so layer weight and motion clearing respect ownership.
+- Preserved empty indexed vertex morphs in PMX export and bone morph ownership during name translation.
+- Preserved source morph identities and unique aliases when native import filters vertex morph targets.
+- Corrected model overview counts for intermediate meshes and registry-owned morphs.
+- Preserved editable smoothing across welded UV seams and restored transparent material passes after scene reload.
+- Corrected left finger control placement and curl axes, and synchronized edits across selected Animator Toolset morph rows.
+- Preserved morph import calls across Maya module reloads and warned when MMD rendering falls back to the standard viewport.
+
 ## [0.8.0] - 2026-09-17
 
 ### Added

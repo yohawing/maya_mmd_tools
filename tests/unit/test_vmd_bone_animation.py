@@ -1,12 +1,13 @@
 """VMD bone keying and quaternion conversion tests."""
 
 import math
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
-from mmd_tools.converters.vmd_bone_animation import convert_bone_animation
+from mmd_tools.converters.vmd_bone_animation import convert_bone_animation, _sparse_rotation_samples
+from mmd_tools.converters import vmd_joint_rotation
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdBoneAnimationContext
 from mmd_tools.converters.vmd_registered_sparse import RegisteredSparseBoneFrame
@@ -30,6 +31,55 @@ class TestVmdBoneAnimation(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def test_rotation_bind_terms_are_reused_only_within_keying_context(self):
+        """A later keying batch must observe rebuilt bind maps, including JO/order."""
+        joint = cmds.joint(name="cached_rotation_joint")
+        cmds.setAttr(f"{joint}.jointOrient", 15.0, 30.0, -20.0)
+        self.converter.bone_index_to_joint = {1: joint}
+        self.converter._bone_parent_map = {1: 0}
+        parent = om.MTransformationMatrix()
+        parent.setRotation(om.MEulerRotation(.2, -.3, .1).asQuaternion())
+        child = om.MTransformationMatrix()
+        child.setRotation(om.MEulerRotation(.4, .1, -.2).asQuaternion())
+        self.converter._runtime_bind_world_matrices = {0: parent.asMatrix(), 1: child.asMatrix()}
+        self.converter._runtime_no_orient_bind_world_matrices = {0: om.MMatrix(), 1: om.MMatrix()}
+        samples = [(0., 0., 0., 1.), (.1, .2, .3, math.sqrt(.86)), (-.3, .1, .2, math.sqrt(.86))]
+        for order in range(6):
+            cmds.setAttr(f"{joint}.rotateOrder", order)
+            self.converter._joint_orient_cache = {}
+            expected = [self.converter._convert_vmd_quat_to_joint_rotate(joint, *q) for q in samples]
+            convert = self.converter._bone_animation_context().convert_vmd_quat_to_joint_rotate
+            with patch.object(vmd_joint_rotation, "_bind_space_terms", wraps=vmd_joint_rotation._bind_space_terms) as prepare:
+                actual = [convert(joint, *q) for q in samples]
+                self.assertEqual(prepare.call_count, 1)
+            for actual_rotation, expected_rotation in zip(actual, expected):
+                for value, target in zip(actual_rotation, expected_rotation):
+                    self.assertAlmostEqual(value, target, places=10)
+
+        child.setRotation(om.MEulerRotation(-.5, .3, .2).asQuaternion())
+        self.converter._runtime_bind_world_matrices[1] = child.asMatrix()
+        expected = self.converter._convert_vmd_quat_to_joint_rotate(joint, *samples[1])
+        new_convert = self.converter._bone_animation_context().convert_vmd_quat_to_joint_rotate
+        self.assertNotEqual(convert(joint, *samples[1]), expected)
+        for value, target in zip(new_convert(joint, *samples[1]), expected):
+            self.assertAlmostEqual(value, target, places=10)
+
+    def test_sparse_control_rotation_reads_orders_once_per_track(self):
+        """Control basis conversion preserves samples without per-key scene reads."""
+        joint = cmds.joint(name="basis_source_joint")
+        control = cmds.createNode("transform", name="basis_destination_control")
+        cmds.setAttr(f"{joint}.rotateOrder", 2)
+        cmds.setAttr(f"{control}.rotateOrder", 4)
+        context = self.converter._bone_animation_context()
+        frames = [_bone_frame("bone", i, (0., 0., 0.)) for i in range(5)]
+        route = {"authoring_basis": (0., 0., 0., 1.), "attr_targets": {"rotateX": (control, "rotateX")}}
+        # Prime the existing JO cache so this count concerns only the basis conversion.
+        self.converter._get_joint_orient_cache(joint)
+        with patch.object(cmds, "getAttr", wraps=cmds.getAttr) as get_attr:
+            samples = _sparse_rotation_samples(context, joint, frames, route)
+        self.assertEqual(samples, [(float(i), (0., 0., 0.)) for i in range(5)])
+        self.assertEqual(get_attr.call_count, 2)
 
     def test_legacy_vmd_layer_weight_zero_restores_preimport_joint_value(self):
         """An authored VMD layer must yield to the joint baseline at weight zero."""

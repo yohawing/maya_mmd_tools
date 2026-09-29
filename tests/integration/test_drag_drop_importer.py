@@ -22,7 +22,9 @@ def _animated_curves(root: str) -> set[str]:
     nodes.extend(cmds.listRelatives(root, allDescendents=True, fullPath=True) or [])
     curves = set()
     for node in nodes:
-        curves.update(cmds.listConnections(node, source=True, destination=False, type="animCurve") or [])
+        # Animation layers and rig nodes sit between the joint and its curves.
+        history = cmds.listHistory(node, pruneDagObjects=True) or []
+        curves.update(cmds.ls(history, type="animCurve") or [])
     return curves
 
 

@@ -22,7 +22,6 @@ IMPORT_RIG_BAKE_MODE = "import.rig.bake_mode"
 
 IMPORT_NAMING_TRANSLATE_NAMES = "import.naming.translate_names"
 
-IMPORT_NATIVE_USE_CPP_FAST_LOAD = "import.native.use_cpp_fast_load"
 IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY = "import.native.cpp_fast_load_mesh_only"
 IMPORT_NATIVE_USE_CPP_VP2_OWNERSHIP = "import.native.use_cpp_vp2_ownership"
 IMPORT_NATIVE_REQUIRE_NATIVE_PMX_PARSE = "import.native.require_native_pmx_parse"

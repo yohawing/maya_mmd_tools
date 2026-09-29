@@ -179,6 +179,17 @@ class TestSettingsServiceJson(unittest.TestCase):
         self.assertEqual(self.service.get("logging.level"), "ERROR")
         self.assertIn(("logging.level", "ERROR"), self.store.set_calls)
 
+    def test_json_drops_retired_native_switches_without_mutating_input(self):
+        original = copy.deepcopy(self.store.data)
+        exported = self.service.export_settings_data()
+        self.assertEqual(self.store.data, original)
+        self.service.import_settings_data(original)
+        self.assertIn("use_cpp_fast_load", original["import"]["native"])
+        for native in (exported["import"]["native"], self.store.data["import"]["native"]):
+            self.assertNotIn("use_cpp_fast_load", native)
+            self.assertNotIn("use_cpp_vp2_ownership", native)
+            self.assertTrue(native["use_cpp_rig_nodes"])
+
     def test_import_settings_migrates_legacy_control_rig_key_to_model_scope(self):
         data = {
             "import": {
@@ -264,7 +275,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["translate_names"])
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
-        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertNotIn("use_cpp_fast_load", options)
         self.assertFalse(options["cpp_fast_load_mesh_only"])
         self.assertTrue(options["use_cpp_vp2_ownership"])
         self.assertFalse(options["use_native_pmx_parse"])
@@ -291,7 +302,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["disable_backface_culling"])
         self.assertTrue(options["add_semi_standard_bones"])
         self.assertFalse(options["translate_names"])
-        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertNotIn("use_cpp_fast_load", options)
         self.assertFalse(options["cpp_fast_load_mesh_only"])
         self.assertTrue(options["use_cpp_vp2_ownership"])
         self.assertTrue(options["use_native_pmx_parse"])
@@ -307,19 +318,20 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
 
         options = self.service.build_pmx_import_options()
 
-        self.assertTrue(options["use_cpp_fast_load"])
+        self.assertNotIn("use_cpp_fast_load", options)
         self.assertTrue(options["use_cpp_vp2_ownership"])
 
-    def test_normal_mode_preserves_native_opt_out_and_dependency(self):
-        self.service.set("import.native.use_cpp_vp2_ownership", False)
-        options = self.service.build_pmx_import_options()
-        self.assertTrue(options["use_cpp_fast_load"])
-        self.assertFalse(options["use_cpp_vp2_ownership"])
-        self.service.set("import.native.use_cpp_fast_load", False)
-        self.service.set("import.native.use_cpp_vp2_ownership", True)
-        options = self.service.build_pmx_import_options()
-        self.assertFalse(options["use_cpp_fast_load"])
-        self.assertFalse(options["use_cpp_vp2_ownership"])
+    def test_saved_native_switches_do_not_select_import_route(self):
+        for development_mode in (False, True):
+            for fast in (False, True):
+                for vp2 in (False, True):
+                    with self.subTest(development_mode=development_mode, fast=fast, vp2=vp2):
+                        self.service.set("ui.general.development_mode", development_mode)
+                        self.service.set("import.native.use_cpp_fast_load", fast)
+                        self.service.set("import.native.use_cpp_vp2_ownership", vp2)
+                        options = self.service.build_pmx_import_options()
+                        self.assertNotIn("use_cpp_fast_load", options)
+                        self.assertTrue(options["use_cpp_vp2_ownership"])
 
     def test_opengl_ui_uses_fast_load_without_render_override(self):
         from mmd_tools.converters.material_morph_runtime import VP2_API_OPENGL, VP2_API_OPENGL_CORE
@@ -330,7 +342,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
                 return_value=api,
             ):
                 options = self.service.build_pmx_import_options()
-                self.assertTrue(options["use_cpp_fast_load"])
+                self.assertNotIn("use_cpp_fast_load", options)
                 self.assertFalse(options["use_cpp_vp2_ownership"])
                 self.assertTrue(self.service.get("import.native.use_cpp_vp2_ownership"))
 

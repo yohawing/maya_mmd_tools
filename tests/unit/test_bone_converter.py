@@ -259,6 +259,23 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         self.assertEqual(actual_uuid, expected_uuid)
 
+    def test_deep_hierarchy_resolves_paths_linearly(self):
+        bones = [self._create_mock_pmx_bone(
+            i, f"chain_{i}", parent_index=i - 1, position=(0, i, 0),
+        ) for i in range(32)]
+        group = cmds.group(empty=True, name="deep_skeleton")
+        with patch.object(self.converter, "_resolve_node_long_path",
+                          wraps=self.converter._resolve_node_long_path) as resolve:
+            joints = self.converter._create_maya_joints(
+                bones, {i: f"chain_{i}" for i in range(32)}, "pmx", group,
+            )
+        self.assertLessEqual(resolve.call_count, 6 * len(bones))
+        for i, joint in enumerate(joints):
+            self.assertTrue(cmds.objExists(joint))
+            self.assertAlmostEqual(cmds.xform(joint, query=True, worldSpace=True, translation=True)[1], i)
+            if i:
+                self.assertEqual(cmds.listRelatives(joint, parent=True, fullPath=True), [joints[i - 1]])
+
     @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト"""

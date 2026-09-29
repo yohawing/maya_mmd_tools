@@ -68,6 +68,7 @@ class VmdBoneAnimationContext:
     samples_as_anim_layer_deltas: Callable[[str, Mapping[str, List[Tuple[float, float]]]], Mapping[str, List[Tuple[float, float]]]]
     batch_key_scalar_channels: Callable[[str, Mapping[str, List[Tuple[float, float]]], Optional[str]], bool]
     apply_vmd_bezier_tangents: Callable[[str, List[Any], Any, Mapping[str, str]], None]
+    convert_vmd_quats_to_joint_rotates: Optional[Callable] = None
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,8 @@ class VmdIkEnabledAnimationContext:
     collect_ik_nodes_by_bone_name: Callable[[Optional[str], Optional[str]], Dict[str, str]]
     get_animation_frame_range: Callable[[Any], Tuple[int, int]]
     vmd_frame_to_maya_time: Callable[[float], float]
+    anim_layer: Optional[str] = None
+    use_animation_layers: bool = False
 
 
 @dataclass(frozen=True)

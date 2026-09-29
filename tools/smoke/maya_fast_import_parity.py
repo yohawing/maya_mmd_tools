@@ -224,16 +224,17 @@ def _run_import(cmds: Any, om: Any, model: Path, route: str, scale: float) -> di
         "custom_namespace": f"parity_{route}",
     }
     if route == "python":
-        common["use_cpp_fast_load"] = False
+        from tests.common.import_route import import_python_pmx_reference
+
+        root = import_python_pmx_reference(str(model), options=common)
     else:
         common.update(
             {
-                "use_cpp_fast_load": True,
                 "cpp_fast_load_mesh_only": False,
                 "use_cpp_vp2_ownership": True,
             }
         )
-    root = import_mmd_file(str(model), options=common)
+        root = import_mmd_file(str(model), options=common)
     if not root:
         raise RuntimeError(f"{route} import returned no root")
     return _snapshot(cmds, om, str(root))

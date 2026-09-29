@@ -189,6 +189,11 @@ class SceneModelService:
                 type="mesh",
                 fullPath=True,
             ) or []
+            shapes = [
+                shape
+                for shape in shapes
+                if not self.get_attr_safe(shape, "intermediateObject", False)
+            ]
             for shape in shapes:
                 vertex_count = self._cmds_adapter.poly_evaluate(shape, vertex=True)
                 if vertex_count:

@@ -214,15 +214,19 @@ class TestSceneModelService(unittest.TestCase):
         model_b = "|modelB|model_root"
         shape_a = "|modelA|model_root|Geometry|body|bodyShape"
         shape_b = "|modelB|model_root|Geometry|body|bodyShape"
+        orig_a = "|modelA|model_root|Geometry|body|bodyShapeOrig"
+        orig_b = "|modelB|model_root|Geometry|body|bodyShapeOrig"
         joint_a = "|modelA|model_root|Skeleton|rootJoint"
         joint_b = "|modelB|model_root|Skeleton|rootJoint"
         cmds.existing = {model_a, model_b}
         cmds.attrs = {
             model_a: {ATTR_MMD_MODEL_NAME: "Model A"},
             model_b: {ATTR_MMD_MODEL_NAME: "Model B"},
+            orig_a: {"intermediateObject": True},
+            orig_b: {"intermediateObject": True},
         }
-        cmds.meshes = {model_a: [shape_a], model_b: [shape_b]}
-        cmds.vertices = {shape_a: 8, shape_b: 4}
+        cmds.meshes = {model_a: [shape_a, orig_a], model_b: [shape_b, orig_b]}
+        cmds.vertices = {shape_a: 8, shape_b: 4, orig_a: 8, orig_b: 4}
         cmds.joints = {model_a: [joint_a], model_b: [joint_b]}
         cmds.connections = {
             shape_a: ["sgA"],

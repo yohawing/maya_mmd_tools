@@ -736,7 +736,9 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                 bone_channel_sampler=native,
             )
         self.assertEqual(native.joints, ("dense",))
-        self.assertEqual(native.frames, (0, 1))
+        # Native sampling includes the subframes used to validate curve fitting;
+        # exported keys still remain at the two authored frames below.
+        self.assertEqual(native.frames, tuple(index / 16.0 for index in range(17)))
         self.assertEqual(len(result), 2)
         self.assertEqual(result[0]["position"], (1.0, 1.0, 1.0))
         self.assertEqual(result[1]["position"], (2.0, 2.0, 2.0))
@@ -905,6 +907,43 @@ class NativeVmdBatchSamplerTests(unittest.TestCase):
                     bone_channel_sampler=native,
                 )
         self.assertEqual(native.samples.closed, 1)
+
+
+class SamplerSmokeOracleTests(unittest.TestCase):
+    """Sparse output must match witnesses without requiring a key per sample."""
+
+    def test_sparse_keys_are_evaluated_and_midpoint_errors_are_rejected(self):
+        from tests.cpp.focused_vmd_batch_sampler import _assert_bone_frame_matches
+
+        block = bytes([20] * 8 + [107] * 8)
+        frames = [
+            {"bone_name": "bone", "frame_number": time, "position": (2.0 * time, 0., 0.),
+             "rotation": (0., 0., 0., 1.), "interpolation": block * 4}
+            for time in (0, 2)
+        ]
+        witnesses = [
+            {"bone_name": "bone", "frame_number": time, "position": (2.0 * time, 0., 0.),
+             "rotation": (0., 0., 0., 1.)}
+            for time in (0., .5, 1., 1.5, 2.)
+        ]
+        _assert_bone_frame_matches(frames, witnesses)
+        wrong_curve = [dict(row) for row in frames]
+        raw = bytearray(wrong_curve[-1]["interpolation"])
+        raw[4] = raw[12] = 0
+        wrong_curve[-1]["interpolation"] = bytes(raw)
+        with self.assertRaisesRegex(RuntimeError, "position mismatch"):
+            _assert_bone_frame_matches(wrong_curve, witnesses)
+        for field, wrong in (("position", (2.01, 0., 0.)), ("rotation", (0., 0., .1, 1.))):
+            with self.subTest(field=field):
+                corrupted = [dict(row) for row in witnesses]
+                corrupted[2][field] = wrong
+                with self.assertRaisesRegex(RuntimeError, field + " mismatch"):
+                    _assert_bone_frame_matches(frames, corrupted)
+        with self.assertRaisesRegex(RuntimeError, "coverage mismatch"):
+            _assert_bone_frame_matches(frames[:1], witnesses)
+        fractional = [frames[0], dict(frames[0], frame_number=1.5), frames[-1]]
+        with self.assertRaisesRegex(RuntimeError, "coverage mismatch"):
+            _assert_bone_frame_matches(fractional, witnesses)
 
 
 if __name__ == "__main__":

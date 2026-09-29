@@ -19,7 +19,6 @@ from .vmd_scene_keying import _anim_layer_curve_for_plug
 _MARKER_ATTR = "mmdVmdRotationTimeCurve"
 _BONE_NAME_ATTR = "mmdVmdRotationBoneName"
 _CONTROL_UUID_ATTR = "mmdVmdRotationControlUuid"
-_INTERPOLATION_ATTR = "mmdVmdRotationInterpolationJson"
 
 
 def apply_vmd_rotation_time_curve(
@@ -147,21 +146,28 @@ def _author_vmd_rotation_time_curve(
     time_converter: Callable[[float], float],
 ) -> dict[str, Any]:
     """Populate and connect a validated TT node."""
-    cmds.cutKey(time_curve, clear=True)
-    serialized_interpolation = []
+    times = []
     for frame in ordered:
         vmd_frame = float(get_frame_number(frame))
         time = float(time_converter(vmd_frame))
-        cmds.setKeyframe(time_curve, time=time, value=time)
-        serialized_interpolation.append(
-            {"frame": vmd_frame, **_serialized_interpolation_payload(frame)}
-        )
-    cmds.keyTangent(time_curve, edit=True, weightedTangents=True)
+        times.append(time)
+    tangent_runs = []
+    pending = None
+
+    def flush_tangents():
+        """Apply identical handles across a contiguous run without changing keys."""
+        nonlocal pending
+        if pending is not None:
+            first_start, first_end, last_start, last_end, handles = pending
+            tangent_runs.append((first_start, last_start, first_end, last_end, *handles))
+            pending = None
+
     for previous, arriving in zip(ordered, ordered[1:]):
         start = float(time_converter(float(get_frame_number(previous))))
         end = float(time_converter(float(get_frame_number(arriving))))
         dt = end - start
         if dt <= 0.0:
+            flush_tangents()
             continue
         interpolation_source = get_frame_interpolation(arriving)
         interpolation = (
@@ -171,28 +177,42 @@ def _author_vmd_rotation_time_curve(
         )
         points = interpolation.get("rotation")
         if not points:
+            flush_tangents()
             continue
         x1, y1, x2, y2 = points
-        _set_segment_tangents(
-            time_curve,
-            start,
-            end,
-            dt * x1,
-            dt * y1,
-            dt * (1.0 - x2),
-            dt * (1.0 - y2),
-        )
+        handles = (dt * x1, dt * y1, dt * (1.0 - x2), dt * (1.0 - y2))
+        if pending is not None and pending[3] == start and pending[4] == handles:
+            pending = (pending[0], pending[1], start, end, handles)
+        else:
+            flush_tangents()
+            pending = (start, end, start, end, handles)
+    flush_tangents()
+
+    native_keys = getattr(cmds, "mmdVmdTimeCurveKeys", None)
+    native_tangents = False
+    if callable(native_keys):
+        try:
+            native_tangents = native_keys(version=True) >= 2
+        except RuntimeError:
+            # An older loaded plugin can still batch keys; retain its tangent path.
+            pass
+        payload = {"curve": time_curve, "times": times}
+        if native_tangents:
+            payload["tangent_runs"] = tangent_runs
+        native_keys(payload=json.dumps(payload, allow_nan=False))
+    else:
+        cmds.cutKey(time_curve, clear=True)
+        for time in times:
+            cmds.setKeyframe(time_curve, time=time, value=time)
+    if not native_tangents:
+        cmds.keyTangent(time_curve, edit=True, weightedTangents=True)
+        for first_start, last_start, first_end, last_end, *handles in tangent_runs:
+            _set_segment_tangents(time_curve, (first_start, last_start), (first_end, last_end), *handles)
 
     control_uuid = _single_uuid(control)
     _set_marker(time_curve, _MARKER_ATTR, True, "bool")
     _set_marker(time_curve, _BONE_NAME_ATTR, str(vmd_bone_name), "string")
     _set_marker(time_curve, _CONTROL_UUID_ATTR, control_uuid, "string")
-    _set_marker(
-        time_curve,
-        _INTERPOLATION_ATTR,
-        json.dumps(serialized_interpolation, separators=(",", ":")),
-        "string",
-    )
     for curve in curves:
         input_plug = f"{curve}.input"
         for source in cmds.listConnections(
@@ -208,7 +228,6 @@ def _author_vmd_rotation_time_curve(
         "rotationTimeCurveUuid": _single_uuid(time_curve),
         "rotationCurveUuids": [_single_uuid(curve) for curve in curves],
         "keyCount": len(ordered),
-        "interpolationBytesAttribute": _INTERPOLATION_ATTR,
     }
 
 
@@ -273,24 +292,6 @@ def _resolve_animation_curves(
     return curves
 
 
-def _serialized_interpolation_payload(frame: Any) -> dict[str, Any]:
-    """Serialize raw export authority or semantic controls without coercing mappings."""
-    source = getattr(frame, "source_interpolation", None)
-    if isinstance(frame, dict):
-        source = frame.get("source_interpolation", source)
-    if source is not None:
-        raw = bytes(source)
-        if len(raw) == 64:
-            return {"bytes": list(raw)}
-
-    interpolation = get_frame_interpolation(frame)
-    if isinstance(interpolation, Mapping):
-        semantic = {
-            str(channel): [float(value) for value in controls]
-            for channel, controls in interpolation.items()
-        }
-        return {"semantic": semantic}
-    return {"bytes": list(bytes(interpolation)[:64])}
 
 
 def record_vmd_rotation_time_curve_metadata(
@@ -356,7 +357,6 @@ def capture_vmd_rotation_time_curve_snapshot(metadata: Mapping[str, Any] | None)
                     for attr in (
                         _BONE_NAME_ATTR,
                         _CONTROL_UUID_ATTR,
-                        _INTERPOLATION_ATTR,
                     )
                     if cmds.attributeQuery(attr, node=node, exists=True)
                 },
@@ -478,30 +478,6 @@ def commit_vmd_rotation_time_curve_disable(
     cmds.delete(owned_nodes)
 
 
-def rotation_time_curve_interpolation_by_bone(
-    metadata: Mapping[str, Any] | None,
-) -> dict[str, dict[int, bytes]]:
-    """Return original VMD interpolation bytes from UUID-owned TT nodes."""
-    if (metadata or {}).get("rotationInterpolationMode") != "vmd_time_curve_experimental":
-        return {}
-    result: dict[str, dict[int, bytes]] = {}
-    for record in (metadata or {}).get("rotationTimeCurves", []) or []:
-        node, _control, _rotation_curves = resolve_vmd_rotation_time_curve_record(
-            record
-        )
-        if not cmds.attributeQuery(_INTERPOLATION_ATTR, node=node, exists=True):
-            raise RuntimeError(f"VMD rotation interpolation payload is missing: {node}")
-        raw = cmds.getAttr(f"{node}.{_INTERPOLATION_ATTR}") or "[]"
-        try:
-            rows = json.loads(raw)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(f"VMD rotation interpolation payload is invalid: {node}") from exc
-        bone_name = str(record.get("boneName") or "")
-        for row in rows:
-            values = bytes(int(value) for value in row.get("bytes", []))
-            if len(values) == 64:
-                result.setdefault(bone_name, {})[int(round(float(row["frame"])))] = values
-    return result
 
 
 def resolve_vmd_rotation_time_curve_record(
@@ -663,8 +639,8 @@ def delete_vmd_rotation_time_curves_for_controls(
 
 def _set_segment_tangents(
     curve: str,
-    start: float,
-    end: float,
+    start: tuple[float, float],
+    end: tuple[float, float],
     out_dx: float,
     out_dy: float,
     in_dx: float,
@@ -673,7 +649,7 @@ def _set_segment_tangents(
     cmds.keyTangent(
         curve,
         edit=True,
-        time=(start, start),
+        time=start,
         lock=False,
         weightLock=False,
         outTangentType="fixed",
@@ -683,7 +659,7 @@ def _set_segment_tangents(
     cmds.keyTangent(
         curve,
         edit=True,
-        time=(end, end),
+        time=end,
         lock=False,
         weightLock=False,
         inTangentType="fixed",

@@ -24,6 +24,33 @@ class TestTexturePathCache(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_import_scoped_directory_preserves_paths_and_refreshes_texture_bytes(self):
+        expected = cache.cache_path_for_original_texture(
+            self.texture.name, self.workspace, self.model, source_path=self.texture,
+        )
+        with patch.object(cache, "compute_model_hash", wraps=cache.compute_model_hash) as model_hash:
+            directory = cache.texture_cache_dir(self.workspace, self.model)
+            for texture in (self.texture, self.ascii_texture):
+                result = cache.resolve_texture_to_cache(
+                    original_path=texture.name,
+                    file_texture_path=str(self.root / "????.png"),
+                    model_path=self.model,
+                    workspace_root=self.workspace,
+                    cache_dir=directory,
+                )
+                self.assertEqual(result.status, "resolved")
+                self.assertEqual(Path(result.cache_path).read_bytes(), texture.read_bytes())
+            self.texture.write_bytes(b"updated texture")
+            target = cache.copy_texture_to_cache(
+                self.texture, self.workspace, self.model, cache_dir=directory,
+            )
+            self.assertEqual(target, expected)
+            self.assertEqual(target.read_bytes(), b"updated texture")
+            self.assertEqual(model_hash.call_count, 1)
+
+        self.model.write_bytes(b"changed model bytes")
+        self.assertNotEqual(cache.texture_cache_dir(self.workspace, self.model), directory)
+
     def test_original_path_encoding_round_trip_non_ascii(self):
         original = "textures/纹理_日本語.png"
 

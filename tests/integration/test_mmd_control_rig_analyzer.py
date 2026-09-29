@@ -2888,14 +2888,14 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
 
     def test_baked_collector_exports_append_inputs_and_ik_states(self):
         root = self._import_fixture()
-        self.assertTrue(
-            import_mmd_file(
-                _VMD_PATH,
-                options={"target_model": root, "pmx_path": _PMX_PATH},
-            )
-        )
-        build_mmd_control_rig(root)
+        rig = build_mmd_control_rig(root)
         enter_mmd_control_rig_edit(root)
+        # Keep the success fixture representable in VMD. The full imported
+        # Euler motion's subframe rejection is covered by the next test.
+        center = rig.controls["center"]
+        cmds.setKeyframe(center, attribute="translateX", time=0, value=0.0)
+        cmds.setKeyframe(center, attribute="translateX", time=10, value=0.5)
+        cmds.keyTangent(center, attribute="translateX", inTangentType="linear", outTangentType="linear")
         bake_mmd_control_rig(root)
         append_node = (cmds.ls(type="mmdAppend") or [None])[0]
         self.assertTrue(append_node)
@@ -2911,6 +2911,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         append_bone = cmds.getAttr(f"{append_joint}.mmd_bone_name")
         cmds.setKeyframe(append_node, attribute="baseRotateX", time=0, value=0.0)
         cmds.setKeyframe(append_node, attribute="baseRotateX", time=10, value=15.0)
+        cmds.keyTangent(append_node, attribute="baseRotateX", inTangentType="linear", outTangentType="linear")
         collected = VmdSceneCollector().collect({"target_model": root})
         output_path = self.get_temp_filename("mmd_control_rig_baked.vmd")
         VmdExporter().export_vmd_animation(output_path, collected)
@@ -2918,11 +2919,14 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
 
         exported_bones = {frame.bone_name for frame in parsed.bone_frames}
         self.assertIn(append_bone, exported_bones)
+        append_frames = [frame for frame in parsed.bone_frames if frame.bone_name == append_bone]
+        self.assertGreaterEqual(len(append_frames), 2)
+        self.assertNotEqual(append_frames[0].rotation, append_frames[-1].rotation)
         # The current collector contract does not export the unsupported IK
         # show/hide section from this baked Control Rig route.
         self.assertEqual(parsed.ik_show_hide_frames, [])
 
-    def test_control_rig_vmd_roundtrip_preserves_world_matrices_and_ik(self):
+    def test_control_rig_vmd_export_rejects_unrepresentable_baked_rotation(self):
         root = self._import_fixture()
         self.assertTrue(
             import_mmd_file(
@@ -2953,48 +2957,12 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         frames = (0, 1, 3, 5)
         source_world = self._capture_indexed_world_matrices(root, frames)
         source_ik = self._capture_ik_states(root, frames)
-        collected = VmdSceneCollector().collect({"target_model": root})
-        collected_bone_times = {
-            item["frame_number"] for item in collected["bone_frames"]
-        }
-        self.assertIn(frame, collected_bone_times)
-        output_path = self.get_temp_filename("mmd_control_rig_roundtrip.vmd")
-        VmdExporter().export_vmd_animation(output_path, collected)
-        parsed = VmdData().parse_file(output_path)
-        self.assertTrue(any(item.frame_number == frame for item in parsed.bone_frames))
-        self.assertTrue(any(item.frame_number == frame for item in parsed.ik_show_hide_frames))
-
-        cmds.file(new=True, force=True)
-        fresh_root = self._import_fixture()
-        self.assertTrue(
-            import_mmd_file(
-                output_path,
-                options={"target_model": fresh_root, "pmx_path": _PMX_PATH},
-            )
-        )
-        fresh_world = self._capture_indexed_world_matrices(fresh_root, frames)
-        fresh_ik = self._capture_ik_states(fresh_root, frames)
-
-        self.assertEqual(set(source_world), set(fresh_world))
-        self.assertEqual(source_ik, fresh_ik)
-        matrix_errors = [
-            (abs(actual - expected), key, index, actual, expected)
-            for key in source_world
-            for index, (actual, expected) in enumerate(
-                zip(source_world[key], fresh_world[key])
-            )
-        ]
-        self.assertLess(
-            max(matrix_errors)[0],
-            5e-3,
-            {
-                "largest": sorted(matrix_errors, reverse=True)[:10],
-                "earliest": sorted(
-                    (item for item in matrix_errors if item[0] > 1e-4),
-                    key=lambda item: (item[1], item[2]),
-                )[:20],
-            },
-        )
+        # The baked Euler path leaves the VMD endpoint slerp arc by more
+        # than 0.1 degree within the first frame. Do not publish lossy motion.
+        with self.assertRaisesRegex(ValueError, "右足, frames 0..1"):
+            VmdSceneCollector().collect({"target_model": root})
+        self.assertEqual(self._capture_ik_states(root, frames), source_ik)
+        self.assertEqual(self._capture_indexed_world_matrices(root, frames), source_world)
 
     def _capture_edit_graph(self, journal):
         def _stable_value(value):

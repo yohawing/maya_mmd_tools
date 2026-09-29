@@ -816,6 +816,12 @@ def release_version(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_pmx_import_performance(session: nox.Session) -> None:
+    """Measure GUI imports/reload/export using a UTF-8 --config JSON."""
+    session.run(sys.executable, "tools/smoke/maya_pmx_import_performance.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 
@@ -1257,6 +1263,25 @@ def ccdik_cache_smoke(session: nox.Session) -> None:
         mayapy_arg_path=_mayapy_arg_path,
         mayapy_script=_mayapy_script,
         scripts=("tests/cpp/focused_ccdik_cache.py",),
+        require_plugin=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def fast_morph_indices_smoke(session: nox.Session) -> None:
+    """Verify native morph target identity, aliases, and scene reload."""
+    _run_cpp_plugin_smoke(
+        session,
+        posargs=session.posargs,
+        option=_option,
+        default_maya_version=DEFAULT_MAYA_VERSION,
+        default_config=DEFAULT_CMAKE_CONFIG,
+        root=ROOT,
+        mayapy=_mayapy,
+        mayapy_env=_mayapy_env,
+        mayapy_arg_path=_mayapy_arg_path,
+        mayapy_script=_mayapy_script,
+        scripts=("tools/smoke/maya_fast_morph_indices.py",),
         require_plugin=True,
     )
 
@@ -1882,6 +1907,13 @@ def fast_import_authoring(session: nox.Session) -> None:
 def render_override_separation(session: nox.Session) -> None:
     """Verify standard VP2 and MMD Render editing in two real GUI panels."""
     session.run(sys.executable, "tools/render_override/separation_e2e.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
+def render_override_warnings(session: nox.Session) -> None:
+    """Verify missing-data and rendering-failure warnings in a real Maya GUI."""
+    session.run(sys.executable, "tools/render_override/warnings_e2e.py",
                 *session.posargs, external=True)
 
 
@@ -2550,3 +2582,12 @@ def tda_semistandard_reference(session: nox.Session) -> None:
     if out_path:
         args.extend(("--out", out_path))
     session.run(sys.executable, *args, external=True)
+
+
+@nox.session(venv_backend="none")
+def vmd_import_batch(session: nox.Session) -> None:
+    """Measure reference/native VMD import batches in one Maya process."""
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    args = _without_option(list(session.posargs), "--maya")
+    _run_mayapy_probe(session, _mayapy(version), "tools/probes/vmd_import_batch.py",
+                      args, {"--out"}, utf8=True)

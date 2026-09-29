@@ -197,9 +197,7 @@ def _configure_route_settings(route, config):
         "ui.general.development_mode": True,
         "ui.dev.command_port": config.get("command_port", 3939),
         "import.general.scale_factor": config.get("scale", 1.0),
-        "import.native.use_cpp_fast_load": route == "cpp",
         "import.native.cpp_fast_load_mesh_only": False,
-        "import.native.use_cpp_vp2_ownership": route == "cpp" and config.get("vp2", True),
         "import.native.require_native_pmx_parse": False,
         "import.native.use_cpp_rig_nodes": False,
         "import.physics.import_physics": config.get("physics", False),
@@ -295,6 +293,8 @@ def _capture_ui_snapshot(window, route, out, label):
 
 def _validate_ui_import_options(window, route, config, options):
     """Require the options consumed by the presenter to match visible controls."""
+    from mmd_tools.converters.material_morph_runtime import detect_effective_vp2_draw_api
+
     view = window.import_export_tab
     expected = {
         "scale": float(view.scale_spin.value()),
@@ -302,8 +302,7 @@ def _validate_ui_import_options(window, route, config, options):
         "separate_meshes_by_material": bool(view.separate_meshes_check.isChecked()),
         "import_physics": bool(view.import_physics_check.isChecked()),
         "import_morphs": bool(view.import_morphs_check.isChecked()),
-        "use_cpp_fast_load": route == "cpp",
-        "use_cpp_vp2_ownership": route == "cpp" and config.get("vp2", True),
+        "use_cpp_vp2_ownership": detect_effective_vp2_draw_api() not in {"opengl", "openglcore"},
         "cpp_fast_load_mesh_only": False,
     }
     mismatches = {
@@ -896,6 +895,11 @@ def run_probe(config_path: str) -> None:
             from mmd_tools.ui.main_window import MainWindow
 
             window = MainWindow()
+            if route == "python":
+                # The Python oracle is injected only into this test action.
+                from tests.common.import_route import import_python_pmx_reference
+
+                window.import_export_presenter.import_model_action._importer = import_python_pmx_reference
             active_window = window
             window.show_window(dockable=False)
             _process_qt_events()
@@ -904,6 +908,7 @@ def run_probe(config_path: str) -> None:
             _configure_import_controls(view, config)
             route_result = {"ui": _ui_witness(window, route, out)}
             route_result["uiOptions"] = None
+            route_result["entry"] = "python_reference_injected" if route == "python" else "production"
             native_calls = []
             import_observations = []
             restore_import_observer = _install_import_observer(window, import_observations)
@@ -986,6 +991,7 @@ def run_probe(config_path: str) -> None:
                 "ui": route_result["ui"],
                 "options": first_observation["request"]["optionsBefore"],
                 "uiOptions": route_result["uiOptions"],
+                "entry": route_result["entry"],
                 "multiImport": route_result["multiImport"],
                 "outcome": first_observation["result"]["outcome"],
             }
@@ -1249,6 +1255,8 @@ def main() -> int:
     parser.add_argument("--no-vp2", action="store_true")
     parser.add_argument("--out-dir", type=Path)
     args = parser.parse_args()
+    if args.no_vp2:
+        parser.error("--no-vp2 depended on a retired UI setting; use a real OpenGL host for that route")
     out = args.out_dir or (
         ROOT / "build/reports/fast-import-authoring" / f"maya{args.maya}"
         / f"{args.model.stem}-{args.scale}-{'mesh' if args.no_vp2 else 'vp2'}-{'split' if args.split else 'unified'}-{'physics' if args.physics else 'static'}"

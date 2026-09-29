@@ -18,8 +18,6 @@ class ModelImportStrategy:
     """Resolved model import path choices and their diagnostic reason."""
 
     suffix: str
-    use_cpp_fast_load: bool
-    cpp_fast_load_reason: str
     use_native_pmx_parse: Optional[bool]
     require_native_pmx_parse: bool
 
@@ -37,30 +35,11 @@ def resolve_model_import_strategy(
     options: Mapping[str, Any],
     settings_get: SettingsGetter = settings.get,
 ) -> ModelImportStrategy:
-    """Default PMX to Fast Load; explicit options override persisted settings."""
+    """Resolve parser policy for the PMD/VMD paths; PMX always uses C++."""
     suffix = Path(filepath).suffix.lower()
     development_mode = bool(settings_get(settings_keys.UI_GENERAL_DEVELOPMENT_MODE, False))
-    default_fast_load = settings_get(settings_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, True)
-    requested_fast_load = bool(
-        options.get(
-            "use_cpp_fast_load",
-            default_fast_load,
-        )
-    )
-    if suffix != ".pmx":
-        use_fast_load = False
-        fast_reason = f"disabled: suffix {suffix or '<none>'} is not .pmx"
-    elif requested_fast_load:
-        use_fast_load = True
-        fast_reason = "enabled by option/settings"
-    else:
-        use_fast_load = False
-        fast_reason = "disabled by option/settings"
-
     return ModelImportStrategy(
         suffix=suffix,
-        use_cpp_fast_load=use_fast_load,
-        cpp_fast_load_reason=fast_reason,
         use_native_pmx_parse=options.get("use_native_pmx_parse"),
         require_native_pmx_parse=bool(
             options.get(

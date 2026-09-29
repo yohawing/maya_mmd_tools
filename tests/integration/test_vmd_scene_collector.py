@@ -8,6 +8,7 @@ from maya import cmds
 
 from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_curve_fit import bezier_value, _slerp, _angle
 from mmd_tools.adapters.maya_vmd_prepare_backend import create_maya_bake_timeline_vmd_action
 from mmd_tools.services.export_workflow_service import ExportWorkflowRequest
 from mmd_tools.core.constants import (
@@ -70,13 +71,14 @@ class TestVmdSceneCollector(MayaTestBase):
         parsed = VmdData().parse_file(output_path)
 
         self.assertEqual(parsed.header.model_name, "ExportModel")
-        self.assertEqual(len(parsed.bone_frames), 2)
+        self.assertGreaterEqual(len(parsed.bone_frames), 2)
         self.assertEqual(parsed.bone_frames[0].bone_name, "センター")
         self.assertEqual(parsed.bone_frames[0].frame_number, 0)
-        self.assertEqual(parsed.bone_frames[1].bone_name, "センター")
-        # VMD is fixed at 30fps, so Maya film frame 10 becomes VMD frame 12.
-        self.assertEqual(parsed.bone_frames[1].frame_number, 12)
-        self.assertEqual(parsed.bone_frames[1].position, (5.0, 1.0, -2.0))
+        self.assertEqual(parsed.bone_frames[-1].bone_name, "センター")
+        # Film frame 10 is VMD frame 12.5; preserve the fractional source key
+        # as a witness and bracket it with integer output frames.
+        self.assertEqual(parsed.bone_frames[-1].frame_number, 13)
+        self.assertEqual(parsed.bone_frames[-1].position, (5.0, 1.0, -2.0))
 
     def test_roundtrip_keyed_joint_uses_bind_relative_scaled_vmd_offset(self):
         root, _joint = self._make_keyed_joint_scene(bind_pose=(3.0, 4.0, 5.0), keyed_pose=(5.0, 8.0, -1.0))
@@ -93,8 +95,8 @@ class TestVmdSceneCollector(MayaTestBase):
 
         parsed = VmdData().parse_file(output_path)
 
-        self.assertEqual(len(parsed.bone_frames), 2)
-        self.assertEqual(parsed.bone_frames[1].position, (1.0, 2.0, 3.0))
+        self.assertGreaterEqual(len(parsed.bone_frames), 2)
+        self.assertEqual(parsed.bone_frames[-1].position, (1.0, 2.0, 3.0))
 
     def test_roundtrip_joint_orient_rotation_imports_back_to_original_rotate(self):
         root, joint = self._make_keyed_joint_scene()
@@ -131,17 +133,17 @@ class TestVmdSceneCollector(MayaTestBase):
             },
         )
 
-        self.assertTrue(result.succeeded)
+        self.assertTrue(result.succeeded, result.error)
         self.assertEqual(
             os.path.normpath(result.exported_path),
             os.path.normpath(output_path),
         )
         parsed = VmdData().parse_file(output_path)
         self.assertEqual(parsed.header.model_name, "ExportModel")
-        self.assertEqual(len(parsed.bone_frames), 11)
+        self.assertGreaterEqual(len(parsed.bone_frames), 2)
         sampled_frames = sorted({frame.frame_number for frame in parsed.bone_frames})
-        self.assertEqual(len(sampled_frames), 11)
-        self.assertEqual(sampled_frames[-1], 12)
+        self.assertEqual(len(sampled_frames), len(parsed.bone_frames))
+        self.assertEqual(sampled_frames[-1], 13)
 
     def test_bake_timeline_frame_range_matches_maya_numeric_oracle(self):
         cmds.currentUnit(time="ntsc")
@@ -150,6 +152,7 @@ class TestVmdSceneCollector(MayaTestBase):
             keyed_frame=2,
         )
         blend_shape = self._make_keyed_blendshape(root)
+        cmds.keyTangent(blend_shape, edit=True, inTangentType="linear", outTangentType="linear")
         camera = self._make_keyed_camera()
         light = self._make_keyed_light()
         output_path = self.get_temp_filename("bake_timeline_numeric_oracle.vmd")
@@ -173,8 +176,8 @@ class TestVmdSceneCollector(MayaTestBase):
         self.assertEqual(float(cmds.currentTime(query=True)), 7.0)
         parsed = VmdData().parse_file(output_path)
         self.assertEqual(
-            [frame.frame_number for frame in parsed.bone_frames],
-            [0, 1, 2],
+            [parsed.bone_frames[0].frame_number, parsed.bone_frames[-1].frame_number],
+            [0, 2],
         )
         for frame in parsed.bone_frames:
             cmds.currentTime(frame.frame_number, edit=True)
@@ -197,8 +200,26 @@ class TestVmdSceneCollector(MayaTestBase):
             self.assertAlmostEqual(rotation_dot, 1.0, places=5)
         self.assertEqual(
             [frame.frame_number for frame in parsed.morph_frames],
-            [0, 1, 2],
+            [0, 2],
         )
+        # Validate the serialized interpolation between keys, not only endpoints.
+        for time in (i / 16. for i in range(1, 32)):
+            left, right = next((a, b) for a, b in zip(parsed.bone_frames, parsed.bone_frames[1:])
+                               if a.frame_number <= time <= b.frame_number)
+            progress = (time-left.frame_number)/(right.frame_number-left.frame_number)
+            controls = [tuple(right.interpolation[axis+4*i] for i in range(4)) for axis in range(4)]
+            position = tuple(left.position[axis] + (right.position[axis]-left.position[axis]) *
+                             bezier_value(controls[axis], progress) for axis in range(3))
+            rotation = _slerp(left.rotation, right.rotation, bezier_value(controls[3], progress))
+            cmds.currentTime(time, edit=True)
+            expected = tuple(float(cmds.getAttr(f"{joint}.translate{axis}")) for axis in "XYZ")
+            expected = (expected[0], expected[1], -expected[2])
+            self.assertLessEqual(math.sqrt(sum((a-b)**2 for a, b in zip(position, expected))), .001)
+            angle = math.radians(float(cmds.getAttr(f"{joint}.rotateZ")))
+            self.assertLessEqual(_angle(rotation, (0., 0., math.sin(angle/2), math.cos(angle/2))), math.radians(.1))
+            weight = parsed.morph_frames[0].value + (parsed.morph_frames[-1].value-parsed.morph_frames[0].value) * time/2.
+            self.assertLessEqual(abs(weight-float(cmds.getAttr(f"{blend_shape}.weight[0]"))), .001)
+
         self.assertEqual(
             [frame.frame_number for frame in parsed.camera_frames],
             [],
@@ -208,11 +229,12 @@ class TestVmdSceneCollector(MayaTestBase):
             [],
         )
 
-    def test_bake_timeline_imported_fixture_fresh_import_matches_exported_bone_payload(self):
+    def test_bake_timeline_rejects_imported_fixture_unrepresentable_rotation(self):
         self._assert_bake_timeline_fresh_import_bone_payload(
             "mmt_test_model",
             "mmt_test_model_test_motion",
             "bake_timeline_mmt_fixture_export.vmd",
+            expected_error="右足, frames 0..1",
         )
 
     def test_bake_timeline_one_bone_fixture_fresh_import_matches_exported_bone_payload(self):
@@ -432,10 +454,11 @@ class TestVmdSceneCollector(MayaTestBase):
         pmx_fixture_name,
         vmd_fixture_name,
         output_file_name,
+        expected_error=None,
     ):
         """Export without exact-run reduction, then verify fresh-import parity."""
         frame_range = (0, 2)
-        expected_frame_numbers = list(range(frame_range[0], frame_range[1] + 1))
+        expected_frame_numbers = [frame_range[0], frame_range[1]]
         pmx_path = self.fixture_provider.get_pmx_file(pmx_fixture_name)
         source_vmd_path = self.fixture_provider.get_vmd_file(vmd_fixture_name)
 
@@ -453,6 +476,12 @@ class TestVmdSceneCollector(MayaTestBase):
         )
 
         output_path = self.get_temp_filename(output_file_name)
+        original_time = cmds.currentTime(query=True)
+        def curve_snapshot():
+            return {curve: (cmds.keyframe(curve, query=True, timeChange=True),
+                            cmds.keyframe(curve, query=True, valueChange=True))
+                    for curve in cmds.ls(type="animCurve") or []}
+        original_curves = curve_snapshot() if expected_error else None
         result = self._export_bake_timeline(
             output_path,
             {
@@ -468,6 +497,13 @@ class TestVmdSceneCollector(MayaTestBase):
             },
         )
 
+        if expected_error is not None:
+            self.assertFalse(result.succeeded)
+            self.assertIn(expected_error, str(result.error))
+            self.assertFalse(os.path.exists(output_path))
+            self.assertEqual(cmds.currentTime(query=True), original_time)
+            self.assertEqual(curve_snapshot(), original_curves)
+            return
         self.assertTrue(result.succeeded, result.error)
         exported = VmdData().parse_file(output_path)
         self.assertGreater(len(exported.bone_frames), 0, "Bake Timeline export has no bone frames")

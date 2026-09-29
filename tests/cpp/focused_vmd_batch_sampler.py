@@ -112,7 +112,7 @@ def _collect_timeline_oracle(cmds: Any, joint: str, frames: Iterable[float]) -> 
             result.append(
                 {
                     "bone_name": joint.rsplit("|", 1)[-1],
-                    "frame_number": int(round(float(frame))),
+                    "frame_number": float(frame),
                     "position": (translation[0], translation[1], -translation[2]),
                     "rotation": (0.0, 0.0, math.sin(half_angle), math.cos(half_angle)),
                 }
@@ -123,21 +123,69 @@ def _collect_timeline_oracle(cmds: Any, joint: str, frames: Iterable[float]) -> 
 
 
 def _assert_bone_frame_matches(actual_frames: List[dict], expected_frames: List[dict]) -> None:
-    """Compare native collector frames with the independent Timeline oracle."""
-    if len(actual_frames) != len(expected_frames):
-        raise RuntimeError(
-            f"collector frame count mismatch: actual={len(actual_frames)}, "
-            f"expected={len(expected_frames)}"
-        )
-    for index, (actual, expected) in enumerate(zip(actual_frames, expected_frames)):
-        for key in ("bone_name", "frame_number"):
-            if actual[key] != expected[key]:
-                raise RuntimeError(f"collector frame {index} {key} mismatch")
-        for key in ("position", "rotation"):
-            if len(actual[key]) != len(expected[key]):
-                raise RuntimeError(f"collector frame {index} {key} width mismatch")
-            for component, (value, source) in enumerate(zip(actual[key], expected[key])):
-                _assert_close(value, source, f"collector frame {index} {key}[{component}]")
+    """Evaluate this Z-rotation fixture independently at Timeline witnesses."""
+    from mmd_tools.converters.vmd_curve_fit import (
+        POSITION_TOLERANCE, ROTATION_TOLERANCE,
+    )
+
+    _assert_frame_coverage(actual_frames, [row["frame_number"] for row in expected_frames])
+    if any(row["bone_name"] != expected_frames[0]["bone_name"] for row in actual_frames):
+        raise RuntimeError("collector bone name mismatch")
+    for expected in expected_frames:
+        time = expected["frame_number"]
+        left, right, x = _frame_interval(actual_frames, time)
+        raw = right["interpolation"]
+        position = [left["position"][i] + (right["position"][i] - left["position"][i])
+                    * _vmd_progress(raw, i, x) for i in range(3)]
+        left_angle, right_angle = _z_angle(left["rotation"]), _z_angle(right["rotation"])
+        delta = math.remainder(right_angle - left_angle, 2 * math.pi)
+        rotation = left_angle + delta * _vmd_progress(raw, 3, x)
+        if not math.dist(position, expected["position"]) <= POSITION_TOLERANCE:
+            raise RuntimeError(f"collector position mismatch at frame {time}")
+        if not abs(math.remainder(rotation - _z_angle(expected["rotation"]), 2 * math.pi)) <= ROTATION_TOLERANCE:
+            raise RuntimeError(f"collector rotation mismatch at frame {time}")
+
+
+def _vmd_progress(raw, axis, x):
+    """Decode a stored VMD segment without calling the fitter's evaluator."""
+    x1, y1, x2, y2 = [raw[axis + 4*i] / 127. for i in range(4)]
+
+    def cubic(t, a, b):
+        return 3 * t * (1-t) * ((1-t)*a + t*b) + t**3
+
+    low, high = 0., 1.
+    for _ in range(40):
+        t = (low + high) / 2
+        if cubic(t, x1, x2) < x:
+            low = t
+        else:
+            high = t
+    return cubic((low + high) / 2, y1, y2)
+
+
+def _z_angle(quaternion):
+    """This fixture rotates only around Z; reject unexpected rotation axes."""
+    x, y, z, w = quaternion
+    if abs(x) > 1e-8 or abs(y) > 1e-8 or not math.hypot(z, w) > 0:
+        raise RuntimeError("collector rotation mismatch: invalid Z-axis quaternion")
+    return 2 * math.atan2(z, w)
+
+
+def _assert_frame_coverage(rows: List[dict], witnesses: List[float]) -> None:
+    """Require ordered keys covering this multi-frame fixture's whole interval."""
+    times = [row["frame_number"] for row in rows]
+    if (len(times) < 2 or any(type(time) is not int for time in times)
+            or times != sorted(set(times)) or times[0] != witnesses[0] or times[-1] != witnesses[-1]):
+        raise RuntimeError(f"collector frame coverage mismatch: {times!r}")
+
+
+def _frame_interval(rows: List[dict], time: float):
+    """Find the stored VMD segment containing an oracle witness."""
+    for left, right in zip(rows, rows[1:]):
+        start, end = left["frame_number"], right["frame_number"]
+        if start <= time <= end:
+            return left, right, (time - start) / (end - start)
+    raise RuntimeError(f"collector has no segment at frame {time}")
 
 
 def _light_direction(rotate_x: float, rotate_y: float) -> tuple[float, float, float]:
@@ -165,10 +213,10 @@ def _collect_nonbone_timeline_oracle(
     light: str,
     ik_solver: str,
     frames: Iterable[float],
-) -> dict[str, dict[int, Any]]:
+) -> dict[str, dict[float, Any]]:
     """Evaluate the non-bone fixture through normal Maya Timeline reads."""
     entry_time = float(cmds.currentTime(query=True))
-    oracle: dict[str, dict[int, Any]] = {
+    oracle: dict[str, dict[float, Any]] = {
         "morph": {},
         "camera": {},
         "light": {},
@@ -177,7 +225,7 @@ def _collect_nonbone_timeline_oracle(
     try:
         for frame in frames:
             cmds.currentTime(frame, edit=True)
-            frame_number = int(frame)
+            frame_number = float(frame)
             oracle["morph"][frame_number] = float(
                 cmds.getAttr(f"{blend_shape}.weight[0]")
             )
@@ -713,6 +761,8 @@ def main() -> int:
         cmds.setKeyframe(joint, attribute="translateX", time=2.0, value=4.0)
         cmds.setKeyframe(joint, attribute="rotateZ", time=0.0, value=-10.0)
         cmds.setKeyframe(joint, attribute="rotateZ", time=2.0, value=30.0)
+        cmds.keyTangent(joint, attribute=["translateX", "rotateZ"],
+                        inTangentType="auto", outTangentType="auto", weightedTangents=False)
         collector_frames = [0.0, 1.0, 2.0]
         collector_kwargs = {
             "joints": [joint],
@@ -721,12 +771,30 @@ def main() -> int:
             "dense_sample": True,
             "force_dense_sample": True,
             "dense_frame_samples": collector_frames,
-            "time_converter": lambda value: int(value),
+            "time_converter": float,
         }
-        oracle_frames = _collect_timeline_oracle(cmds, joint, collector_frames)
         native_collector = VmdSceneCollector(
             bone_channel_sampler=NativeVmdBatchSampler(cmds)
         )
+        # Keep the old fixture as a rejection regression: its fixed-endpoint
+        # seven-bit fit has minimum position error 0.0010708 > 0.001.
+        try:
+            native_collector.collect_bone_frames(
+                **collector_kwargs, bone_channel_sampler=native_collector._bone_channel_sampler,
+            )
+        except ValueError as exc:
+            if "VMD curve tolerance exceeded: focused_vmd_batch_joint, frames 0..1" not in str(exc):
+                raise
+        else:
+            raise RuntimeError("unrepresentable auto-tangent fixture was not rejected")
+        _assert_close(float(cmds.currentTime(query=True)), before_time, "rejected collector current time preservation")
+
+        # Sampler success coverage needs a representable curve, independent of
+        # the user's global tangent preference. Dense witnesses are not keys.
+        cmds.keyTangent(joint, attribute=["translateX", "rotateZ"],
+                        inTangentType="linear", outTangentType="linear")
+        witness_frames = [i / 16.0 for i in range(33)]
+        oracle_frames = _collect_timeline_oracle(cmds, joint, witness_frames)
         native_frames = native_collector.collect_bone_frames(
             **collector_kwargs,
             bone_channel_sampler=native_collector._bone_channel_sampler,
@@ -768,6 +836,8 @@ def main() -> int:
         )
         cmds.setKeyframe(blend_shape, attribute="weight[0]", time=0.0, value=0.0)
         cmds.setKeyframe(blend_shape, attribute="weight[0]", time=2.0, value=1.0)
+        cmds.keyTangent(blend_shape, attribute="weight[0]",
+                        inTangentType="linear", outTangentType="linear")
 
         camera, _camera_shape = cmds.camera(name="focused_vmd_bake_timeline_camera")
         for attr, attr_type in (
@@ -831,7 +901,7 @@ def main() -> int:
             camera,
             light,
             ik_solver,
-            collector_frames,
+            witness_frames,
         )
         bake_timeline_collector = VmdSceneCollector(
             bone_channel_sampler=NativeVmdBatchSampler(cmds)
@@ -879,13 +949,11 @@ def main() -> int:
             "Bake Timeline non-bone current time preservation",
         )
         expected_counts = {
-            "morph_frames": 3,
             "camera_frames": 0,
             "light_frames": 0,
             "ik_show_hide_frames": 2,
         }
         for section in (
-            "morph_frames",
             "camera_frames",
             "light_frames",
             "ik_show_hide_frames",
@@ -896,12 +964,13 @@ def main() -> int:
                 )
             _assert_sorted_frames(collected[section], section)
 
-        for row in collected["morph_frames"]:
-            _assert_close(
-                float(row["weight"]),
-                nonbone_oracle["morph"][int(row["frame_number"])],
-                f"Bake Timeline morph frame {row['frame_number']}",
-            )
+        from mmd_tools.converters.vmd_curve_fit import MORPH_TOLERANCE
+        _assert_frame_coverage(collected["morph_frames"], witness_frames)
+        for time, expected in nonbone_oracle["morph"].items():
+            left, right, x = _frame_interval(collected["morph_frames"], time)
+            weight = left["weight"] + (right["weight"] - left["weight"]) * x
+            if not abs(weight - expected) <= MORPH_TOLERANCE:
+                raise RuntimeError(f"Bake Timeline morph mismatch at frame {time}")
         for row in collected["camera_frames"]:
             expected = nonbone_oracle["camera"][int(row["frame_number"])]
             for field in ("position", "rotation"):

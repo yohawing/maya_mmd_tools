@@ -73,6 +73,23 @@ class TestPmxImporter(MayaTestBase):
 
         super().tearDown()
 
+    def test_import_with_pre_progress_converter_signature(self):
+        """A retained pre-progress converter must still accept the importer call."""
+        current_converter = pmx_importer.MorphConverter
+
+        class RetainedConverter(current_converter):
+            def convert_pmx_morphs(self, pmx_data, mesh_node):
+                return super().convert_pmx_morphs(pmx_data, mesh_node)
+
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+        progress = []
+        with patch.object(pmx_importer, "MorphConverter", RetainedConverter):
+            root = import_pmx_file(parser, pmx_file, progress_callback=progress.append)
+        self.assertTrue(cmds.objExists(root))
+        self.assertEqual(progress, sorted(set(progress)))
+        self.assertIn(50, progress)
+
     def test_import_pmx_basic(self):
         """基本的なPMXファイルのインポートテスト"""
         pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
