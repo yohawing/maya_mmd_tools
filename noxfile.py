@@ -1893,6 +1893,12 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def test_model_physics(session: nox.Session) -> None:
+    """Measure TestModel gravity, mesh evaluation, collision and reset playback."""
+    session.run(sys.executable, "tools/probes/test_model_physics.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def morph_binding_roundtrip(session: nox.Session) -> None:
     """Verify reported morphs through GUI lists, deformation and PMX export."""
     session.run(sys.executable, "tools/smoke/maya_morph_binding_roundtrip.py", *session.posargs)
