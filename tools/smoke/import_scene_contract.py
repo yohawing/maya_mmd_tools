@@ -44,7 +44,12 @@ ALLOWED_DIFFERENCES = (
     {
         "id": "mmdRenderShape-implementation",
         "scope": "implementationNodes and implementationLinks",
-        "reason": "The native VP2 route may add an mmdRenderShape and its visibility ownership connection.",
+        "reason": "The native route may add a render shape and a dedicated owner driven by the source mesh transform.",
+    },
+    {
+        "id": "set-membership-slot",
+        "scope": "objectSet/animLayer/shadingEngine dagSetMembers connection destinations",
+        "reason": "Membership slots are allocation order; source endpoints, destination set and multiplicity remain compared.",
     },
     {
         "id": "proxy-node-name",
@@ -615,6 +620,8 @@ def _endpoint(cmds: Any, root: str, plug: Any) -> str:
     node = text.split(".", 1)[0]
     attr = text[len(node) :]
     long_node = _long_name(cmds, node)
+    if _node_type(cmds, long_node) in {"objectSet", "animLayer", "shadingEngine"}:
+        attr = re.sub(r"^\.dagSetMembers\[\d+\]$", ".dagSetMembers[]", attr)
     semantic = _semantic_id(cmds, long_node, _node_type(cmds, long_node), root)
     if semantic:
         return f"{semantic}{attr}"
@@ -960,6 +967,25 @@ def _registry_owned_nodes(cmds: Any, seeds: Sequence[str], depth: int = 3) -> se
     return owned
 
 
+def _render_owner(cmds: Any, node: str) -> bool:
+    """Recognize only a dedicated proxy parent driven by its source transform."""
+    children = cmds.listRelatives(node, children=True, fullPath=True) or []
+    if not children or any(_node_type(cmds, child) != "mmdRenderShape" for child in children):
+        return False
+    for child in children:
+        sources = cmds.listConnections(child + ".inputMesh", source=True, destination=False, shapes=True) or []
+        if len(sources) != 1 or _node_type(cmds, sources[0]) != "mesh":
+            return False
+        parents = cmds.listRelatives(sources[0], parent=True, fullPath=True) or []
+        if len(parents) != 1:
+            return False
+        source = parents[0]
+        if not (cmds.isConnected(source + ".worldMatrix[0]", node + ".offsetParentMatrix")
+                and cmds.isConnected(source + ".visibility", node + ".visibility")):
+            return False
+    return True
+
+
 def capture_scene(cmds: Any, om: Any, root: str) -> dict[str, Any]:
     """Capture a JSON-serializable semantic snapshot rooted at *root*.
 
@@ -1023,6 +1049,12 @@ def capture_scene(cmds: Any, om: Any, root: str) -> dict[str, Any]:
     registry_nodes = _registry_owned_nodes(cmds, [canonical_root, *dag_nodes, *sorted(histories)])
     histories.update(registry_nodes)
     implementation_nodes = [row for row in rows if row["type"] == "mmdRenderShape"]
+    render_paths = {row["path"] for row in implementation_nodes}
+    for row in rows:
+        if row["type"] == "transform" and _render_owner(cmds, row["sourcePath"]):
+            row["renderOwnerOf"] = sorted(path for path in render_paths if path.rsplit("|", 1)[0] == row["path"])
+            implementation_nodes.append(row)
+    implementation_paths = {row["path"] for row in implementation_nodes}
     proxy_nodes = [
         row
         for row in rows
@@ -1086,7 +1118,8 @@ def capture_scene(cmds: Any, om: Any, root: str) -> dict[str, Any]:
     semantic_rows = [
         row
         for row in rows
-        if row["type"] not in {"mmdRenderShape", "mesh"} and not _is_proxy_node(cmds, row["sourcePath"])
+        if row["type"] != "mesh" and row["path"] not in implementation_paths
+        and not _is_proxy_node(cmds, row["sourcePath"])
     ]
     implementation_links = [
         link
@@ -1313,7 +1346,12 @@ def _snapshot_errors(snapshot: Mapping[str, Any]) -> list[str]:
             if not isinstance(row, Mapping):
                 errors.append(f"implementationNodes[{index}] is not an object")
             elif row.get("type") != "mmdRenderShape":
-                errors.append(f"implementationNodes[{index}] is not an mmdRenderShape")
+                children = row.get("renderOwnerOf", [])
+                render_paths = {item.get("path") for item in implementation_nodes
+                                if isinstance(item, Mapping) and item.get("type") == "mmdRenderShape"}
+                if (row.get("type") != "transform" or not children
+                        or any(child not in render_paths or child.rsplit("|", 1)[0] != row.get("path") for child in children)):
+                    errors.append(f"implementationNodes[{index}] is not a dedicated render owner")
     proxies = snapshot.get("proxies", {})
     if isinstance(proxies, Mapping):
         proxy_nodes = proxies.get("nodes", [])

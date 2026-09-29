@@ -371,5 +371,40 @@ class TestImportSceneContract(unittest.TestCase):
             _call(_Cmds(), "listConnections", "|root", default=[])
 
 
+
+
+
+class TestRenderOwnerContract(unittest.TestCase):
+    def test_only_source_driven_dedicated_owner_is_allowed(self):
+        from unittest.mock import MagicMock
+        from tools.smoke.import_scene_contract import _render_owner
+        cmds = MagicMock()
+        cmds.listRelatives.side_effect = lambda node, **kwargs: ["render"] if node == "owner" else ["source"]
+        cmds.nodeType.side_effect = lambda node: "mmdRenderShape" if node == "render" else "mesh"
+        cmds.listConnections.return_value = ["mesh"]
+        cmds.isConnected.return_value = True
+        self.assertTrue(_render_owner(cmds, "owner"))
+        cmds.isConnected.return_value = False
+        self.assertFalse(_render_owner(cmds, "owner"))
+        cmds.isConnected.return_value = True
+        cmds.nodeType.return_value = "mesh"
+        cmds.nodeType.side_effect = None
+        self.assertFalse(_render_owner(cmds, "owner"))
+
+    def test_set_slot_normalization_keeps_other_indices(self):
+        from unittest.mock import patch
+        from tools.smoke.import_scene_contract import _endpoint
+        with patch("tools.smoke.import_scene_contract._long_name", side_effect=lambda cmds, node: node), patch(
+            "tools.smoke.import_scene_contract._semantic_id", return_value=None
+        ), patch("tools.smoke.import_scene_contract._node_type", return_value="animLayer"):
+            self.assertEqual(_endpoint(None, "root", "layer.dagSetMembers[3]"), "layer.dagSetMembers[]")
+            self.assertEqual(_endpoint(None, "root", "layer.weight[3]"), "layer.weight[3]")
+
+    def test_fake_render_owner_cannot_hide_a_transform(self):
+        changed = _snapshot()
+        changed["implementationNodes"] = [{"type": "transform", "path": "extra", "renderOwnerOf": ["extra|absent"]}]
+        self.assertEqual(compare_scenes(_snapshot(), changed)["status"], "fail")
+
+
 if __name__ == "__main__":
     unittest.main()
