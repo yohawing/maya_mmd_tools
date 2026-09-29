@@ -289,7 +289,16 @@ def initialize():
         for attr in (parent, *N._output_children[name])
     )
 
-    for source in (*N._base_attrs.values(), *N._base_alpha_attrs.values(), N.aContribution, N.aContributionWeight,
+    # Authored channels are independent. Broad base dependencies amplify the
+    # shader -> evaluator -> preview -> shader dirty propagation for RGB edits.
+    for name, source in N._base_attrs.items():
+        title = f"{name[0].upper()}{name[1:]}"
+        N.attributeAffects(source, N._output_attrs[f"output{title}"])
+    for name, source in N._base_alpha_attrs.items():
+        output = "outputDiffuseAlpha" if name == "diffuse" else "outputEdgeColor"
+        N.attributeAffects(source, N._output_attrs[output])
+
+    for source in (N.aContribution, N.aContributionWeight,
                    N.aOperationType, N.aMorphOrder, *N._offset_attrs.values()):
         for output in N._output_attrs.values():
             N.attributeAffects(source, output)

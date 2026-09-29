@@ -220,6 +220,40 @@ class TestMaterialMorphNumericComposition(unittest.TestCase):
             )
         finally:
             cmds.delete(node)
+
+    def test_each_authored_base_updates_its_cached_output(self):
+        """Narrow base dependencies must still invalidate RGB children and alpha."""
+        from maya.api import OpenMaya as om
+
+        node = cmds.createNode("mmdMaterialMorphEval")
+        try:
+            selection = om.MSelectionList()
+            selection.add(node)
+            fn = om.MFnDependencyNode(selection.getDependNode(0))
+            for base, output in (
+                ("baseDiffuse", "outputDiffuse"),
+                ("baseSpecular", "outputSpecular"),
+                ("baseSpecularCoefficient", "outputSpecularCoefficient"),
+                ("baseAmbient", "outputAmbient"),
+                ("baseEdgeColor", "outputEdgeColor"),
+                ("baseEdgeSize", "outputEdgeSize"),
+                ("baseDiffuseA", "outputDiffuseAlpha"),
+                ("baseEdgeColorA", "outputEdgeColor"),
+            ):
+                affected = {om.MFnAttribute(attr).name for attr in fn.getAffectedAttributes(fn.attribute(base))}
+                expected = {output, *(cmds.attributeQuery(output, node=node, listChildren=True) or [])}
+                self.assertEqual(affected, expected, base)
+                children = cmds.attributeQuery(base, node=node, listChildren=True) or [base]
+                output_children = cmds.attributeQuery(output, node=node, listChildren=True) or [output]
+                if base == "baseEdgeColorA":
+                    output_children = output_children[3:]
+                for source, destination in zip(children, output_children):
+                    for value in (0.25, 0.75):
+                        cmds.getAttr(f"{node}.{destination}")
+                        cmds.setAttr(f"{node}.{source}", value)
+                        self.assertAlmostEqual(cmds.getAttr(f"{node}.{destination}"), value)
+        finally:
+            cmds.delete(node)
 from tests.common.maya_test_base import MayaTestBase
 
 
