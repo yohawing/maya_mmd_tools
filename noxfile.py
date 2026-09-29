@@ -1893,6 +1893,12 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def model_identity_ui(session: nox.Session) -> None:
+    """Check model-owned GUI lists through duplicate import and scene reopen."""
+    session.run(sys.executable, "tools/smoke/maya_model_identity_ui.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def fast_import_authoring(session: nox.Session) -> None:
     """Compare GUI Fast Load animation and save/reopen with ordinary PMX import."""
     session.run(
