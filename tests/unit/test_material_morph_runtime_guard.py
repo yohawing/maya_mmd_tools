@@ -1162,6 +1162,9 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             "_collect_native_render_shapes",
             return_value=["nativeShape"],
         ), mock.patch.object(
+            material_morph_runtime, "_native_shape_shaders",
+            return_value={0: "shader_a", 1: "shader_b"},
+        ), mock.patch.object(
             material_morph_runtime,
             "bind_native_material_alpha",
             return_value={"success": True, "skipped": []},
@@ -1207,6 +1210,9 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             material_morph_runtime,
             "_collect_native_render_shapes",
             return_value=["nativeShape"],
+        ), mock.patch.object(
+            material_morph_runtime, "_native_shape_shaders",
+            return_value={0: "shader0", 1: "shader1"},
         ), mock.patch.object(
             material_morph_runtime, "_connect_if_needed"
         ) as connect_mock:

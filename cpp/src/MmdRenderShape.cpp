@@ -1065,6 +1065,15 @@ bool MmdRenderShape::restoreGeometryFromSource(const MObject& sourceMesh)
         mmd::MmdRenderQueueInput input;
         input.materialIndex = static_cast<std::size_t>(index);
         input.submeshIndex = i;
+        // The queue is transient, but the standardSurface policy survives in
+        // the saved scene. Restore it before classifying draw passes so
+        // cutout and blend materials do not reopen as opaque.
+        const MPlug transparency = shader.findPlug("mmdTransparencyMode", true, &status);
+        if (status && !transparency.isNull()) {
+            const MString mode = transparency.asString(&status);
+            if (!status) return false;
+            input.transparencyMode = mode.asUTF8();
+        }
         inputs.push_back(input);
     }
     unsigned int triangleOffset = 0;

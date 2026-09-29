@@ -99,7 +99,12 @@ class TestAnimationMorphEditor(GuiTestBase):
         rows = list(self.presenter._morph_rows.values())
         self.assertEqual({row.label.width() for row in rows}, {116})
         self.assertEqual({row.editor.width() for row in rows}, {72})
-        self.assertIn("Very Long Smile Morph Name", rows[0].label.toolTip())
+        self.assertTrue(
+            any(
+                name in rows[0].label.toolTip()
+                for name in ("Very Long Smile Morph Name", "とても長い笑顔モーフの表示名")
+            )
+        )
         self.assertFalse(rows[0].icon.pixmap().isNull())
 
         rows[0].editor.setValue(0.625)
@@ -262,6 +267,103 @@ class TestAnimationMorphEditor(GuiTestBase):
             cmds.keyframe(plug, query=True, time=(frame, frame), valueChange=True)[0],
             0.875,
         )
+
+    def test_multi_selection_synchronizes_row_editors_undo_filter_and_model_scope(self):
+        names = list(self.presenter._morph_rows)
+        first, second, third = [self.presenter._morph_rows[name] for name in names]
+        plugs = [f"{self.controller}.inputWeight[{index}]" for index in range(3)]
+        QTest.mouseClick(first.label, Qt.LeftButton)
+        QTest.mouseClick(second.label, Qt.LeftButton, Qt.ControlModifier)
+        QApplication.processEvents()
+        self.assertTrue(first.is_selected)
+        self.assertTrue(second.is_selected)
+        self.assertFalse(third.is_selected)
+        self.assertFalse(hasattr(self.tab, "morph_selection_status"))
+
+        QTest.mousePress(first.slider, Qt.LeftButton)
+        self.assertTrue(first.is_selected and second.is_selected)
+        first.slider.setValue(25)
+        QTest.mouseRelease(first.slider, Qt.LeftButton)
+        QApplication.processEvents()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.25)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.25)
+        self.assertAlmostEqual(cmds.getAttr(plugs[2]), 0.2)
+        self.assertEqual(second.slider.value(), 25)
+        self.assertAlmostEqual(second.editor.value(), 0.25)
+        self.assertTrue(first.is_selected and second.is_selected)
+        cmds.undo()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.0)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.1)
+        cmds.redo()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.25)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.25)
+
+        editor = second.editor.lineEdit()
+        QTest.mouseClick(editor, Qt.LeftButton)
+        QTest.keyClick(editor, Qt.Key_A, Qt.ControlModifier)
+        QTest.keyClicks(editor, "0.625")
+        QTest.keyClick(editor, Qt.Key_Enter)
+        QApplication.processEvents()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.625)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.625)
+        self.assertAlmostEqual(cmds.getAttr(plugs[2]), 0.2)
+        self.assertEqual(first.slider.value(), round(0.625 * 100))
+        self.assertAlmostEqual(first.editor.value(), 0.625)
+        cmds.undo()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.25)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.25)
+        cmds.redo()
+        self.assertAlmostEqual(cmds.getAttr(plugs[0]), 0.625)
+        self.assertAlmostEqual(cmds.getAttr(plugs[1]), 0.625)
+
+        self.tab.morph_filter.setText("Type:")
+        QApplication.processEvents()
+        self.assertTrue(first.is_selected and second.is_selected)
+        self.tab.morph_filter.setText("Material")
+        QApplication.processEvents()
+        self.assertEqual(self.presenter._morph_selected_names, [])
+        self.assertTrue(first.isHidden())
+        self.assertFalse(third.isHidden())
+        self.tab.morph_filter.clear()
+        QTest.mouseClick(first.label, Qt.LeftButton)
+        QTest.mouseClick(third.label, Qt.LeftButton, Qt.ShiftModifier)
+        QApplication.processEvents()
+        self.assertTrue(all(row.is_selected for row in (first, second, third)))
+        frame = int(cmds.currentTime(query=True))
+        first.slider.setFocus(Qt.OtherFocusReason)
+        QTest.keyClick(first.slider, Qt.Key_S)
+        QApplication.processEvents()
+        for plug in plugs:
+            self.assertEqual(
+                cmds.keyframe(plug, query=True, time=(frame, frame), keyframeCount=True),
+                1,
+            )
+        next_frame = frame + 1
+        cmds.currentTime(next_frame)
+        previous_auto_key = cmds.autoKeyframe(query=True, state=True)
+        try:
+            cmds.autoKeyframe(state=True)
+            editor = third.editor.lineEdit()
+            QTest.mouseClick(editor, Qt.LeftButton)
+            QTest.keyClick(editor, Qt.Key_A, Qt.ControlModifier)
+            QTest.keyClicks(editor, "0.5")
+            QTest.keyClick(editor, Qt.Key_Enter)
+            QApplication.processEvents()
+            self.assertTrue(all(row.is_selected for row in (first, second, third)))
+            for plug in plugs:
+                self.assertAlmostEqual(cmds.getAttr(plug), 0.5)
+                self.assertEqual(
+                    cmds.keyframe(
+                        plug, query=True, time=(next_frame, next_frame), keyframeCount=True
+                    ),
+                    1,
+                )
+        finally:
+            cmds.autoKeyframe(state=previous_auto_key)
+
+        self.state._current_model_root = None
+        self.presenter._clear_morph_tab()
+        self.assertEqual(self.presenter._morph_selected_names, [])
 
 
 if __name__ == "__main__":

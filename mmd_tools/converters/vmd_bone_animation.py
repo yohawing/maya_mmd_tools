@@ -9,6 +9,7 @@ import maya.cmds as cmds
 
 from . import vmd_profile
 from .vmd_context import VmdBoneAnimationContext
+from .vmd_registered_sparse import RegisteredSparseFrames
 from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 
 
@@ -36,7 +37,26 @@ def _sparse_rotation_samples(
     key_route: Optional[dict] = None,
 ) -> List[tuple]:
     """Convert only authored VMD rotation keys for editable rig curves."""
+    batch = getattr(context, "convert_vmd_quats_to_joint_rotates", None)
+    if batch is not None and len(frames) >= 32:
+        quaternions = [frame.rotation if hasattr(frame, "rotation") else frame.get("rotation", [0,0,0,1])
+                       for frame in frames]
+        rotations = batch(joint, quaternions, key_route)
+        if rotations is not None:
+            samples = {}
+            for frame, rotation in zip(frames, rotations):
+                time = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+                samples[float(context.vmd_frame_to_maya_time(time))] = rotation
+            return sorted(samples.items())
     samples_by_time = {}
+    basis = (key_route or {}).get("authoring_basis")
+    if basis and frames:
+        from ..core.mmd_control_rig_basis import bone_to_control
+
+        joint_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
+        attr_targets = (key_route or {}).get("attr_targets", {})
+        control = attr_targets.get("rotateX", (joint, "rotateX"))[0]
+        control_order = int(cmds.getAttr(f"{control}.rotateOrder"))
     for frame in frames:
         if hasattr(frame, "frame_number"):
             frame_number = frame.frame_number
@@ -46,18 +66,9 @@ def _sparse_rotation_samples(
             rotation_quat = frame.get("rotation", [0, 0, 0, 1])
         maya_time = context.vmd_frame_to_maya_time(frame_number)
         rotation = context.convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
-        basis = (key_route or {}).get("authoring_basis")
         if basis:
-            from ..core.mmd_control_rig_basis import (
-                bone_to_control,
-            )
-
-            joint_order = int(cmds.getAttr(f"{joint}.rotateOrder"))
             bone_quaternion = _euler_degrees_to_quaternion(rotation, joint_order)
             control_quaternion = bone_to_control(bone_quaternion, basis)
-            attr_targets = (key_route or {}).get("attr_targets", {})
-            control = attr_targets.get("rotateX", (joint, "rotateX"))[0]
-            control_order = int(cmds.getAttr(f"{control}.rotateOrder"))
             rotation = _quaternion_to_euler_degrees(
                 control_quaternion, control_order
             )
@@ -209,19 +220,22 @@ def convert_bone_animation(
     """Convert VMD bone frames using explicit bone keying context."""
     bone_frame_map: Dict[object, List] = {}
 
-    with vmd_profile.scope("bone_frame_grouping", count=len(bone_frames)):
-        for frame in bone_frames:
-            if hasattr(frame, "bone_index"):
-                bone_name = ("index", int(frame.bone_index))
-            elif isinstance(frame, dict) and "bone_index" in frame:
-                bone_name = ("index", int(frame["bone_index"]))
-            elif hasattr(frame, "bone_name"):
-                bone_name = frame.bone_name
-            else:
-                bone_name = frame.get("bone_name", "")
-            if bone_name not in bone_frame_map:
-                bone_frame_map[bone_name] = []
-            bone_frame_map[bone_name].append(frame)
+    if isinstance(bone_frames, RegisteredSparseFrames):
+        bone_frame_map = bone_frames.by_bone
+    else:
+        with vmd_profile.scope("bone_frame_grouping", count=len(bone_frames)):
+            for frame in bone_frames:
+                if hasattr(frame, "bone_index"):
+                    bone_name = ("index", int(frame.bone_index))
+                elif isinstance(frame, dict) and "bone_index" in frame:
+                    bone_name = ("index", int(frame["bone_index"]))
+                elif hasattr(frame, "bone_name"):
+                    bone_name = frame.bone_name
+                else:
+                    bone_name = frame.get("bone_name", "")
+                if bone_name not in bone_frame_map:
+                    bone_frame_map[bone_name] = []
+                bone_frame_map[bone_name].append(frame)
     vmd_profile.set_extra("animated_bone_count", len(bone_frame_map))
 
     success_count = 0
@@ -377,13 +391,11 @@ def _set_bone_keyframes_impl(
         target_node, target_attr = attr_targets.get(attr, (joint, attr))
         keyed_attrs_by_node.setdefault(target_node, []).append(target_attr)
 
-    use_layer = context.use_animation_layers and context.anim_layer is not None and not skip_rotate
+    use_layer = context.use_animation_layers and context.anim_layer is not None
     if use_layer:
         cmds.animLayer(context.anim_layer, edit=True, selected=True)
         for target_node, target_attrs in keyed_attrs_by_node.items():
             context.add_attrs_to_anim_layer(target_node, target_attrs)
-    elif context.use_animation_layers and context.anim_layer is not None:
-        cmds.animLayer(context.anim_layer, edit=True, selected=False)
 
     bind_pos = context.bone_bind_poses.get(
         vmd_bone_name,
@@ -391,11 +403,12 @@ def _set_bone_keyframes_impl(
     )
     control_owned_channels = set(key_route.get("control_owned_channels", ()))
     needs_rotation_samples = not skip_rotate or bool(key_route.get("ik_solver_rotate"))
-    rotation_samples = (
-        _sparse_rotation_samples(context, joint, frames, key_route)
-        if needs_rotation_samples
-        else []
-    )
+    with vmd_profile.scope("rotation_sample_build", count=len(frames) if needs_rotation_samples else 0):
+        rotation_samples = (
+            _sparse_rotation_samples(context, joint, frames, key_route)
+            if needs_rotation_samples
+            else []
+        )
     rotation_by_time = dict(rotation_samples)
 
     batch_simple_bone = (
@@ -548,22 +561,41 @@ def _set_bone_keyframes_impl(
             f"inputRotate[{slot}].inputRotateElementY",
             f"inputRotate[{slot}].inputRotateElementZ",
         ]
+        if animation_layer:
+            for attr in ir_attrs:
+                cmds.animLayer(
+                    animation_layer,
+                    edit=True,
+                    attribute=f"{solver_node}.{attr}",
+                )
         solver_samples = {attr: [] for attr in ir_attrs}
         for maya_time, rotation in rotation_samples:
             for attr, value in zip(ir_attrs, rotation):
                 solver_samples[attr].append((maya_time, float(value)))
-        if not context.batch_key_scalar_channels(solver_node, solver_samples, animation_layer=None):
+        keyed_solver_samples = (
+            context.samples_as_anim_layer_deltas(solver_node, solver_samples)
+            if animation_layer
+            else solver_samples
+        )
+        if not context.batch_key_scalar_channels(
+            solver_node, keyed_solver_samples, animation_layer=animation_layer
+        ):
             context.logger.debug(f"IK solver batch keying produced no keys for {solver_node}; using setKeyframe fallback")
+            # Maya setKeyframe(animLayer=...) accepts the evaluated value;
+            # only API curve insertion receives additive layer deltas.
             for attr, samples in solver_samples.items():
                 _ensure_fallback_allowed(
                     solver_node,
                     attr,
-                    None,
+                    animation_layer,
                     "batch_key_scalar_channels returned False for IK solver samples",
                 )
                 for maya_time, value in samples:
                     with vmd_profile.scope("fallback_setKeyframe"):
-                        cmds.setKeyframe(f"{solver_node}.{attr}", time=maya_time, value=value)
+                        key_args = {"time": maya_time, "value": value}
+                        if animation_layer:
+                            key_args["animLayer"] = animation_layer
+                        cmds.setKeyframe(f"{solver_node}.{attr}", **key_args)
 
     quaternion_plugs = _configure_sparse_rotation_track(
         context,

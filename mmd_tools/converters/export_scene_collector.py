@@ -1593,7 +1593,9 @@ def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
                 vertex_count,
                 vertex_offset,
             )
-            if not offsets:
+            # A source PMX vertex morph may intentionally have no offsets.
+            # Keep its authored index so Group/Flip references stay aligned.
+            if not offsets and "index" not in stored_entries.get(target_index, {}):
                 continue
 
             morph_name = stored_names.get(target_index) or aliases.get(target_index) or f"VertexMorph{target_index}"

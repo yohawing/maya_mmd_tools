@@ -6,6 +6,7 @@ import pytest
 
 from mmd_tools.core.morph_delta_mapping import (
     collect_morph_delta,
+    map_collected_morph_delta,
     map_morph_deltas_to_local,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
@@ -56,6 +57,16 @@ def test_mapping_skips_high_source_absent_from_material_split_mesh():
     )
 
     assert map_morph_deltas_to_local(morph, 4, {0: 0}, 1) == {}
+
+
+def test_collected_deltas_keep_mesh_specific_bounds_and_weld_conflicts():
+    deltas = {0: (1.0, 0.0, 0.0), 1: (2.0, 0.0, 0.0)}
+    assert map_collected_morph_delta(deltas, 4, {0: 0}, 1) == {0: deltas[0]}
+    assert map_collected_morph_delta(deltas, 4, {1: 0}, 1) == {0: deltas[1]}
+    with pytest.raises(ValueError, match="conflicting source deltas"):
+        map_collected_morph_delta(deltas, 4, {0: 0, 1: 0}, 1)
+    with pytest.raises(ValueError, match="outside local mesh"):
+        map_collected_morph_delta(deltas, 4, {0: 2}, 1)
 
 
 def test_mapping_rejects_non_sequence_vector_payload():

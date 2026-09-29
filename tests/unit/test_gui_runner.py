@@ -1516,7 +1516,8 @@ class GuiTestRunnerTests(unittest.TestCase):
         quit_maya.assert_not_called()
 
     def test_explorer_cleanup_quits_without_process_handle(self):
-        with mock.patch.object(sys, "platform", "win32"), \
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(sys, "platform", "win32"), \
              mock.patch.object(run_gui_tests.maya_commandport, "maya_exe", return_value=Path("maya.exe")), \
              mock.patch.object(run_gui_tests.maya_commandport, "launch_maya", return_value=None) as launch, \
              mock.patch.object(run_gui_tests.maya_commandport, "ensure_port_available"), \
@@ -1529,8 +1530,7 @@ class GuiTestRunnerTests(unittest.TestCase):
              mock.patch.object(run_gui_tests.maya_commandport, "wait_for_maya_process_exit", return_value=True) as wait_for_process_exit, \
              mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
              mock.patch.object(run_gui_tests, "monitor_log_file", return_value="PASS"), \
-             mock.patch.object(run_gui_tests, "LOG_FILE_NAME", "unit_gui_runner_pass.log"), \
-             mock.patch.object(sys, "argv", ["run_gui_tests.py"]):
+             mock.patch.object(sys, "argv", ["run_gui_tests.py", "--log_path", str(Path(temp_dir) / "gui.log")]):
             self.assertEqual(0, run_gui_tests.main())
 
         self.assertEqual("explorer", launch.call_args.kwargs["launch_mode"])
@@ -1740,7 +1740,8 @@ class GuiTestRunnerTests(unittest.TestCase):
             self.assertEqual("failed", report["phases"]["shutdown"]["status"])
 
     def test_host_returns_one_for_completed_failure(self):
-        with mock.patch.object(run_gui_tests.maya_commandport, "maya_exe", return_value=Path("maya.exe")), \
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.object(run_gui_tests.maya_commandport, "maya_exe", return_value=Path("maya.exe")), \
              mock.patch.object(run_gui_tests.maya_commandport, "launch_maya", return_value=None), \
              mock.patch.object(run_gui_tests.maya_commandport, "ensure_port_available"), \
                  mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port"), \
@@ -1751,8 +1752,7 @@ class GuiTestRunnerTests(unittest.TestCase):
              mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port_close"), \
              mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
              mock.patch.object(run_gui_tests, "monitor_log_file", return_value="FAIL"), \
-             mock.patch.object(run_gui_tests, "LOG_FILE_NAME", "unit_gui_runner_fail.log"), \
-             mock.patch.object(sys, "argv", ["run_gui_tests.py"]):
+             mock.patch.object(sys, "argv", ["run_gui_tests.py", "--log_path", str(Path(temp_dir) / "gui.log")]):
             self.assertEqual(1, run_gui_tests.main())
 
     def test_host_returns_one_when_native_qsettings_fingerprint_changes_or_cannot_read(self):
@@ -1832,11 +1832,11 @@ class GuiTestRunnerTests(unittest.TestCase):
                  mock.patch.object(run_gui_tests.maya_commandport, "ensure_port_available"), \
                  mock.patch.object(run_gui_tests.maya_commandport, "wait_for_port", side_effect=RuntimeError("startup failed")), \
                  mock.patch.object(run_gui_tests.maya_commandport, "close_process_logs"), \
-                 mock.patch.object(run_gui_tests, "LOG_FILE_NAME", "unit_gui_runner_startup_failure.log"), \
                  mock.patch.object(
                      sys,
                      "argv",
-                     ["run_gui_tests.py", "--timing_report", str(timing_path)],
+                     ["run_gui_tests.py", "--timing_report", str(timing_path),
+                      "--log_path", str(Path(temp_dir) / "gui.log")],
                  ):
                 self.assertEqual(1, run_gui_tests.main())
 

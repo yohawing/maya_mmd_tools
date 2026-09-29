@@ -11,6 +11,7 @@ from mmd_tools.core.name_translation import (
     _resolve_translation,
     NameTranslationError,
     build_translation_plan,
+    apply_translation_plan,
     collect_name_entries,
     format_preview,
     load_translation_dictionary,
@@ -288,6 +289,101 @@ def test_model_root_never_enters_node_rename_path():
     )
     assert plan[0].english_name == "Miku"
     assert plan[0].maya_name is None
+
+
+def test_renaming_bone_parent_updates_bone_morph_target_in_same_undo_chunk(monkeypatch):
+    old_parent = "|root|旧親"
+    old_bone = old_parent + "|Center"
+    new_parent = "|root|Parent"
+    new_bone = new_parent + "|Center"
+
+    class Cmds:
+        def __init__(self):
+            self.bone = old_bone
+            self.target = old_bone
+            self.events = []
+
+        def ls(self, value=None, type=None, long=False, uuid=False):
+            if type == "joint":
+                return [self.bone]
+            if type == "mmdBoneMorphAccum":
+                return ["accum"]
+            if uuid and value == self.bone:
+                return ["bone-uuid"]
+            if value in (self.bone, "bone-uuid"):
+                return [self.bone]
+            return []
+
+        def attributeQuery(self, attr, node, exists=False):
+            return exists and (node, attr) == ("accum", "mmd_target_joint")
+
+        def getAttr(self, plug):
+            assert plug == "accum.mmd_target_joint"
+            return self.target
+
+        def setAttr(self, plug, value, type=None):
+            if plug == "accum.mmd_target_joint":
+                self.target = value
+            self.events.append(("set", plug, value))
+
+        def undoInfo(self, **kwargs):
+            self.events.append(("undoInfo", kwargs))
+
+        def rename(self, node, name):
+            assert (node, name) == (old_parent, "Parent")
+            self.bone = new_bone
+            self.events.append(("rename", node, name))
+
+    cmds = Cmds()
+    from mmd_tools.converters import bone_morph_runtime
+
+    monkeypatch.setattr(
+        bone_morph_runtime,
+        "resolve_owned_bone_morph_base_routes",
+        lambda joints: bone_morph_runtime.BoneMorphBaseRouteResolution(
+            routes={joints[0]: {"translateX": ("accum", "baseTranslateX")}},
+            blocked={},
+        ),
+    )
+    plan = build_translation_plan(
+        [_entry("bone", old_parent, "旧親")],
+        {"旧親": "Parent"},
+        set_english=False,
+        rename_nodes=True,
+    )
+    apply_translation_plan(plan, cmds_module=cmds)
+
+    assert cmds.target == new_bone
+    assert cmds.events[0][0] == "undoInfo"
+    assert cmds.events[-1] == ("undoInfo", {"closeChunk": True})
+
+
+def test_name_translation_blocks_ambiguous_bone_morph_owner_before_rename(monkeypatch):
+    from mmd_tools.converters import bone_morph_runtime
+
+    joint = "|root|OldParent|Center"
+    calls = []
+    cmds = SimpleNamespace(
+        ls=lambda value=None, type=None, long=False, uuid=False: [joint] if type == "joint" else [],
+        undoInfo=lambda **kwargs: calls.append(("undoInfo", kwargs)),
+        rename=lambda *args: calls.append(("rename", args)),
+    )
+    monkeypatch.setattr(
+        bone_morph_runtime,
+        "resolve_owned_bone_morph_base_routes",
+        lambda joints: bone_morph_runtime.BoneMorphBaseRouteResolution(
+            routes={}, blocked={joints[0]: (("translateX",), "duplicate_bone_morph_accumulator")}
+        ),
+    )
+    plan = build_translation_plan(
+        [_entry("bone", "|root|OldParent", "旧親")],
+        {"旧親": "Parent"},
+        set_english=False,
+        rename_nodes=True,
+    )
+    with pytest.raises(NameTranslationError, match="ownership is unresolved"):
+        apply_translation_plan(plan, cmds_module=cmds)
+    assert calls == []
 
 
 def test_collect_entries_includes_owned_physics_shapes_without_rename(monkeypatch):

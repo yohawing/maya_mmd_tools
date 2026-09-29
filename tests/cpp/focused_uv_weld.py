@@ -87,6 +87,38 @@ def _sequence_close(left, right, tolerance=1.0e-6) -> bool:
     )
 
 
+def _edge_smoothing_counts(om, mesh: str) -> tuple[int, int]:
+    """Check that only continuous authored normal edges become soft."""
+    selection = om.MSelectionList()
+    selection.add(mesh)
+    path = selection.getDagPath(0)
+    if path.node().hasFn(om.MFn.kTransform):
+        path.extendToShape()
+    mesh_fn = om.MFnMesh(path)
+    iterator = om.MItMeshEdge(path)
+    soft = hard = 0
+    while not iterator.isDone():
+        faces = iterator.getConnectedFaces()
+        if len(faces) == 2:
+            continuous = all(
+                max(abs(a - b) for a, b in zip(
+                    mesh_fn.getFaceVertexNormal(faces[0], iterator.vertexId(endpoint), om.MSpace.kObject),
+                    mesh_fn.getFaceVertexNormal(faces[1], iterator.vertexId(endpoint), om.MSpace.kObject),
+                )) <= 1.0e-5
+                for endpoint in (0, 1)
+            )
+            actual = bool(mesh_fn.isEdgeSmooth(iterator.index()))
+            if actual != continuous:
+                raise RuntimeError(
+                    f"edge {iterator.index()} smoothing disagrees with authored corner normals: "
+                    f"actual={actual}, continuous={continuous}, faces={list(faces)}"
+                )
+            soft += actual
+            hard += not actual
+        iterator.next()
+    return soft, hard
+
+
 def _write_morph_equivalence_fixture(path: Path) -> None:
     """Write seam copies whose indexed morph deltas are equal or conflicting."""
     from mmd_tools.io.pmx_exporter import PmxExporter
@@ -417,6 +449,29 @@ def main() -> int:
         with tempfile.TemporaryDirectory() as directory:
             morph_fixture = Path(directory) / "morph_equivalence.pmx"
             _write_morph_equivalence_fixture(morph_fixture)
+            fast_mesh = cmds.mmdFastLoad(
+                f=str(morph_fixture), n="morph_equivalence_no_deformer", s=1.0
+            )[0]
+            fast_soft_edges, _fast_hard_edges = _edge_smoothing_counts(om, fast_mesh)
+            if fast_soft_edges < 1:
+                raise RuntimeError("FastLoad did not soften continuous authored normal edges")
+            fast_selection = om.MSelectionList()
+            fast_selection.add(fast_mesh)
+            fast_path = fast_selection.getDagPath(0)
+            fast_path.extendToShape()
+            fast_fn = om.MFnMesh(fast_path)
+            soft_edge = next(
+                edge for edge in range(fast_fn.numEdges) if fast_fn.isEdgeSmooth(edge)
+            )
+            fast_fn.setEdgeSmoothing(soft_edge, False)
+            fast_fn.cleanupEdgeSmoothing()
+            fast_fn.updateSurface()
+            noop_result = cmds.mmdWeldUvSeamVertices(
+                m=[fast_mesh], f=str(morph_fixture), batch=True
+            )
+            if str(noop_result[1]) != "ok" or not om.MFnMesh(fast_path).isEdgeSmooth(soft_edge):
+                raise RuntimeError("no-op weld did not restore continuous edge smoothing")
+            cmds.delete(fast_mesh)
             morph_loaded = cmds.mmdFastLoad(
                 f=str(morph_fixture), n="morph_equivalence", s=1.0, mo=True
             )
@@ -472,6 +527,33 @@ def main() -> int:
             settings.set("import.model.create_mmd_shaders", False)
             settings.set("import.model.separate_meshes_by_material", True)
             production_morph = parse_pmx_file(str(morph_fixture), use_native_pmx_parse=False)
+            edge_root = cmds.group(empty=True, name="authored_normal_edge_root")
+            edge_converter = MeshConverter(str(morph_fixture))
+            native_weld = edge_converter._run_cpp_uv_weld_batch
+
+            def _add_normal_break(payloads):
+                mesh_fn = _mesh_fn(om, payloads[0]["mesh"])
+                shared = set(mesh_fn.getPolygonVertices(0)) & set(mesh_fn.getPolygonVertices(1))
+                if not shared:
+                    raise RuntimeError("normal-boundary fixture has no shared edge")
+                vertex = min(shared)
+                normal = mesh_fn.getFaceVertexNormal(0, vertex, om.MSpace.kObject)
+                mesh_fn.setFaceVertexNormal(-normal, 0, vertex, om.MSpace.kObject)
+                return native_weld(payloads)
+
+            edge_converter._run_cpp_uv_weld_batch = _add_normal_break
+            _edge_group, edge_meshes = edge_converter.convert_pmx_mesh(
+                production_morph, edge_root
+            )
+            soft_edges, hard_edges = _edge_smoothing_counts(om, edge_meshes[0])
+            if soft_edges < 1 or hard_edges < 1:
+                raise RuntimeError(
+                    f"normal-boundary fixture missed soft/hard edge coverage: {soft_edges}, {hard_edges}"
+                )
+            cmds.delete(edge_root)
+            cmds.file(new=True, force=True)
+            settings.set("import.model.create_mmd_shaders", False)
+            settings.set("import.model.separate_meshes_by_material", True)
             production_root = cmds.group(empty=True, name="production_morph_baseline_root")
             production_baseline_converter = MeshConverter(str(morph_fixture))
             production_baseline_converter._cpp_uv_weld_batch_command_available = lambda: False

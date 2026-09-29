@@ -44,7 +44,6 @@ class VmdData:
         self.ik_show_hide_frames = []
         self.source_file = None
         # Optional import/runtime diagnostics; Export uses the current scene.
-        self.raw_provenance = None
 
     def parse_file(self, file_path) -> "VmdData":
         """

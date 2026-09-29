@@ -45,6 +45,7 @@ class ModelImportPipeline:
         self.profile = self.options.get("profile") if isinstance(self.options.get("profile"), dict) else None
         self.phase_timings: Dict[str, float] = {}
         self._has_hardware_shader = False
+        self._last_progress = -1
 
     def record_phase(self, name: str, start: float) -> None:
         """Record elapsed seconds for a named import phase when profiling."""
@@ -53,8 +54,9 @@ class ModelImportPipeline:
 
     def emit_progress(self, value: int) -> None:
         """Notify the caller about import progress without making callbacks fatal."""
-        if self.progress_callback is None:
+        if self.progress_callback is None or value <= self._last_progress:
             return
+        self._last_progress = value
         try:
             self.progress_callback(value)
         except Exception:
@@ -282,7 +284,7 @@ class ModelImportPipeline:
     def apply_scale_and_select(self, root_group: str) -> None:
         """Finalize import-time visibility and select the model."""
         sync_visibility_connections(MayaCmdsAdapter(cmds), root_group)
-        self.emit_progress(92)
+        self.emit_progress(82)
         cmds.select(root_group)
 
     def sync_dx11_uniforms(self, mesh_converter: Any, *, refresh_if_dx11: bool = False) -> int:

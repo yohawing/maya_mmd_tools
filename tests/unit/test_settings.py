@@ -278,13 +278,17 @@ class _FakeOptionVar:
     def __init__(self, values=None):
         self.values = dict(values or {})
 
-    def __call__(self, *, exists=None, q=None, iv=None, **_kwargs):
+    def __call__(self, *, exists=None, q=None, iv=None, fv=None, sv=None, remove=None, **_kwargs):
+        if remove is not None:
+            self.values.pop(remove, None)
+            return None
         if exists is not None:
             return exists in self.values
         if q is not None:
             return self.values[q]
-        if iv is not None:
-            key, value = iv
+        pair = iv if iv is not None else fv if fv is not None else sv
+        if pair is not None:
+            key, value = pair
             self.values[key] = value
             return None
         raise AssertionError("unsupported optionVar operation")
@@ -328,6 +332,43 @@ class TestSettingsControlRigOptionVarMigration(unittest.TestCase):
 
         self.assertFalse(loaded.get("import.model.create_mmd_control_rig"))
         self.assertEqual(option_var.values[f"{prefix}import::model::create_mmd_control_rig"], 0)
+
+
+class TestRetiredNativeSettings(unittest.TestCase):
+    def test_load_and_json_reimport_cannot_restore_retired_option_vars(self):
+        from mmd_tools.services.settings_service import SettingsService
+
+        for saved in (None, 0, 1):
+            with self.subTest(saved=saved):
+                _reset_singleton()
+                keys = ("use_cpp_fast_load", "use_cpp_vp2_ownership")
+                values = {"unrelated_option": 17}
+                if saved is not None:
+                    values.update({Settings._prefix + "import::native::" + key: saved for key in keys})
+                option_var = _FakeOptionVar(values)
+                cmds = type("_FakeCmds", (), {"optionVar": option_var})()
+                try:
+                    with patch.object(settings_module, "MAYA_AVAILABLE", True), patch.object(
+                        settings_module, "cmds", cmds, create=True
+                    ):
+                        settings = Settings()
+                        for key in keys:
+                            self.assertIsNone(settings.get("import.native." + key))
+                            self.assertNotIn(Settings._prefix + "import::native::" + key, option_var.values)
+                        service = SettingsService(settings)
+                        service.import_settings_data({"import": {"native": {
+                            "use_cpp_fast_load": False, "use_cpp_vp2_ownership": False,
+                            "use_cpp_rig_nodes": True, "future_option": "keep",
+                        }}})
+                        for key in keys:
+                            settings.set("import.native." + key, False)
+                            self.assertIsNone(settings.get("import.native." + key))
+                            self.assertNotIn(Settings._prefix + "import::native::" + key, option_var.values)
+                        self.assertTrue(settings.get("import.native.use_cpp_rig_nodes"))
+                        self.assertEqual(settings.get("import.native.future_option"), "keep")
+                        self.assertEqual(option_var.values["unrelated_option"], 17)
+                finally:
+                    _reset_singleton()
 
 
 class TestSettingsProxy(unittest.TestCase):

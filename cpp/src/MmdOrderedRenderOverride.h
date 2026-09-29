@@ -46,6 +46,15 @@ private:
         std::string reason;
     };
 
+    struct PanelNotice {
+        bool hasDrawables = false;
+        bool missingRenderData = false;
+        bool renderWarningShown = false;
+        bool missingWarningShown = false;
+    };
+
+    void warnOnce(const std::string& message, bool missingData = false);
+
     void requestFallback(const std::string& reason,
                          bool currentFrameUsesStandard = false);
     void clearFallback();
@@ -58,6 +67,7 @@ private:
     bool operationsInstalled_ = false;
     std::string activeDestination_;
     std::map<std::string, FallbackState> fallbackStates_;
+    std::map<std::string, PanelNotice> panelNotices_;
 };
 
 class MmdOrderedRenderWitnessCommand : public MPxCommand {

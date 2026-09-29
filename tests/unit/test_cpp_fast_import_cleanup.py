@@ -2,6 +2,7 @@
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.common.maya_stub import install_maya_stub
@@ -46,7 +47,7 @@ class TestFastImportCleanup(unittest.TestCase):
                 with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]), patch.object(
                     Path, "exists", return_value=True
                 ), patch.object(cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True), patch.object(
-                    cpp_fast_importer, "parse_pmx_native", return_value=object()
+                    cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])
                 ), patch.object(cpp_fast_importer, "_require_dx11_for_vp2_ownership"), patch(
                     "maya.cmds.mmdFastLoad", create=True, return_value=["native"]
                 ), patch("maya.cmds.ls", side_effect=lookup), patch(
@@ -70,7 +71,7 @@ class TestFastImportCleanup(unittest.TestCase):
                 cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]
             ), patch.object(Path, "exists", return_value=True), patch.object(
                 cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
-            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=object()), patch(
+            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])), patch(
                 "maya.cmds.mmdFastLoad", create=True, return_value=["native", "shape"]
             ), patch("maya.cmds.ls", side_effect=[["native-uuid"], remaining]) as lookup, patch(
                 "maya.cmds.delete", side_effect=cleanup_error

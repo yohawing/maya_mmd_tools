@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any, Optional, Tuple
 
@@ -70,34 +71,29 @@ def convert_vmd_quat_to_joint_rotate(
     qy: float,
     qz: float,
     qw: float,
+    *,
+    bind_cache: Optional[dict] = None,
 ) -> Tuple[float, float, float]:
     """Convert a VMD quaternion into Maya joint.rotate Euler angles in degrees."""
     q_maya = om.MQuaternion(-float(qx), -float(qy), float(qz), float(qw))
 
     q_jo, rotate_order = get_joint_orient_cache(converter, joint_name)
-    q_rotate = convert_vmd_quat_to_bind_space_rotate(converter, joint_name, q_maya, q_jo)
+    q_rotate = convert_vmd_quat_to_bind_space_rotate(converter, joint_name, q_maya, q_jo, bind_cache=bind_cache)
 
     euler = q_rotate.asEulerRotation()
     euler.reorderIt(rotate_order)
     return (math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z))
 
 
-def convert_vmd_quat_to_bind_space_rotate(
-    converter: Any,
-    joint_name: str,
-    q_maya: om.MQuaternion,
-    q_jo: Optional[om.MQuaternion],
-) -> om.MQuaternion:
-    """Convert a sparse VMD local rotation into this joint's JO-aware rotate space."""
+def _bind_space_terms(converter: Any, joint_name: str) -> Optional[tuple]:
+    """Prepare static bind transforms for one bone's rotation samples."""
     bone_index = None
     for idx, joint in getattr(converter, "bone_index_to_joint", {}).items():
         if joint == joint_name:
             bone_index = idx
             break
     if bone_index is None:
-        if q_jo is not None:
-            return q_jo * q_maya * q_jo.inverse()
-        return q_maya
+        return None
 
     if not hasattr(converter, "_runtime_bind_world_matrices"):
         try:
@@ -108,9 +104,7 @@ def convert_vmd_quat_to_bind_space_rotate(
     bind_world = getattr(converter, "_runtime_bind_world_matrices", {}).get(bone_index)
     bind_no_orient = getattr(converter, "_runtime_no_orient_bind_world_matrices", {}).get(bone_index)
     if bind_world is None or bind_no_orient is None:
-        if q_jo is not None:
-            return q_jo * q_maya * q_jo.inverse()
-        return q_maya
+        return None
 
     parent_index = getattr(converter, "_bone_parent_map", {}).get(bone_index)
     parent_bind_world = getattr(converter, "_runtime_bind_world_matrices", {}).get(parent_index, om.MMatrix())
@@ -119,19 +113,43 @@ def convert_vmd_quat_to_bind_space_rotate(
         om.MMatrix(),
     )
 
+    no_orient_local = bind_no_orient * parent_bind_no_orient.inverse()
+    return (
+        om.MTransformationMatrix(no_orient_local).translation(om.MSpace.kTransform),
+        bind_world * bind_no_orient.inverse(),
+        parent_bind_no_orient,
+        parent_bind_world.inverse(),
+    )
+
+
+def convert_vmd_quat_to_bind_space_rotate(
+    converter: Any,
+    joint_name: str,
+    q_maya: om.MQuaternion,
+    q_jo: Optional[om.MQuaternion],
+    *,
+    bind_cache: Optional[dict] = None,
+) -> om.MQuaternion:
+    """Convert a sparse rotation, optionally reusing terms within one keying batch."""
     try:
-        no_orient_local = bind_no_orient * parent_bind_no_orient.inverse()
-        local_translation = om.MTransformationMatrix(no_orient_local).translation(om.MSpace.kTransform)
+        if bind_cache is not None and joint_name in bind_cache:
+            terms = bind_cache[joint_name]
+        else:
+            terms = _bind_space_terms(converter, joint_name)
+            if bind_cache is not None:
+                bind_cache[joint_name] = terms
+        if terms is None:
+            return q_jo * q_maya * q_jo.inverse() if q_jo is not None else q_maya
+        local_translation, bind_correction, parent_bind_no_orient, parent_bind_inverse = terms
         local_tfm = om.MTransformationMatrix()
         local_tfm.setTranslation(local_translation, om.MSpace.kTransform)
         local_tfm.setRotation(q_maya)
         local_no_orient = local_tfm.asMatrix()
         local_total = (
-            bind_world
-            * bind_no_orient.inverse()
+            bind_correction
             * local_no_orient
             * parent_bind_no_orient
-            * parent_bind_world.inverse()
+            * parent_bind_inverse
         )
         q_total = om.MTransformationMatrix(local_total).rotation(asQuaternion=True)
         return q_total * q_jo.inverse() if q_jo is not None else q_total
@@ -139,3 +157,39 @@ def convert_vmd_quat_to_bind_space_rotate(
         if q_jo is not None:
             return q_jo * q_maya * q_jo.inverse()
         return q_maya
+
+
+def convert_vmd_quats_to_joint_rotates(converter, joint_name, quaternions, key_route=None):
+    """Convert one authored track in C++; return None when the command is absent.
+
+    Only plain numerical inputs cross the command boundary. Bind terms and
+    rotation orders are read once, so the command never evaluates or edits DG.
+    """
+    command = getattr(cmds, "mmdVmdRotationSamples", None)
+    if not callable(command):
+        return None
+    q_jo, rotate_order = get_joint_orient_cache(converter, joint_name)
+    try:
+        terms = _bind_space_terms(converter, joint_name)
+    except Exception:
+        # Retain the scalar converter's fallback for missing bind information.
+        terms = None
+    request = {
+        "quaternions": [float(v) for q in quaternions for v in q],
+        "joint_orient": list(q_jo) if q_jo is not None else [0., 0., 0., 1.],
+        "rotate_order": rotate_order,
+    }
+    if terms is not None:
+        translation, correction, parent, inverse_parent = terms
+        request["bind"] = {"translation": list(translation), "correction": list(correction),
+                           "parent": list(parent), "inverse_parent": list(inverse_parent)}
+    basis = (key_route or {}).get("authoring_basis")
+    if basis:
+        from ..core.mmd_control_rig_basis import _coerce_quaternion
+        request["basis"] = _coerce_quaternion(basis, "basis quaternion")
+        control = key_route.get("attr_targets", {}).get("rotateX", (joint_name, "rotateX"))[0]
+        request["control_order"] = int(cmds.getAttr(f"{control}.rotateOrder"))
+    result = command(payload=json.dumps(request, allow_nan=False)) or []
+    if len(result) != len(quaternions)*3:
+        raise RuntimeError("Native VMD rotation batch returned an invalid sample count")
+    return [tuple(result[i:i+3]) for i in range(0, len(result), 3)]

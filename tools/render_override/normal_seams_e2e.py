@@ -27,6 +27,12 @@ def pixel_error(left, right):
     return {"mean": sum(errors) / len(errors), "fractionOver8": sum(e > 8 for e in errors) / len(errors)}
 
 
+def render_pass_signature(witness):
+    """Compare persisted material draw policy independently of submesh IDs."""
+    return [(item["materialIndex"], item["pass"], item["outline"])
+            for item in witness["pmxOrder"]]
+
+
 def require_render_state(cmds, root):
     """Reject blank captures and fallback rendering, including after reopen."""
     witness = json.loads(cmds.mmdOrderedRenderWitness())
@@ -73,6 +79,7 @@ def probe_steps(config):
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
         for split in (False, True):
             mode = "split" if split else "unified"
+            initial_passes = None
             cmds.file(new=True, force=True)
             root = import_mmd_file(config["model"], options={
                 "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
@@ -115,6 +122,8 @@ def probe_steps(config):
                 images[mode, case] = pixels
                 row = {"mode": mode, "angle": angle, "image": str(path),
                        **require_render_state(cmds, root)}
+                if case == 0:
+                    initial_passes = render_pass_signature(row["witness"])
                 if split:
                     row["unifiedDifference"] = pixel_error(images["unified", case], pixels)
                 report["cases"].append(row)
@@ -131,11 +140,18 @@ def probe_steps(config):
             reopened = read_png_rgb(capture_view(cmds, out / f"{mode}-reopened.png", panel, 800, 600))
             images[mode, "reopened"] = reopened
             row = {"mode": mode, "reopenDifference": pixel_error(images[mode, 0], reopened),
-                   "sourceGeometryBefore": before_geometry, "sourceGeometryAfter": geometry_summary(meshes),
+                   "sourceGeometryBefore": before_geometry,
+                   "sourceGeometryAfter": geometry_summary(meshes),
                    **require_render_state(cmds, root)}
+            row["renderPassesPreserved"] = (
+                render_pass_signature(row["witness"]) == initial_passes
+            )
             if split:
                 row["unifiedDifference"] = pixel_error(images["unified", "reopened"], reopened)
             report["cases"].append(row)
+            assert row["renderPassesPreserved"], "material draw passes changed on reopen"
+            assert row["reopenDifference"]["mean"] < 0.1, row["reopenDifference"]
+            assert row["reopenDifference"]["fractionOver8"] < 0.001, row["reopenDifference"]
         # The baseline YYB fixture changes upstream on save/reopen in both modes.
         # Record that separately; verify the renderer matches split corner normals
         # for the CURRENT source geometry, including after mapping reconstruction.

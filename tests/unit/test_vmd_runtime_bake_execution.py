@@ -725,10 +725,6 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         ) as build_physics_descriptors, patch(
             "mmd_tools.core.physics_solver._collect_bone_joints",
             return_value=["|joint0", "|joint1"],
-        ), patch.object(
-            vmd_converter_module,
-            "store_runtime_registration_provenance",
-            return_value=True,
         ):
             result = self.converter._convert_using_mmd_runtime(
                 VmdDataLike(),

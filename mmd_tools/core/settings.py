@@ -12,6 +12,17 @@ from collections import UserDict
 
 _LEGACY_CREATE_MMD_CONTROL_RIG_OPTION_KEY = "import::animation::create_mmd_control_rig"
 _MODEL_CREATE_MMD_CONTROL_RIG_OPTION_KEY = "import::model::create_mmd_control_rig"
+_REMOVED_NATIVE_IMPORT_KEYS = ("use_cpp_fast_load", "use_cpp_vp2_ownership")
+
+
+def remove_legacy_native_import_settings(data):
+    """Discard retired route preferences while retaining other native settings."""
+    import_settings = data.get("import")
+    if isinstance(import_settings, dict):
+        native = import_settings.get("native")
+        if isinstance(native, dict):
+            for key in _REMOVED_NATIVE_IMPORT_KEYS:
+                native.pop(key, None)
 
 try:
     from maya import cmds
@@ -103,6 +114,7 @@ class Settings(UserDict):
             return
 
         flat_defaults = self._flatten_dict(self._defaults)
+        self._remove_legacy_native_import_settings()
         for key, default_value in flat_defaults.items():
             option_var_key = self.get_option_var_key(key)
             value = default_value
@@ -125,6 +137,15 @@ class Settings(UserDict):
             d[keys[-1]] = value
 
         self._migrate_legacy_create_mmd_control_rig_option_var()
+
+    def _remove_legacy_native_import_settings(self):
+        """Remove retired preferences from memory and Maya persistence."""
+        remove_legacy_native_import_settings(self.data)
+        if MAYA_AVAILABLE:
+            for key in _REMOVED_NATIVE_IMPORT_KEYS:
+                option_var = self.get_option_var_key("import::native::" + key)
+                if cmds.optionVar(exists=option_var):
+                    cmds.optionVar(remove=option_var)
 
     def _migrate_legacy_create_mmd_control_rig_option_var(self):
         """Copy the former animation-scoped Control Rig optionVar to its model key.
@@ -161,6 +182,7 @@ class Settings(UserDict):
 
     def save(self):
         """Save all current settings to Maya's optionVars."""
+        remove_legacy_native_import_settings(self.data)
         if not MAYA_AVAILABLE:
             return
 
@@ -171,6 +193,7 @@ class Settings(UserDict):
         except Exception:
             return
 
+        self._remove_legacy_native_import_settings()
         flat_data = self._flatten_dict(self.data)
         for key, value in flat_data.items():
             option_var_key = self.get_option_var_key(key)

@@ -138,22 +138,15 @@ class TestPhysicsCompatibilityWarningProfile(unittest.TestCase):
         existing = {"code": "existing"}
         options = {"profile": {"warnings": [existing]}}
 
-        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
-            with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
-                with patch(
-                    "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
-                    return_value="model_root",
-                ) as importer:
-                    result = import_mmd_file("model.pmx", options=options)
+        with self.assertLogs("mmd_tools.io.mmd_importer", level="WARNING") as logs:
+            _record_physics_compatibility_warnings(parsed_data, options)
 
-        self.assertEqual(result, "model_root")
         self.assertEqual(options["profile"]["warnings"][0], existing)
         self.assertEqual(
             options["profile"]["warnings"][1]["code"],
             "legacy_soft_constraint_behavior",
         )
         self.assertIn("legacy MMD soft-constraint behavior", "\n".join(logs.output))
-        importer.assert_called_once()
 
         parsed_data.joints[0].translation_limit_min = (0.0, 0.0, 0.0)
         parsed_data.joints[0].translation_limit_max = (0.0, 0.0, 0.0)
@@ -170,6 +163,14 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
         settings.set("import.general.scale_factor", self._saved_scale)
 
     def _assert_import_scale_forwarded(self, extension, importer_patch, expected_scale, **kwargs):
+        if extension == ".pmx":
+            with patch("mmd_tools.io.mmd_importer.fast_import", return_value="model_root") as native, patch(
+                "mmd_tools.io.mmd_importer.ModelImportPipeline.create_light_controller", return_value=None
+            ), patch("mmd_tools.io.mmd_importer.parse_mmd_file") as parser:
+                self.assertEqual(import_mmd_file("model.pmx", **kwargs), "model_root")
+                self.assertEqual(native.call_args.kwargs["scale"], expected_scale)
+                parser.assert_not_called()
+            return
         parsed_data = object()
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
@@ -266,17 +267,17 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
         finally:
             settings.set("ui.general.development_mode", self._saved_dev)
 
-    def test_pmx_import_forwards_required_native_parse_option(self):
+    def test_pmd_import_forwards_required_native_parse_option(self):
         parsed_data = object()
         options = {"require_native_pmx_parse": True}
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data) as parse_file:
             with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root"):
-                result = import_mmd_file("model.pmx", options=options)
+                result = import_mmd_file("model.pmd", options=options)
 
         self.assertEqual(result, "model_root")
         parse_file.assert_called_once_with(
-            "model.pmx",
+            "model.pmd",
             use_native_pmx_parse=None,
             require_native_pmx_parse=True,
         )
@@ -294,7 +295,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
         self.assertEqual(result, "model_root")
         self.assertTrue(importer.call_args.kwargs["is_pmd"])
 
-    def test_pmx_import_requires_native_parse_by_default(self):
+    def test_pmd_import_requires_native_parse_by_default(self):
         parsed_data = object()
         self._saved_dev = settings.get("ui.general.development_mode", False)
         self._saved_require_native = settings.get("import.native.require_native_pmx_parse")
@@ -303,14 +304,14 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
             settings.set("import.native.require_native_pmx_parse", True)
             with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data) as parse_file:
                 with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root"):
-                    result = import_mmd_file("model.pmx", options={})
+                    result = import_mmd_file("model.pmd", options={})
         finally:
             settings.set("ui.general.development_mode", self._saved_dev)
             settings.set("import.native.require_native_pmx_parse", self._saved_require_native)
 
         self.assertEqual(result, "model_root")
         parse_file.assert_called_once_with(
-            "model.pmx",
+            "model.pmd",
             use_native_pmx_parse=None,
             require_native_pmx_parse=True,
         )
@@ -322,7 +323,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
             with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root") as importer:
-                result = import_mmd_file("model.pmx", options={}, progress_callback=progress_callback)
+                result = import_mmd_file("model.pmd", options={}, progress_callback=progress_callback)
 
         self.assertEqual(result, "model_root")
         self.assertIs(importer.call_args.kwargs["progress_callback"], progress_callback)
@@ -431,7 +432,7 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
             with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root"):
-                result = import_mmd_file("model.pmx", options={}, progress_callback=broken_progress)
+                result = import_mmd_file("model.pmd", options={}, progress_callback=broken_progress)
 
         self.assertEqual(result, "model_root")
 
@@ -476,7 +477,7 @@ class TestOrderedViewportAfterImport(unittest.TestCase):
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=object()), patch(
             "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="mesh_root"
         ), patch("mmd_tools.io.mmd_importer.maya_viewport_utils.cmds.modelEditor") as setup:
-            self.assertEqual(import_mmd_file("model.pmx", options={"use_cpp_fast_load": False}), "mesh_root")
+            self.assertEqual(import_mmd_file("model.pmd", options={"use_cpp_fast_load": False}), "mesh_root")
         setup.assert_not_called()
 
 
@@ -508,7 +509,7 @@ class TestModelImportControlRig(unittest.TestCase):
                     return_value={"state": "EDIT", "owner": "CONTROL_OWNED"},
                 ) as bind:
                     options = {"create_mmd_control_rig": True, "profile": profile}
-                    result = import_mmd_file("model.pmx", options=options)
+                    result = import_mmd_file("model.pmd", options=options)
 
         self.assertEqual(result, "python_root")
         build.assert_called_once_with("python_root")
@@ -573,7 +574,7 @@ class TestModelImportControlRig(unittest.TestCase):
                     side_effect=RuntimeError("missing role binding"),
                 ), patch("mmd_tools.io.mmd_importer.enter_mmd_control_rig_edit") as bind:
                     options = {"create_mmd_control_rig": True, "profile": profile}
-                    result = import_mmd_file("model.pmx", options=options)
+                    result = import_mmd_file("model.pmd", options=options)
 
         self.assertEqual(result, "model_root")
         self.assertEqual(profile["mmd_control_rig"]["succeeded"], False)
@@ -608,7 +609,7 @@ class TestModelImportControlRig(unittest.TestCase):
             side_effect=RuntimeError("bind route failed"),
         ):
             options = {"create_mmd_control_rig": True, "profile": profile}
-            result = import_mmd_file("model.pmx", options=options)
+            result = import_mmd_file("model.pmd", options=options)
 
         self.assertEqual(result, "model_root")
         rig_profile = profile["mmd_control_rig"]
@@ -627,12 +628,15 @@ class TestUVEditorRefreshAfterModelImport(unittest.TestCase):
     def _run_model_import(self, extension):
         deferred_callbacks = []
         parsed_data = object()
-        importer_patch = "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"
+        importer_patch = (
+            "mmd_tools.io.mmd_importer.fast_import" if extension == ".pmx"
+            else "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"
+        )
 
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data), patch(
             importer_patch,
             return_value="model_root",
-        ), patch("maya.utils.executeDeferred", side_effect=deferred_callbacks.append) as execute_deferred:
+        ), patch("mmd_tools.io.mmd_importer.ModelImportPipeline.create_light_controller", return_value=None), patch("maya.utils.executeDeferred", side_effect=deferred_callbacks.append) as execute_deferred:
             result = import_mmd_file(f"model{extension}", options={})
 
         self.assertEqual(result, "model_root")
@@ -662,8 +666,8 @@ class TestUVEditorRefreshAfterModelImport(unittest.TestCase):
 
     def test_failed_model_import_does_not_schedule_refresh(self):
         with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=object()), patch(
-            "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
-            side_effect=RuntimeError("import failed"),
+            "mmd_tools.io.mmd_importer.fast_import",
+            return_value=None,
         ), patch("maya.utils.executeDeferred") as execute_deferred:
             with self.assertRaises(MMDImportException):
                 import_mmd_file("model.pmx", options={})

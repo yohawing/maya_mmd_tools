@@ -1,8 +1,6 @@
 """Tests for the C++ fast import integration in mmd_importer.
 
-Verifies that ``import_mmd_file`` correctly routes through / around the
-``fast_import`` path depending on the ``use_cpp_fast_load`` and
-``cpp_fast_load_mesh_only`` options.  Also tests the skeleton/skin creation
+Verifies mandatory C++ PMX routing and the geometry-only API.  Also tests the skeleton/skin creation
 shared PMX authoring pipeline.
 
 NOTE: Maya/PyMel is unavailable in CI, so the shared Maya stub is installed
@@ -63,60 +61,57 @@ class TestCppFastImportRouting(unittest.TestCase):
         old_light = settings.get("import.light.create_controller", True)
         self.addCleanup(settings.set, "import.light.create_controller", old_light)
         settings.set("import.light.create_controller", True)
-        self._old_cpp = settings.get("import.native.use_cpp_fast_load", False)
         self._old_mesh_only = settings.get("import.native.cpp_fast_load_mesh_only", True)
         self._old_scale = settings.get("import.general.scale_factor", 1.0)
         settings.set("import.general.scale_factor", 1.0)
 
     def tearDown(self):
-        settings.set("import.native.use_cpp_fast_load", self._old_cpp)
         settings.set("import.native.cpp_fast_load_mesh_only", self._old_mesh_only)
         settings.set("import.general.scale_factor", self._old_scale)
 
     # ------------------------------------------------------------------
-    # Scenario 1: option disabled → uses parse_mmd_file
+    # Scenario 1: retired options cannot change format routing
     # ------------------------------------------------------------------
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
-    def test_option_disabled_uses_python_parser(
+    def test_retired_option_cannot_select_python_parser(
         self,
         mock_import_pmx: MagicMock,
         mock_parse: MagicMock,
         mock_fast: MagicMock,
     ):
-        """When use_cpp_fast_load is False (default), the Python parser is used."""
-        mock_parse.return_value = object()
-        mock_import_pmx.return_value = "python_root"
-
-        result = import_mmd_file(
-            "model.pmx",
-            options={"scale": 1.0, "use_cpp_fast_load": False},
-        )
-
-        mock_fast.assert_not_called()
-        mock_parse.assert_called_once()
-        mock_import_pmx.assert_called_once()
-        self.assertEqual(result, "python_root")
+        """Retired API values cannot bypass the C++ PMX importer."""
+        for value in (None, False, True):
+            with self.subTest(value=value):
+                mock_fast.reset_mock()
+                mock_fast.return_value = "cpp_root"
+                options = {"scale": 1.0}
+                if value is not None:
+                    options["use_cpp_fast_load"] = value
+                self.assertEqual(import_mmd_file("model.pmx", options=options), "cpp_root")
+                mock_fast.assert_called_once()
+                mock_parse.assert_not_called()
+                mock_import_pmx.assert_not_called()
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
-    def test_python_pmx_path_honors_explicit_scale_argument(
+    def test_python_pmd_path_honors_explicit_scale_argument(
         self,
         mock_import_pmx: MagicMock,
         mock_parse: MagicMock,
         mock_fast: MagicMock,
     ):
-        """Python PMX path uses explicit scale before options/settings."""
+        """Python PMD path uses explicit scale before options/settings."""
         settings.set("import.general.scale_factor", 9.0)
         parsed = object()
         mock_parse.return_value = parsed
         mock_import_pmx.return_value = "python_root"
 
         result = import_mmd_file(
-            "model.pmx",
+            "model.pmd",
             scale=3.0,
             options={"scale": 2.0, "use_cpp_fast_load": False},
         )
@@ -124,10 +119,11 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_fast.assert_not_called()
         mock_import_pmx.assert_called_once_with(
             parsed,
-            "model.pmx",
+            "model.pmd",
             3.0,
             {"scale": 2.0, "use_cpp_fast_load": False},
             progress_callback=None,
+            is_pmd=True,
         )
         self.assertEqual(result, "python_root")
 
@@ -198,7 +194,7 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
-        self.assertEqual(progress, [5, 10, 90])
+        self.assertEqual(progress, [5, 10, 97])
         self.mock_create_light.assert_called_once_with()
         self.mock_select.assert_called_once_with("cpp_root", replace=True)
 
@@ -311,58 +307,38 @@ class TestCppFastImportRouting(unittest.TestCase):
             "restart Maya",
         )
 
+    @patch("mmd_tools.io.mmd_importer.fast_import", return_value="cpp_root")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
-    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
-    def test_native_vp2_request_with_fast_load_disabled_is_fail_closed(
-        self,
-        mock_import_pmx: MagicMock,
-        mock_parse: MagicMock,
-    ):
-        """A lost Fast Load flag must not turn a VP2 request into Python import."""
-        options = {
-            "scale": 1.0,
-            "use_cpp_fast_load": False,
-            "use_cpp_vp2_ownership": True,
-        }
-
-        with self.assertRaisesRegex(MMDImportException, "C\\+\\+ Fast Load is disabled"):
-            import_mmd_file("model.pmx", options=options)
-
-        mock_parse.assert_not_called()
-        mock_import_pmx.assert_not_called()
-        self.assertEqual(options["profile"]["native_import"]["fallback"], "blocked")
+    @patch("mmd_tools.io.mmd_importer.maya_viewport_utils.setup_mmd_native_color_management")
+    def test_native_vp2_ignores_retired_fast_load_opt_out(self, color, parse, fast):
+        options = {"use_cpp_fast_load": False, "use_cpp_vp2_ownership": True}
+        self.assertEqual(import_mmd_file("model.pmx", options=options), "cpp_root")
+        fast.assert_called_once()
+        parse.assert_not_called()
+        color.assert_called_once()
 
     # ------------------------------------------------------------------
-    # Scenario 3: option enabled + fast import fails → fallback
+    # Scenario 3: native import failure does not change routes
     # ------------------------------------------------------------------
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
     @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
-    def test_fast_import_failure_falls_back(
+    def test_fast_import_failure_blocks_python_fallback(
         self,
         mock_import_pmx: MagicMock,
         mock_parse: MagicMock,
         mock_fast: MagicMock,
     ):
-        """When use_cpp_fast_load is True but fast_import returns None,
-        the Python parser should be used as a fallback."""
+        """Unavailable native PMX import must surface as an actionable failure."""
         mock_fast.return_value = None
-        mock_parse.return_value = object()
-        mock_import_pmx.return_value = "fallback_root"
         progress = []
-
-        result = import_mmd_file(
-            "model.pmx",
-            options={"scale": 1.0, "use_cpp_fast_load": True},
-            progress_callback=progress.append,
-        )
-
+        with self.assertRaisesRegex(MMDImportException, "PMX import requires C\+\+ Fast Load"):
+            import_mmd_file("model.pmx", options={}, progress_callback=progress.append)
         mock_fast.assert_called_once()
-        mock_parse.assert_called_once()
-        mock_import_pmx.assert_called_once()
-        self.assertEqual(result, "fallback_root")
-        self.assertEqual(progress, [5, 10, 12])
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
+        self.assertEqual(progress, [5, 10])
 
     # ------------------------------------------------------------------
     # Scenario 4: mesh_only=True → fast import receives mesh_only=True
@@ -584,7 +560,7 @@ class TestFastImportMetadata(unittest.TestCase):
     def test_full_fast_import_shares_options_and_scale_with_pmx_pipeline(self):
         """Native geometry retains ordinary physics, morph and scale options."""
         plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
-        parsed = object()
+        parsed = SimpleNamespace(vertices=[object()], faces=[])
         options = {"import_physics": True, "setup_rig": False, "custom_namespace": "hero",
                    "separate_meshes_by_material": False}
         progress = MagicMock()
@@ -615,12 +591,31 @@ class TestFastImportMetadata(unittest.TestCase):
             ), patch.object(Path, "exists", return_value=True), patch.object(
                 cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
             ), patch.object(
-                cpp_fast_importer, "parse_pmx_native", return_value=None if failure == "parse" else object()
+                cpp_fast_importer, "parse_pmx_native", return_value=None if failure == "parse" else SimpleNamespace(vertices=[object()], faces=[])
             ), patch("maya.cmds.mmdFastLoad", create=True, side_effect=RuntimeError("unavailable")), patch(
                 "mmd_tools.io.pmx_importer.import_pmx_file"
             ) as author:
                 self.assertIsNone(fast_import("model.pmx", mesh_only=False))
                 author.assert_not_called()
+
+    def test_bone_only_native_import_skips_mesh_creation(self):
+        """Empty geometry still authors native-parsed bones via the shared pipeline."""
+        parsed = PmxData()
+        for split in (False, True):
+            with self.subTest(split=split), patch.object(
+                cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]
+            ), patch.object(Path, "exists", return_value=True), patch.object(
+                cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
+            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=parsed), patch(
+                "maya.cmds.mmdFastLoad", create=True
+            ) as geometry, patch(
+                "mmd_tools.io.pmx_importer.import_pmx_file", return_value="bone_root"
+            ) as author:
+                self.assertEqual(fast_import("bones.pmx", mesh_only=False,
+                                             options={"separate_meshes_by_material": split}), "bone_root")
+                geometry.assert_not_called()
+                self.assertIs(author.call_args.args[0], parsed)
+                self.assertEqual(author.call_args.args[3]["_cpp_fast_load_geometry"], [])
 
     def test_vp2_command_failure_preserves_original_error(self):
         """Required VP2 imports must surface the command's actual rejection."""
@@ -629,7 +624,7 @@ class TestFastImportMetadata(unittest.TestCase):
                 cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]
             ), patch.object(Path, "exists", return_value=True), patch.object(
                 cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True
-            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=object()), patch.object(
+            ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])), patch.object(
                 cpp_fast_importer, "_require_dx11_for_vp2_ownership"
             ), patch("maya.cmds.mmdFastLoad", create=True, side_effect=RuntimeError("non-finite normal")):
                 with self.assertRaisesRegex(RuntimeError, "non-finite normal"):
@@ -638,7 +633,7 @@ class TestFastImportMetadata(unittest.TestCase):
     def test_failed_full_import_removes_separated_proxy_owner(self):
         with patch.object(cpp_fast_importer, "_candidate_plugin_paths", return_value=[Path("plugin.mll")]), patch.object(
             Path, "exists", return_value=True
-        ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=object()), patch.object(
+        ), patch.object(cpp_fast_importer, "parse_pmx_native", return_value=SimpleNamespace(vertices=[object()], faces=[])), patch.object(
             cpp_fast_importer, "_require_dx11_for_vp2_ownership"
         ), patch.object(cpp_fast_importer.cpp_plugin_locator, "is_plugin_loaded", return_value=True), patch(
             "maya.cmds.mmdFastLoad", create=True, return_value=["source", "mesh", "proxy"]
@@ -1185,6 +1180,41 @@ class TestFastMorphMetadata(unittest.TestCase):
                 "2": {"name": "a_b", "index": 3},
             },
         )
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_cpp_target_indices_preserve_aliases_after_filtered_morphs(self, mock_source):
+        source = self._source()
+        # These source entries can be rejected by C++ for malformed positions,
+        # non-finite deltas, or a conflicting weld. The bridge must use the
+        # actual target list, without repeating the native filtering policy.
+        source["morphs"][0]["vertexOffsets"] = [{"vertexIndex": 0, "position": []}]
+        source["morphs"][2]["vertexOffsets"] = [{"vertexIndex": 1, "position": [float("nan"), 0, 0]}]
+        mock_source.return_value = source
+        cmds = self._cmds(2, {0: "cpp_valid", 1: "cpp_empty"})
+        cmds.attributeQuery.side_effect = lambda name, **_kwargs: name == "mmd_source_morph_indices"
+        cmds.getAttr.return_value = [3, 4]
+
+        _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+        self.assertEqual(cmds._alias_state["blendShape1.weight[0]"], "a_b")
+        self.assertEqual(cmds._alias_state["blendShape1.weight[1]"], "morph_1")
+        mapping = json.loads(cmds.setAttr.call_args.args[1])
+        self.assertEqual(mapping, {"0": {"name": "a_b", "index": 3}})
+        mock_source.assert_called_once()
+
+    @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
+    def test_invalid_cpp_target_indices_do_not_fall_back_to_equal_counts(self, mock_source):
+        mock_source.return_value = self._source()
+        for indices in ([0, 2, 3, 99], [0, 2, 3, 3], [0, 1, 3, 4], [0, 2, 3]):
+            with self.subTest(indices=indices):
+                cmds = self._cmds(4, {0: "cpp_alias"})
+                cmds.attributeQuery.return_value = True
+                cmds.getAttr.return_value = indices
+
+                _apply_fast_morph_metadata("model.pmx", "meshShape1", cmds)
+
+                self.assertEqual(cmds._alias_state, {"blendShape1.weight[0]": "cpp_alias"})
+                cmds.setAttr.assert_not_called()
 
     @patch("mmd_tools.io.cpp_fast_importer._load_fast_morph_source")
     def test_count_mismatch_does_not_mutate_aliases_or_json(self, mock_source):

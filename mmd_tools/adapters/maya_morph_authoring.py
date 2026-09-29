@@ -33,7 +33,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MODEL_REGISTRY,
 )
-from mmd_tools.core import maya_name_utils
+from mmd_tools.core import maya_mesh_utils, maya_name_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.model_authoring_spec import MmdModelAuthoringSpec, MmdMorphSpec
 from mmd_tools.core.morph_binding_resolver import (
@@ -1264,21 +1264,9 @@ def _write_vertex_target_deltas(
     """Write blendShape deltas without creating Maya's malformed empty arrays."""
     if len(components) != len(points):
         _fail(f"vertex target {item!r} points/components lengths differ")
-    component_values = (len(components), *components) if components else ()
-    point_values = (len(points), *points) if points else ()
-    _call(
-        adapter,
-        "set_attr",
-        f"{item}.inputComponentsTarget",
-        *component_values,
-        type="componentList",
-    )
-    _call(
-        adapter,
-        "set_attr",
-        f"{item}.inputPointsTarget",
-        *point_values,
-        type="pointArray",
+    maya_mesh_utils.write_vertex_target_deltas(
+        item, components, points,
+        set_attr=lambda *args, **kwargs: _call(adapter, "set_attr", *args, **kwargs),
     )
 
 

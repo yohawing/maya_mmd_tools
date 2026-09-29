@@ -1,5 +1,6 @@
 """Shared VMD Bezier tangent helpers for animation conversion."""
 
+from collections.abc import Mapping
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -201,7 +202,7 @@ def apply_vmd_bezier_tangents(
         interpolation_source = get_frame_interpolation(next_frame)
         interpolation = (
             interpolation_source
-            if isinstance(interpolation_source, dict)
+            if isinstance(interpolation_source, Mapping)
             else parse_interpolation(interpolation_source)
         )
         if not interpolation:

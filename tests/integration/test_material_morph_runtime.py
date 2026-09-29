@@ -84,6 +84,55 @@ from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.nodes.mmd_material_morph_eval_node import MmdMaterialMorphEvalNode
 
 
+class TestNativeShapeMaterialSelection(unittest.TestCase):
+    """Source mesh assignments select native slots without renumbering them."""
+
+    def setUp(self):
+        cmds.file(new=True, force=True)
+
+    def _proxy(self, mesh):
+        proxy = cmds.createNode("network")
+        cmds.addAttr(proxy, longName="inputMesh", dataType="mesh")
+        shape = cmds.listRelatives(mesh, shapes=True, fullPath=True)[0]
+        cmds.connectAttr(shape + ".outMesh", proxy + ".inputMesh")
+        return proxy
+
+    def test_split_and_unified_keep_sparse_material_indices(self):
+        shaders = {}
+        groups = {}
+        for index in (3, 17):
+            shader = cmds.shadingNode("lambert", asShader=True)
+            group = cmds.sets(renderable=True, noSurfaceShader=True, empty=True)
+            cmds.connectAttr(shader + ".outColor", group + ".surfaceShader")
+            shaders[index], groups[index] = shader, group
+        for index in shaders:
+            mesh = cmds.polyCube()[0]
+            cmds.sets(mesh, edit=True, forceElement=groups[index])
+            self.assertEqual(
+                material_morph_runtime._native_shape_shaders(self._proxy(mesh), shaders),
+                {index: shaders[index]},
+            )
+        mesh = cmds.polyCube()[0]
+        cmds.sets(mesh + ".f[0:2]", edit=True, forceElement=groups[3])
+        cmds.sets(mesh + ".f[3:5]", edit=True, forceElement=groups[17])
+        self.assertEqual(
+            material_morph_runtime._native_shape_shaders(self._proxy(mesh), shaders), shaders,
+        )
+        # A partially assigned model must not silently bind just the known half.
+        cmds.sets(mesh + ".f[3:5]", edit=True, forceElement="initialShadingGroup")
+        with self.assertRaisesRegex(ValueError, "Unresolved model material"):
+            material_morph_runtime._native_shape_shaders(self._proxy(mesh), shaders)
+
+    def test_unresolved_source_does_not_select_all_model_materials(self):
+        proxy = cmds.createNode("network")
+        cmds.addAttr(proxy, longName="inputMesh", dataType="mesh")
+        with self.assertRaisesRegex(ValueError, "Expected one source mesh"):
+            material_morph_runtime._native_shape_shaders(proxy, {3: "unrelated"})
+        mesh = cmds.polyCube()[0]
+        with self.assertRaisesRegex(ValueError, "Unresolved model material"):
+            material_morph_runtime._native_shape_shaders(self._proxy(mesh), {3: "unrelated"})
+
+
 class TestMaterialMorphNumericComposition(unittest.TestCase):
     """Maya plugin and DG contracts for the material morph evaluator."""
 
@@ -735,6 +784,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         }
         cmds.delete(morphs)
         with mock.patch.object(material_morph_runtime, "_collect_native_render_shapes", return_value=["proxy"]), \
+                mock.patch.object(material_morph_runtime, "_native_shape_shaders", return_value={0: shader}), \
                 mock.patch.object(material_morph_runtime, "bind_native_material_alpha",
                                   return_value={"success": False, "skipped": ["injected"]}):
             self.assertFalse(build_material_morph_graph(root)["success"])
@@ -761,6 +811,8 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             material_morph_runtime,
             "_collect_native_render_shapes",
             return_value=["proxy"],
+        ), mock.patch.object(
+            material_morph_runtime, "_native_shape_shaders", return_value={0: shader},
         ), mock.patch.object(
             material_morph_runtime,
             "bind_native_material_alpha",

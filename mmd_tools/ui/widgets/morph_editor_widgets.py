@@ -108,7 +108,17 @@ class _MorphRowEventFilter(QObject):
             event.type() == QtCore.QEvent.MouseButtonPress
             and self._row._is_left_button(event)
         ):
-            self._row.activated.emit()
+            self._row._child_activated = True
+            QtCore.QTimer.singleShot(0, self._row._clear_child_activation)
+            if watched is self._row.slider:
+                self._row.slider_edit_started.emit()
+            editing_selected_row = self._row._multi_key_mode and watched in (
+                self._row.slider, self._row.editor, self._editor_line_edit
+            )
+            if not editing_selected_row:
+                self._row.activated.emit(event.modifiers())
+        elif watched is self._row.slider and event.type() == QtCore.QEvent.MouseButtonRelease:
+            QtCore.QTimer.singleShot(0, self._row.slider_edit_finished.emit)
         elif (
             watched is self._editor_line_edit
             and event.type() == QtCore.QEvent.KeyPress
@@ -119,9 +129,12 @@ class _MorphRowEventFilter(QObject):
 
 
 class MorphRowWidget(QWidget):
-    """Single-selectable container for one logical Morph and its editors."""
+    """Selectable container for one logical Morph and its editors."""
 
-    activated = Signal()
+    activated = Signal(object)
+    multi_key_requested = Signal()
+    slider_edit_started = Signal()
+    slider_edit_finished = Signal()
 
     _STYLE_SHEET = (
         "QWidget#MorphRow { background: #383838; border: 1px solid transparent; "
@@ -139,6 +152,8 @@ class MorphRowWidget(QWidget):
         self.editor = editor
         self.plugs = tuple(plugs or ())
         self._selected = False
+        self._multi_key_mode = False
+        self._child_activated = False
         self.setObjectName("MorphRow")
         self.setProperty("selected", False)
         self.setStyleSheet(self._STYLE_SHEET)
@@ -162,9 +177,22 @@ class MorphRowWidget(QWidget):
         self._update_accessibility()
 
     def mousePressEvent(self, event):
-        if self._is_left_button(event):
-            self.activated.emit()
+        if self._is_left_button(event) and not self._child_activated:
+            self.activated.emit(event.modifiers())
         super().mousePressEvent(event)
+
+    def _clear_child_activation(self) -> None:
+        self._child_activated = False
+
+    def keyPressEvent(self, event):
+        if self._multi_key_mode and event.key() == Qt.Key_S and not event.modifiers():
+            self.multi_key_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def set_multi_key_mode(self, enabled: bool) -> None:
+        self._multi_key_mode = bool(enabled)
 
     def focus_after_edit_commit(self) -> None:
         """Return Enter/Return edits to Maya's non-text hotkey context."""

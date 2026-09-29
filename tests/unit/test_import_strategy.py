@@ -9,81 +9,38 @@ from mmd_tools.core.import_strategy import (
 
 
 class TestModelImportStrategy(unittest.TestCase):
-    def test_development_mode_enables_fast_load_by_default(self):
-        def fake_settings(key, default=None):
-            if key == "ui.general.development_mode":
-                return True
-            return default
+    def test_legacy_fast_switch_does_not_affect_strategy(self):
+        for suffix in (".pmx", ".PMX", ".pmd", ".vmd"):
+            baseline = resolve_model_import_strategy("model" + suffix, {}, settings_get=lambda k, d: d)
+            for saved in (False, True):
+                for requested in (False, True):
+                    with self.subTest(suffix=suffix, saved=saved, requested=requested):
+                        strategy = resolve_model_import_strategy(
+                            "model" + suffix, {"use_cpp_fast_load": requested},
+                            settings_get=lambda k, d: saved if k == "import.native.use_cpp_fast_load" else d,
+                        )
+                        self.assertEqual(strategy, baseline)
+                        self.assertEqual(strategy.suffix, suffix.lower())
 
+    def test_explicit_parser_options_are_preserved(self):
         strategy = resolve_model_import_strategy(
-            "model.pmx",
-            {},
-            settings_get=fake_settings,
+            "model.pmd", {"use_native_pmx_parse": False, "require_native_pmx_parse": True},
+            settings_get=lambda k, d: d,
         )
-
-        self.assertTrue(strategy.use_cpp_fast_load)
-        self.assertEqual(strategy.cpp_fast_load_reason, "enabled by option/settings")
-
-    def test_direct_pmx_defaults_to_fast_load_and_honors_explicit_opt_out(self):
-        def settings_get(_key, default=None):
-            return default
-        self.assertTrue(resolve_model_import_strategy(
-            "model.pmx", {}, settings_get=settings_get
-        ).use_cpp_fast_load)
-        self.assertFalse(resolve_model_import_strategy(
-            "model.pmx", {"use_cpp_fast_load": False}, settings_get=settings_get
-        ).use_cpp_fast_load)
-
-    def test_pmx_fast_load_enabled_by_option(self):
-        strategy = resolve_model_import_strategy(
-            "model.pmx",
-            {"use_cpp_fast_load": True, "require_native_pmx_parse": True},
-            settings_get=lambda _key, default=None: default,
-        )
-
-        self.assertEqual(strategy.suffix, ".pmx")
-        self.assertTrue(strategy.use_cpp_fast_load)
-        self.assertEqual(strategy.cpp_fast_load_reason, "enabled by option/settings")
+        self.assertFalse(strategy.use_native_pmx_parse)
         self.assertTrue(strategy.require_native_pmx_parse)
 
-    def test_non_pmx_disables_fast_load_even_when_requested(self):
-        strategy = resolve_model_import_strategy(
-            "model.pmd",
-            {"use_cpp_fast_load": True},
-            settings_get=lambda _key, default=None: default,
-        )
-
-        self.assertFalse(strategy.use_cpp_fast_load)
-        self.assertEqual(strategy.cpp_fast_load_reason, "disabled: suffix .pmd is not .pmx")
-
-    def test_fast_load_setting_is_used_outside_development_mode(self):
-        def fake_settings(key, default=None):
-            if key == "import.native.use_cpp_fast_load":
-                return True
-            if key == "import.native.require_native_pmx_parse":
-                return True
-            return default
-
-        strategy = resolve_model_import_strategy("model.pmx", {}, settings_get=fake_settings)
-
-        self.assertTrue(strategy.use_cpp_fast_load)
-        self.assertIsNone(strategy.use_native_pmx_parse)
-        self.assertFalse(strategy.require_native_pmx_parse)
-
-    def test_native_parse_defaults_come_from_settings_in_development_mode(self):
-        def fake_settings(key, default=None):
-            values = {
-                "ui.general.development_mode": True,
-                "import.native.use_cpp_fast_load": False,
-                "import.native.require_native_pmx_parse": True,
-            }
-            return values.get(key, default)
-
-        strategy = resolve_model_import_strategy("model.pmx", {}, settings_get=fake_settings)
-
-        self.assertFalse(strategy.use_cpp_fast_load)
-        self.assertIsNone(strategy.use_native_pmx_parse)
-        self.assertTrue(strategy.require_native_pmx_parse)
+    def test_native_parse_defaults_are_development_only(self):
+        for development in (False, True):
+            with self.subTest(development=development):
+                strategy = resolve_model_import_strategy(
+                    "model.pmd", {}, settings_get=lambda k, d: {
+                        "ui.general.development_mode": development,
+                        "import.native.require_native_pmx_parse": True,
+                    }.get(k, d),
+                )
+                self.assertIsNone(strategy.use_native_pmx_parse)
+                self.assertEqual(strategy.require_native_pmx_parse, development)
 
 
 class TestVmdRuntimeBakeStrategy(unittest.TestCase):

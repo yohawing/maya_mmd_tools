@@ -21,6 +21,7 @@
 #include <maya/MDrawContext.h>
 #include <maya/MFn.h>
 #include <maya/MFnDependencyNode.h>
+#include <maya/MFnDagNode.h>
 #include <maya/MFnSet.h>
 #include <maya/MGlobal.h>
 #include <maya/MItDag.h>
@@ -42,8 +43,9 @@
 #include <d3dcompiler.h>
 #endif
 
-#include <cstddef>
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -68,6 +70,9 @@ constexpr const char* kNonMmdTransparentSceneName =
     "mmdOrderedNonMmdTransparentScene";
 constexpr const char* kPostSceneUIName = "mmdOrderedPostSceneUI";
 constexpr unsigned int kOrderedTargetSize = 2048U;
+constexpr const char* kMissingRenderDataWarning =
+    "MMD Render: This model has no MMD render data; using standard viewport "
+    "display. Reimport the PMX in a new scene with DirectX 11 enabled.";
 
 MmdOrderedRenderOverride* gOrderedOverride = nullptr;
 bool gRegistered = false;
@@ -140,8 +145,11 @@ bool isolateContainsPath(const MSelectionList& members, const MDagPath& path)
 bool buildPanelShapePaths(const MString& destination,
                           std::vector<MDagPath>& shapePaths,
                           MSelectionList& nonMmdSelection,
+                          bool& missingRenderData,
                           std::string& error)
 {
+    missingRenderData = false;
+    std::vector<MObject> renderSources;
     if (destination.length() == 0U) {
         error = "ordered setup has no destination panel";
         return false;
@@ -210,6 +218,15 @@ bool buildPanelShapePaths(const MString& destination,
             error = "MItDag path lookup failed";
             return false;
         }
+        // A hidden proxy is still valid render data. Do not diagnose visibility
+        // choices as missing data on its ordinary source mesh.
+        const bool mmdShape = isMmdShape(path);
+        if (mmdShape) {
+            MDagPath source;
+            if (sourceMeshPath(path, source)) {
+                renderSources.push_back(source.node());
+            }
+        }
         MStatus visibilityStatus;
         const bool visible = path.isVisible(&visibilityStatus);
         if (!visibilityStatus) {
@@ -224,7 +241,7 @@ bool buildPanelShapePaths(const MString& destination,
         if (visible && !templated) {
             const bool panelIncludesPath = isolateState == 0 ||
                 isolateContainsPath(isolateMembers, path);
-            if (isMmdShape(path)) {
+            if (mmdShape) {
                 MDagPath source;
                 const bool hasSource = sourceMeshPath(path, source);
                 if ((!hasSource || (source.isVisible() && !source.isTemplated())) &&
@@ -253,6 +270,27 @@ bool buildPanelShapePaths(const MString& destination,
                     break;
                 }
             }
+        }
+    }
+    M3dView view;
+    if (M3dView::getM3dViewFromModelPanel(destination, view) &&
+        (view.objectDisplay() & M3dView::kDisplayMeshes) != 0U) {
+        for (unsigned int index = 0U; index < nonMmdSelection.length(); ++index) {
+            MDagPath path;
+            if (!nonMmdSelection.getDagPath(index, path) ||
+                !path.node().hasFn(MFn::kMesh) ||
+                MFnDagNode(path).isIntermediateObject() ||
+                std::find(renderSources.begin(), renderSources.end(), path.node()) != renderSources.end()) {
+                continue;
+            }
+            while (path.length() > 0U) {
+                if (MFnDependencyNode(path.node()).hasAttribute("mmd_model_name")) {
+                    missingRenderData = true;
+                    break;
+                }
+                path.pop();
+            }
+            if (missingRenderData) break;
         }
     }
     return true;
@@ -448,7 +486,7 @@ public:
 
     bool requiresResetDeviceStates() const override { return true; }
 
-    std::string diagnosticsJson(bool captureShadowDepth) const
+    std::string diagnosticsJson(bool captureShadowDepth, bool missingRenderData) const
     {
         std::ostringstream result;
         result << "{\"override\":\"" << kOverrideName
@@ -457,6 +495,8 @@ public:
                << "\",\"enabled\":true,\"drawCount\":" << drawCount_
                << ",\"panel\":\"" << jsonEscape(destination_) << "\""
                << ",\"shapeCount\":" << records_.size()
+               << ",\"missingRenderData\":" << (missingRenderData ? "true" : "false")
+               << ",\"reasonCode\":\"" << (missingRenderData ? "missing_render_data" : "") << "\""
                << ",\"casterDrawCount\":" << casterDrawCount_
                << ",\"geometryUploads\":" << geometryUploadCount_
                << ",\"casterMaterialIndices\":[";
@@ -1861,22 +1901,30 @@ MStatus MmdOrderedRenderOverride::setup(const MString& destination)
     mOperations.clear();
     renderer->getStandardViewportOperations(mOperations);
 
+    PanelNotice& notice = panelNotices_[activeDestination_];
+    notice.hasDrawables = false;
+    notice.missingRenderData = false;
+
     M3dView view;
     if (M3dView::getM3dViewFromModelPanel(destination, view) &&
         view.displayStyle() == M3dView::kWireFrame) {
         // Editing wires belong to the source Maya meshes. Keep the complete
         // standard operation list instead of filtering them out of this panel.
         if (operation_) operation_->resetFrame();
+        warnOnce("", true);
         return MRenderOverride::setup(destination);
     }
 
     std::vector<MDagPath> shapePaths;
     MSelectionList nonMmdSelection;
     std::string error;
-    if (!buildPanelShapePaths(destination, shapePaths, nonMmdSelection, error)) {
+    if (!buildPanelShapePaths(destination, shapePaths, nonMmdSelection,
+                             notice.missingRenderData, error)) {
         requestFallback(error, true);
         return MRenderOverride::setup(destination);
     }
+    notice.hasDrawables = !shapePaths.empty();
+    warnOnce(notice.missingRenderData ? kMissingRenderDataWarning : "", true);
     if (shapePaths.empty()) {
         if (operation_) {
             operation_->resetFrame();
@@ -2031,6 +2079,9 @@ MStatus MmdOrderedRenderOverride::cleanup()
     } else if (fallback.rawRetryActive && !fallback.requested) {
         clearFallback();
     }
+    if (fallbackDiagnosticReason().empty()) {
+        warnOnce("");
+    }
     return status;
 }
 
@@ -2076,6 +2127,25 @@ void MmdOrderedRenderOverride::requestFallback(
     fallback.rawRetryActive = false;
     fallback.frameActive = currentFrameUsesStandard;
     fallback.reason = reason;
+    warnOnce("MMD Render: Could not use MMD rendering; using standard viewport display. "
+             "See Script Editor for details. Reason: " + reason);
+}
+
+void MmdOrderedRenderOverride::warnOnce(const std::string& message, bool missingData)
+{
+    PanelNotice& notice = panelNotices_[activeDestination_];
+    // Missing data and draw failure can coexist in a mixed-model scene.
+    // Keep their suppression independent across the fallback retry.
+    bool& shown = missingData ? notice.missingWarningShown : notice.renderWarningShown;
+    if (message.empty()) {
+        shown = false;
+        return;
+    }
+    if (shown) return;
+    shown = true;
+    MString warning;
+    warning.setUTF8(message.c_str());
+    MGlobal::displayWarning(warning);
 }
 
 void MmdOrderedRenderOverride::clearFallback()
@@ -2130,15 +2200,22 @@ std::string MmdOrderedRenderOverride::diagnosticsJson(bool captureShadowDepth)
     }
     const std::string fallbackReason =
         gOrderedOverride->fallbackDiagnosticReason();
-    if (fallbackReason.empty() && gOrderedOverride->operation_) {
-        return gOrderedOverride->operation_->diagnosticsJson(captureShadowDepth);
+    const PanelNotice& notice =
+        gOrderedOverride->panelNotices_[gOrderedOverride->activeDestination_];
+    if (fallbackReason.empty() && notice.hasDrawables && gOrderedOverride->operation_) {
+        return gOrderedOverride->operation_->diagnosticsJson(captureShadowDepth, notice.missingRenderData);
     }
     std::ostringstream result;
     result << "{\"override\":\"mmdOrdered\",\"registered\":"
            << (gRegistered ? "true" : "false")
-           << ",\"state\":\"fallback\",\"drawCount\":0"
+           << ",\"state\":\"" << (!fallbackReason.empty() || notice.missingRenderData ? "fallback" : "idle")
+           << "\",\"drawCount\":0"
+           << ",\"casterDrawCount\":0,\"receiverDrawCount\":0"
+           << ",\"missingRenderData\":" << (notice.missingRenderData ? "true" : "false")
+           << ",\"reasonCode\":\"" << (!fallbackReason.empty() ? "render_failed" :
+                                      notice.missingRenderData ? "missing_render_data" : "no_drawables") << "\""
            << ",\"error\":\""
-           << jsonEscape(fallbackReason)
+           << jsonEscape(fallbackReason.empty() && notice.missingRenderData ? kMissingRenderDataWarning : fallbackReason)
            << "\",\"pmxOrder\":[]}";
     return result.str();
 }

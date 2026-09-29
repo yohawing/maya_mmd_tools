@@ -33,7 +33,12 @@ from mmd_tools.core.morph_topology import (
     serialize_group_topology,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
-from mmd_tools.core.morph_delta_mapping import MorphDeltaMappingError, map_morph_deltas_to_local
+from mmd_tools.core.morph_delta_mapping import (
+    MorphDeltaMappingError,
+    collect_morph_delta,
+    map_collected_morph_delta,
+    map_morph_deltas_to_local,
+)
 from mmd_tools.converters.morph_scene_metadata import (
     iter_morph_network_metadata,
     read_blendshape_morph_entry_strings,
@@ -139,6 +144,7 @@ class MorphConverter:
         self.logger = get_logger(__name__)
         self.scale = float(scale)
         self.profile = {}
+        self.progress_callback = None
         self._morph_node_name_used = _scene_name_set()
 
     def _add_profile_time(self, key: str, start: float) -> None:
@@ -165,17 +171,22 @@ class MorphConverter:
                 "Load or reload the maya_mmd_tools plugin before importing a PMX with morphs."
             )
 
-    def convert_pmx_morphs(self, pmx_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
+    def convert_pmx_morphs(
+        self, pmx_data, mesh_node: Union[str, List[str]], progress_callback=None,
+    ) -> Dict[str, Any]:
         """
         PMXのモーフデータをMayaのブレンドシェイプに変換する。
 
         Args:
             pmx_data: 解析されたPMXデータオブジェクト
             mesh_node (str or list): ブレンドシェイプを適用するMayaのメッシュノード名、またはそのリスト。
+            progress_callback: Optional local percentage callback (0 through 100).
 
         Returns:
             Dict[str, Any]: 変換結果の辞書
         """
+        if progress_callback is None:
+            progress_callback = getattr(self, "progress_callback", None)
         if not self.settings.get(_OPT_IMPORT_MORPHS, True):
             return {"success": True, "morphs_converted": 0}
 
@@ -204,13 +215,17 @@ class MorphConverter:
         # name/index/panel/type binding metadata used by the controller and
         # authoring registry.
         vertex_morph_metadata = []
+        vertex_morph_sources = {}
+        vertex_morph_deltas = {}
         for morph_index, morph in enumerate(pmx_data.morphs):
             if morph.morph_type != PmxMorphType.VertexMorph:
                 continue
             offsets = self._normalize_vertex_morph_offsets(morph, morph_index)
-            vertex_morph_metadata.append((morph_index, morph, offsets))
+            vertex_morph_metadata.append((morph_index, morph))
+            # Include explicit zero/cancelling offsets: they still own targets.
+            vertex_morph_sources[morph_index] = {offset["vertex_index"] for offset in offsets}
 
-        for morph_index, morph, offsets in vertex_morph_metadata:
+        for morph_index, morph in vertex_morph_metadata:
             morph_name = self._raw_morph_name(morph)
             morph_node = self._create_or_get_morph_network_node(morph_name, "vertex")
             maya_attribute_utils.set_custom_attributes(
@@ -225,16 +240,25 @@ class MorphConverter:
             )
             vertex_morph_nodes.append(morph_node)
 
-        for mn in mesh_nodes:
+        total_work = max(1, len(mesh_nodes) * len(pmx_data.morphs))
+        last_progress = -1
+        for mesh_index, mn in enumerate(mesh_nodes):
             mesh_material_index = self._get_mesh_material_index(mn)
             visible_vertex_indices = (
                 material_vertex_sets.get(mesh_material_index)
                 if mesh_material_index is not None
                 else None
             )
-            template_ctx = {}
+            mesh_ctx = {}
             try:
                 for morph_index, morph in enumerate(pmx_data.morphs):
+                    progress = 100 * (mesh_index * len(pmx_data.morphs) + morph_index) // total_work
+                    if progress_callback is not None and progress != last_progress:
+                        last_progress = progress
+                        try:
+                            progress_callback(progress)
+                        except Exception:
+                            self.logger.debug("Progress callback failed", exc_info=True)
                     try:
                         if morph.morph_type == PmxMorphType.VertexMorph:
                             is_empty_vertex_morph = not getattr(morph, "offsets", None)
@@ -248,7 +272,7 @@ class MorphConverter:
                             if (
                                 visible_vertex_indices is not None
                                 and not is_empty_vertex_morph
-                                and not self._vertex_morph_affects_vertices(morph, visible_vertex_indices)
+                                and visible_vertex_indices.isdisjoint(vertex_morph_sources[morph_index])
                             ):
                                 skipped_vertex_morphs_by_material += 1
                                 self.logger.debug(
@@ -259,8 +283,16 @@ class MorphConverter:
                                 )
                                 continue
                             self.logger.debug(f"Converting vertex morph: {morph.name}")
+                            if morph_index not in vertex_morph_deltas:
+                                # Preserve the mapping path's inferred source bound;
+                                # this optimization does not add parser validation.
+                                source_count = max(vertex_morph_sources[morph_index], default=-1) + 1
+                                vertex_morph_deltas[morph_index] = collect_morph_delta(
+                                    morph, morph_index, source_count,
+                                )
                             result = self._convert_vertex_morph_pmx(
-                                morph, mn, morph_index=morph_index, template_ctx=template_ctx
+                                morph, mn, morph_index=morph_index, mesh_ctx=mesh_ctx,
+                                source_deltas=vertex_morph_deltas[morph_index],
                             )
                             if result["success"]:
                                 results.append(result)
@@ -321,8 +353,7 @@ class MorphConverter:
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
-                self._flush_vertex_morph_name_mapping(template_ctx)
-                self.cleanup_vertex_morph_template(template_ctx)
+                self._flush_vertex_morph_name_mapping(mesh_ctx)
 
         return {
             "success": True,
@@ -523,17 +554,6 @@ class MorphConverter:
             return {source_index: local_index for local_index, source_index in enumerate(source_indices)}
         except Exception:
             return None
-
-    def _vertex_morph_affects_vertices(self, morph, vertex_indices: Set[int]) -> bool:
-        """Return True when a vertex morph touches at least one visible vertex."""
-        for offset in getattr(morph, "offsets", []) or []:
-            try:
-                vertex_index = int(offset.get("vertex_index"))
-            except Exception:
-                continue
-            if vertex_index in vertex_indices:
-                return True
-        return False
 
     @staticmethod
     def _normalize_vertex_morph_offsets(morph, morph_index: int) -> List[Dict[str, Any]]:
@@ -744,16 +764,16 @@ class MorphConverter:
         """blendShape ノードの weight index → 生モーフ名 JSON を読み込む。"""
         return read_blendshape_morph_entry_strings(blend_shape_node, ensure_attr=True)
 
-    def _flush_vertex_morph_name_mapping(self, template_ctx: Dict[str, Any]) -> None:
+    def _flush_vertex_morph_name_mapping(self, mesh_ctx: Dict[str, Any]) -> None:
         """vertex morph ループで蓄積した morph name mapping を一括保存する。"""
-        blend_shape_node = template_ctx.get("blend_shape_node")
-        names = template_ctx.get("morph_name_mapping")
-        if not template_ctx.get("morph_name_mapping_dirty") or not blend_shape_node or not names:
+        blend_shape_node = mesh_ctx.get("blend_shape_node")
+        names = mesh_ctx.get("morph_name_mapping")
+        if not mesh_ctx.get("morph_name_mapping_dirty") or not blend_shape_node or not names:
             return
         start = time.perf_counter()
         maya_attribute_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
         self._add_profile_time("morph_name_store_sec", start)
-        template_ctx["morph_name_mapping_dirty"] = False
+        mesh_ctx["morph_name_mapping_dirty"] = False
 
     def _store_blendshape_morph_name(
         self, blend_shape_node: str, target_index: int, raw_name: str, morph_index: int
@@ -1053,133 +1073,90 @@ class MorphConverter:
         mesh_node: str,
         *,
         morph_index: int = -1,
-        template_ctx: Optional[Dict[str, Any]] = None,
+        mesh_ctx: Optional[Dict[str, Any]] = None,
+        source_deltas: Optional[Dict[int, tuple]] = None,
     ) -> Dict[str, Any]:
-        """PMX頂点モーフの変換
-
-        template_ctx を渡すと、メッシュ複製を使い回して高速化する。
-        初回呼び出し時に template_ctx へ内部状態を書き込むので、
-        呼び出し元は空 dict を渡してループ終了後に cleanup_vertex_morph_template() を呼ぶこと。
-        """
+        """Create sparse PMX targets; the optional context caches per-mesh state."""
         raw_name = self._raw_morph_name(morph)
         morph_name = maya_name_utils.sanitize_text(morph.get_name())
-
-        if template_ctx is not None:
-            if "target_mesh" not in template_ctx:
-                target_mesh = cmds.duplicate(mesh_node)[0]
-                template_name = maya_name_utils.sanitize_unique_name(
-                    "_morph_template",
-                    self._morph_node_name_used,
-                    fallback="morph_template",
-                )
-                target_mesh = cmds.rename(target_mesh, template_name)
-                maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
-                sel = om.MSelectionList()
-                sel.add(maya_mesh_utils.resolve_mesh_shape(target_mesh))
-                dag = sel.getDagPath(0)
-                mesh_fn = om.MFnMesh(dag)
-                template_ctx["target_mesh"] = target_mesh
-                template_ctx["dag_path"] = dag
-                template_ctx["mesh_fn"] = mesh_fn
-                template_ctx["base_points"] = mesh_fn.getPoints(om.MSpace.kObject)
-                template_ctx["source_to_local"] = self._get_mesh_source_vertex_map(mesh_node)
-                template_ctx["blend_shape_node"] = maya_mesh_utils.find_or_create_blendshape_node(mesh_node)
-                template_ctx["next_target_index"] = 0
-                template_ctx["existing_aliases"] = self._existing_blendshape_aliases(
-                    template_ctx["blend_shape_node"],
-                )
-                template_ctx["morph_name_mapping"] = self._load_blendshape_morph_names(
-                    template_ctx["blend_shape_node"],
-                )
-                template_ctx["morph_name_mapping_dirty"] = False
-
-            # base_points から Python コピー → オフセット適用 → 1回の setPoints
-            # リセット用 setPoints + getPoints を完全に排除
-            target_points_start = time.perf_counter()
-            target_points = self._compute_target_points(
-                template_ctx["base_points"],
-                morph,
-                template_ctx["source_to_local"],
-                self.scale,
-                morph_index=morph_index,
-            )
-            template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
-            self._add_profile_time("target_points_sec", target_points_start)
-
-            target_mesh = cmds.duplicate(template_ctx["target_mesh"])[0]
-            target_name = maya_name_utils.sanitize_unique_name(
-                f"{morph_name}_target",
-                self._morph_node_name_used,
-                fallback=f"morph_{morph_index}_target",
-            )
-            target_mesh = cmds.rename(target_mesh, target_name)
-            maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
-            blend_shape_node = template_ctx["blend_shape_node"]
-            target_index = template_ctx["next_target_index"]
-            template_ctx["next_target_index"] = target_index + 1
-        else:
-            target_mesh = cmds.duplicate(mesh_node)[0]
-            target_name = maya_name_utils.sanitize_unique_name(
-                f"{morph_name}_target",
-                self._morph_node_name_used,
-                fallback=f"morph_{morph_index}_target",
-            )
-            target_mesh = cmds.rename(target_mesh, target_name)
-            maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
-            source_to_local = self._get_mesh_source_vertex_map(mesh_node)
-            target_points_start = time.perf_counter()
-            self._apply_vertex_offsets_pmx(
-                target_mesh,
-                morph,
-                source_to_local=source_to_local,
-                morph_index=morph_index,
-            )
-            self._add_profile_time("target_points_sec", target_points_start)
+        context = mesh_ctx if mesh_ctx is not None else {}
+        if "local_count" not in context:
+            selection = om.MSelectionList()
+            selection.add(maya_mesh_utils.resolve_mesh_shape(mesh_node))
+            dag = selection.getDagPath(0)
+            context["local_count"] = om.MFnMesh(dag).numVertices
+            context["source_to_local"] = self._get_mesh_source_vertex_map(mesh_node)
             blend_shape_node = maya_mesh_utils.find_or_create_blendshape_node(mesh_node)
-            target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
-            target_index = len(target_count) if target_count else 0
-
-        blendshape_add_start = time.perf_counter()
-        try:
-            cmds.blendShape(
-                blend_shape_node,
-                edit=True,
-                target=(mesh_node, target_index, target_mesh, 1.0),
+            geometries = cmds.blendShape(blend_shape_node, query=True, geometry=True) or []
+            geometry_indices = cmds.blendShape(blend_shape_node, query=True, geometryIndices=True) or []
+            context["geometry_index"] = next(
+                index for geometry, index in zip(geometries, geometry_indices)
+                if dag.fullPathName() in (cmds.ls(geometry, long=True) or [])
             )
-        except Exception:
-            if target_mesh and cmds.objExists(target_mesh):
-                cmds.delete(target_mesh)
-            raise
-        self._add_profile_time("blendshape_add_sec", blendshape_add_start)
-        if target_mesh and cmds.objExists(target_mesh):
-            cmds.delete(target_mesh)
+            context["blend_shape_node"] = blend_shape_node
+            context["next_target_index"] = max(cmds.getAttr(f"{blend_shape_node}.weight", multiIndices=True) or [], default=-1) + 1
+            context["existing_aliases"] = self._existing_blendshape_aliases(blend_shape_node)
+            context["morph_name_mapping"] = self._load_blendshape_morph_names(blend_shape_node)
+            context["morph_name_mapping_dirty"] = False
 
-        existing_aliases = template_ctx.get("existing_aliases") if template_ctx is not None else None
-        if existing_aliases is not None:
-            alias = maya_name_utils.sanitize_unique_name(
-                morph_name,
-                existing_aliases,
-                fallback=f"morph_{morph_index}",
+        target_points_start = time.perf_counter()
+        if source_deltas is None:
+            mapped = self._mapped_vertex_morph_deltas(
+                morph, morph_index, context["source_to_local"], context["local_count"],
             )
         else:
-            existing = self._existing_blendshape_aliases(blend_shape_node)
-            alias = maya_name_utils.sanitize_unique_name(
-                morph_name,
-                existing,
-                fallback=f"morph_{morph_index}",
+            mapped = map_collected_morph_delta(
+                source_deltas, morph_index, context["source_to_local"], context["local_count"],
             )
+        components = []
+        points = []
+        for index in sorted(mapped):
+            # Preserve the authored PMX delta directly, as the morph editor does.
+            # Avoid mesh/tweak round-trips and their cumulative float32 rounding.
+            delta = pmx_vertex_offset_to_maya_tuple(mapped[index], self.scale)
+            if any(delta):
+                components.append(f"vtx[{index}]")
+                points.append((*delta, 1.0))
+        self._add_profile_time("target_points_sec", target_points_start)
+
+        blend_shape_node = context["blend_shape_node"]
+        target_index = context["next_target_index"]
+        item = (
+            f"{blend_shape_node}.inputTarget[{context['geometry_index']}]"
+            f".inputTargetGroup[{target_index}].inputTargetItem[6000]"
+        )
+        blendshape_add_start = time.perf_counter()
+        if not points:
+            # Register an editable empty target without duplicating the mesh.
+            cmds.blendShape(blend_shape_node, edit=True, target=(mesh_node, target_index, mesh_node, 1.0))
+            geometry_plug = f"{item}.inputGeomTarget"
+            sources = cmds.listConnections(geometry_plug, source=True, destination=False, plugs=True) or []
+            if len(sources) != 1:
+                raise RuntimeError(f"Empty vertex target {item!r} has no unique geometry source")
+            cmds.disconnectAttr(sources[0], geometry_plug)
+            weight = f"{blend_shape_node}.weight[{target_index}]"
+            if cmds.aliasAttr(weight, query=True):
+                cmds.aliasAttr(weight, remove=True)
+        maya_mesh_utils.write_vertex_target_deltas(item, components, points)
+        cmds.setAttr(f"{blend_shape_node}.weight[{target_index}]", 0.0)
+        context["next_target_index"] = target_index + 1
+        self._add_profile_time("blendshape_add_sec", blendshape_add_start)
+
+        existing_aliases = context["existing_aliases"]
+        alias = maya_name_utils.sanitize_unique_name(
+            morph_name, existing_aliases, fallback=f"morph_{morph_index}",
+        )
         alias_start = time.perf_counter()
         cmds.aliasAttr(alias, f"{blend_shape_node}.w[{target_index}]")
         self._add_profile_time("alias_sec", alias_start)
-        if existing_aliases is not None:
-            existing_aliases.add(alias)
+        existing_aliases.add(alias)
 
-        if raw_name and template_ctx is not None and "morph_name_mapping" in template_ctx:
-            template_ctx["morph_name_mapping"][str(target_index)] = {
+        if raw_name and mesh_ctx is not None and "morph_name_mapping" in mesh_ctx:
+            mesh_ctx["morph_name_mapping"][str(target_index)] = {
                 "name": str(raw_name),
                 "index": int(morph_index),
             }
-            template_ctx["morph_name_mapping_dirty"] = True
+            mesh_ctx["morph_name_mapping_dirty"] = True
         else:
             morph_name_store_start = time.perf_counter()
             self._store_blendshape_morph_name(
@@ -1215,67 +1192,3 @@ class MorphConverter:
             source_to_local,
             local_count,
         )
-
-    @staticmethod
-    def _compute_target_points(
-        base_points: om.MPointArray,
-        morph,
-        source_to_local: Optional[Dict[int, int]],
-        scale: float = 1.0,
-        *,
-        morph_index: int = 0,
-    ) -> om.MPointArray:
-        """base_points + morph offsets → 新しい MPointArray を返す（メッシュ操作なし）。"""
-        points = om.MPointArray(base_points)
-        n_points = len(points)
-        for local_index, pos in MorphConverter._mapped_vertex_morph_deltas(
-            morph,
-            morph_index,
-            source_to_local,
-            n_points,
-        ).items():
-            points[local_index] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos, scale)
-        return points
-
-    @staticmethod
-    def _pmx_vertex_offset_to_maya_vector(position_offset, scale: float = 1.0) -> om.MVector:
-        """Return a PMX vertex morph offset converted into Maya mesh space."""
-        return om.MVector(*pmx_vertex_offset_to_maya_tuple(position_offset, scale))
-
-    @staticmethod
-    def cleanup_vertex_morph_template(template_ctx: Dict[str, Any]) -> None:
-        """テンプレートメッシュを削除する。"""
-        target = template_ctx.get("target_mesh")
-        if target and cmds.objExists(target):
-            cmds.delete(target)
-
-    def _apply_vertex_offsets_pmx(
-        self,
-        mesh_node: str,
-        morph,
-        source_to_local: Optional[Dict[int, int]] = None,
-        *,
-        morph_index: int = 0,
-    ):
-        """PMXの頂点オフセットを適用"""
-        # MSelectionListを使用してDAGパスを取得
-        sel_list = om.MSelectionList()
-        sel_list.add(maya_mesh_utils.resolve_mesh_shape(mesh_node))
-        dag_path = sel_list.getDagPath(0)
-
-        # MFnMeshを取得
-        mesh_fn = om.MFnMesh(dag_path)
-
-        # 現在の頂点位置を取得
-        points = mesh_fn.getPoints(om.MSpace.kObject)
-
-        for vertex_index, offset_pos in self._mapped_vertex_morph_deltas(
-            morph,
-            morph_index,
-            source_to_local,
-            len(points),
-        ).items():
-            points[vertex_index] += self._pmx_vertex_offset_to_maya_vector(offset_pos, self.scale)
-
-        # 変更された頂点位置を設定
-        mesh_fn.setPoints(points, om.MSpace.kObject)

@@ -72,6 +72,34 @@ from mmd_tools.core import maya_material_utils  # noqa: E402
 class TestExportScope(unittest.TestCase):
     """Keep root-scoped network morph collection explicit and testable."""
 
+    def test_empty_authored_vertex_morph_keeps_pmx_index(self):
+        offsets = [{"vertex_index": 5, "position_offset": (0.0, 1.0, 0.0)}]
+        with mock.patch.object(export_scene_collector_module.cmds, "polyEvaluate", return_value=10), mock.patch.object(
+            export_scene_collector_module, "_find_blend_shapes", return_value=["blendShape"]
+        ), mock.patch.object(
+            export_scene_collector_module, "_blendshape_target_indices", return_value=[0, 1, 2]
+        ), mock.patch.object(
+            export_scene_collector_module, "_blendshape_aliases_by_index", return_value={0: "empty", 1: "legacy", 2: "moving"}
+        ), mock.patch.object(
+            export_scene_collector_module, "_blendshape_stored_entries",
+            return_value={
+                0: {"name": "Empty", "index": 126},
+                1: {"name": "Legacy"},
+                2: {"name": "Moving", "index": 127},
+            },
+        ), mock.patch.object(
+            export_scene_collector_module, "_blendshape_geometry_index", return_value=0
+        ), mock.patch.object(
+            export_scene_collector_module, "_stored_blendshape_target_offsets",
+            side_effect=[[], [], offsets],
+        ):
+            morphs = export_scene_collector_module._collect_vertex_morphs("|model|shape")
+
+        self.assertEqual([(morph["name"], morph["index"], morph["offsets"]) for morph in morphs], [
+            ("Empty", 126, []),
+            ("Moving", 127, offsets),
+        ])
+
     def test_model_root_keeps_skin_indices_mesh_local(self):
         """Maya skin weights resolve through each mesh influence list."""
         bdef_vertex = {

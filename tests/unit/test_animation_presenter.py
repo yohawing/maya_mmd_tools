@@ -2080,6 +2080,64 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         self.assertTrue(first.selected)
         self.assertFalse(second.selected)
 
+    def test_complete_multi_row_selection_excludes_partial_and_foreign_plugs(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        first = _FakeMorphRow(("face.weight[0]", "hair.weight[0]"))
+        second = _FakeMorphRow(("face.weight[1]",))
+        presenter._morph_rows = {"笑い": first, "怒り": second}
+        presenter._joint_for_rig_control = lambda node: None
+
+        adapter.selected = list(first.plugs) + list(second.plugs)
+        presenter._sync_picker_to_actual_selection()
+        self.assertTrue(first.selected)
+        self.assertTrue(second.selected)
+
+        adapter.selected = [first.plugs[0], second.plugs[0]]
+        presenter._sync_picker_to_actual_selection()
+        self.assertFalse(first.selected)
+        self.assertFalse(second.selected)
+
+        adapter.selected = list(first.plugs) + ["other.weight[0]"]
+        presenter._sync_picker_to_actual_selection()
+        self.assertFalse(first.selected)
+        self.assertFalse(second.selected)
+
+    def test_editing_selected_morph_updates_only_selected_rows_in_one_chunk(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+
+        class Row(_FakeMorphRow):
+            def __init__(self, plugs):
+                super().__init__(plugs)
+                self.value = None
+
+            def isHidden(self):
+                return False
+
+            def set_value(self, value):
+                self.value = value
+
+        first = Row(("blendShape1.weight[0]",))
+        second = Row(("blendShape1.weight[1]",))
+        third = Row(("blendShape1.weight[2]",))
+        presenter._morph_rows = {"笑い": first, "怒り": second, "まばたき": third}
+        presenter._morph_selected_names = ["笑い", "怒り"]
+
+        presenter._on_morph_weight_changed("笑い", 0.625)
+
+        self.assertEqual(adapter._set_attrs["blendShape1.weight[0]"], 0.625)
+        self.assertEqual(adapter._set_attrs["blendShape1.weight[1]"], 0.625)
+        self.assertNotIn("blendShape1.weight[2]", adapter._set_attrs)
+        self.assertEqual((first.value, second.value, third.value), (0.625, 0.625, None))
+        self.assertEqual(adapter._undo_chunks, ["Edit MMD Morph"])
+
+        presenter._on_morph_weight_changed("まばたき", 0.25)
+        self.assertEqual(adapter._set_attrs["blendShape1.weight[2]"], 0.25)
+        self.assertEqual(first.value, 0.625)
+
     def test_animation_state_distinguishes_current_key_and_interpolation(self):
         presenter, _, _, adapter = self._make_with_morphs(
             blend_shapes=SAMPLE_BLEND_SHAPES,

@@ -36,6 +36,8 @@
 #include "MmdAuthoringMaterialValueCommand.h"
 #include "MmdAuthoringMaterialOutlineCommand.h"
 #include "MmdVmdBatchSamplerCommand.h"
+#include "MmdVmdTimeCurveCommand.h"
+#include "MmdVmdRotationCommand.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -56,6 +58,8 @@ static bool sCppRegisteredMmdAuthoringMorphWeightCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialValueCommand = false;
 static bool sCppRegisteredMmdAuthoringMaterialOutlineCommand = false;
 static bool sCppRegisteredMmdVmdBatchSamplerCommand = false;
+static bool sCppRegisteredMmdVmdTimeCurveCommand = false;
+static bool sCppRegisteredMmdVmdRotationCommand = false;
 static MmdOrderedRenderOverride* sMmdOrderedOverride = nullptr;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
@@ -67,7 +71,7 @@ static bool isNodeTypeRegistered(const MTypeId& expectedId)
 MStatus initializePlugin(MObject obj)
 {
     MStatus status;
-    MFnPlugin plugin(obj, "yohawing", "0.8.0", "Any");
+    MFnPlugin plugin(obj, "yohawing", "0.8.1", "Any");
     MmdOrderedRenderOverride::setPluginLoadPath(plugin.loadPath());
 
     const uint32_t runtimeAbi = mmd::RuntimeBridge::runtimeAbiVersion();
@@ -416,6 +420,22 @@ MStatus initializePlugin(MObject obj)
         sCppRegisteredMmdVmdBatchSamplerCommand = true;
     }
 
+    status = plugin.registerCommand("mmdVmdRotationSamples",
+                                    MmdVmdRotationCommand::creator,
+                                    MmdVmdRotationCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning("mmdVmdRotationSamples registration failed.");
+    } else {
+        sCppRegisteredMmdVmdRotationCommand = true;
+    }
+    status = plugin.registerCommand("mmdVmdTimeCurveKeys",
+                                    MmdVmdTimeCurveCommand::creator,
+                                    MmdVmdTimeCurveCommand::newSyntax);
+    if (!status) {
+        MGlobal::displayWarning("mmdVmdTimeCurveKeys registration failed.");
+    } else {
+        sCppRegisteredMmdVmdTimeCurveCommand = true;
+    }
     return MS::kSuccess;
 }
 
@@ -452,6 +472,16 @@ MStatus uninitializePlugin(MObject obj)
             MGlobal::displayWarning("Failed to deregister mmdVmdBatchSample command.");
         }
         sCppRegisteredMmdVmdBatchSamplerCommand = false;
+    }
+    if (sCppRegisteredMmdVmdRotationCommand) {
+        status = plugin.deregisterCommand("mmdVmdRotationSamples");
+        if (!status) return status;
+        sCppRegisteredMmdVmdRotationCommand = false;
+    }
+    if (sCppRegisteredMmdVmdTimeCurveCommand) {
+        status = plugin.deregisterCommand("mmdVmdTimeCurveKeys");
+        if (!status) return status;
+        sCppRegisteredMmdVmdTimeCurveCommand = false;
     }
 
     // Receiver body shaders keep a supported MRenderTargetAssignment to the

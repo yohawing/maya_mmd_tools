@@ -11,6 +11,7 @@
  */
 
 #include "MmdWeldUvSeamVertices.h"
+#include "MmdAuthoredEdgeSmoothing.h"
 #include "MmdUvSeamWeldPlan.h"
 
 #include <maya/MArgDatabase.h>
@@ -526,6 +527,13 @@ MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
                 "[mmdWeldUvSeamVertices] Failed to write source-to-local mapping; keeping original topology.");
             return failOnNoOp ? MS::kFailure : MS::kSuccess;
         }
+        // FastLoad may already have welded this mesh.  Keep the authored
+        // normal boundaries editable even when topology needs no changes.
+        if (!mmdSoftenContinuousAuthoredEdges(meshFn, meshPath)) {
+            MGlobal::displayError(
+                "[mmdWeldUvSeamVertices] Failed to restore continuous edge smoothing.");
+            return MS::kFailure;
+        }
         // A valid mesh with no mergeable UV seam is a successful no-op.  The
         // batch contract reserves failure for invalid input or an operation
         // that could not preserve the mesh attributes.
@@ -645,6 +653,16 @@ MStatus weldMesh(const MString& meshName, const RawGeometry& raw,
         cleanup.deleteNode(newMeshObject);
         cleanup.doIt();
         MGlobal::displayError("[mmdWeldUvSeamVertices] Failed to copy face-vertex normals.");
+        return MS::kFailure;
+    }
+
+    // Maya marks every edge hard when restoring face-corner normals. Keep
+    // authored normal breaks, but allow shared-normal edges to smooth weights.
+    if (!mmdSoftenContinuousAuthoredEdges(newMeshFn, newMeshPath)) {
+        MDagModifier cleanup;
+        cleanup.deleteNode(newMeshObject);
+        cleanup.doIt();
+        MGlobal::displayError("[mmdWeldUvSeamVertices] Failed to restore edge smoothing.");
         return MS::kFailure;
     }
 
