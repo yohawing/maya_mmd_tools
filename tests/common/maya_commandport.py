@@ -27,6 +27,8 @@ def seed_isolated_maya_profile(
     maya_app_dir: Path,
     version: str,
     project_root: Path,
+    *,
+    skip_user_setup: bool = False,
 ) -> None:
     """Allow this checkout's Python plug-ins in an isolated Maya profile.
 
@@ -57,6 +59,11 @@ def seed_isolated_maya_profile(
         f' -sva "SafeModeAllowedlistPaths" "{escaped_plugin_dir}"\n'
         ';\n'
     )
+    if skip_user_setup:
+        # MAYA_SKIP_USERSETUP_PY skips execution but Maya 2026 still asks to
+        # save missing UserSetup checksums at shutdown. Disable execution in
+        # this disposable profile too; keep checksum/plugin checks enabled.
+        prefs += 'optionVar -iv "SafeModeExecUserSetupScript" 0;\n'
     # English Maya uses the base profile. Japanese and Simplified Chinese
     # builds use locale-qualified profile roots under the same version.
     for locale_name in (None, "ja_JP", "zh_CN"):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import time
@@ -131,8 +132,13 @@ def run_maya_e2e(
                 )
         shutil.rmtree(maya_app_dir, ignore_errors=True)
         profile_owned = True
-        maya_commandport.seed_isolated_maya_profile(maya_app_dir, version, project_root)
         launch_env = dict(env_overrides or {})
+        maya_commandport.seed_isolated_maya_profile(
+            maya_app_dir, version, project_root,
+            skip_user_setup=launch_env.get(
+                "MAYA_SKIP_USERSETUP_PY", os.environ.get("MAYA_SKIP_USERSETUP_PY")
+            ) == "1",
+        )
         launch_env["MAYA_APP_DIR"] = str(maya_app_dir)
         launch_deadline = time.time() + launch_timeout
         proc = maya_commandport.launch_maya(

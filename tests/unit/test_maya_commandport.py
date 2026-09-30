@@ -10,6 +10,22 @@ from tests.common import maya_commandport
 
 
 class TestMayaCommandPort(unittest.TestCase):
+    def test_isolated_profile_disables_startup_only_when_requested(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for skip in (False, True):
+                profile = root / str(skip)
+                maya_commandport.seed_isolated_maya_profile(
+                    profile, "2026", root, skip_user_setup=skip,
+                )
+                for locale in ("", "ja_JP", "zh_CN"):
+                    prefs = (profile / "2026" / locale / "prefs" / "userPrefs.mel").read_text(
+                        encoding="utf-8"
+                    )
+                    self.assertEqual('"SafeModeExecUserSetupScript" 0' in prefs, skip)
+                    self.assertNotIn("SafeModeUserSetupHashOption", prefs)
+                    self.assertIn("SafeModeAllowedlistPaths", prefs)
+
     def test_ensure_port_available_rejects_an_occupied_port(self):
         with mock.patch.object(maya_commandport, "is_port_open", return_value=True):
             with self.assertRaisesRegex(RuntimeError, "commandPort :7788 is already in use"):

@@ -268,9 +268,13 @@ class TestMayaE2EHarness(unittest.TestCase):
 
             def fail_launch(**_kwargs):
                 profile.mkdir(parents=True, exist_ok=True)
+                prefs = (profile / "2024" / "prefs" / "userPrefs.mel").read_text(encoding="utf-8")
+                self.assertIn('"SafeModeExecUserSetupScript" 0', prefs)
                 raise RuntimeError("launch failed")
 
-            with mock.patch.object(harness.sys, "platform", "linux"), mock.patch.object(
+            with mock.patch.dict(harness.os.environ, {"MAYA_SKIP_USERSETUP_PY": "1"}), mock.patch.object(
+                harness.sys, "platform", "linux"
+            ), mock.patch.object(
                 harness.maya_commandport, "remove_stale_logs"
             ), mock.patch.object(
                 harness.maya_commandport, "is_port_open", return_value=False
@@ -314,6 +318,8 @@ class TestMayaE2EHarness(unittest.TestCase):
                     prefs,
                 )
                 self.assertNotIn("MAYA_SECURE_OPTOUT", prefs)
+                self.assertIn('"SafeModeExecUserSetupScript" 0', prefs)
+                self.assertNotIn("SafeModeUserSetupHashOption", prefs)
                 localized_prefs = (
                     profile / "2024" / "ja_JP" / "prefs" / "userPrefs.mel"
                 ).read_text(encoding="utf-8")
@@ -378,6 +384,7 @@ class TestMayaE2EHarness(unittest.TestCase):
                     marker="DONE",
                     send_label="<unit>",
                     quit_delay=0.0,
+                    env_overrides={"MAYA_SKIP_USERSETUP_PY": "1"},
                 )
 
             self.assertFalse(profile.exists())
