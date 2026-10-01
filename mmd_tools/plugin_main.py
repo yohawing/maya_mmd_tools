@@ -36,6 +36,7 @@ _python_physics_solver_registered = False
 _python_physics_driver_registered = False
 _after_open_callback_id = None
 _after_new_callback_id = None
+_after_read_callback_id = None
 _active_view_callback_id = None
 _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
@@ -571,9 +572,19 @@ def _deregister_humanik_control_rig_watch():
         pass
 
 
+def _after_scene_read(*_args):
+    """Restore Maya ASCII's damaged material proxies after all file reads."""
+    try:
+        from mmd_tools.converters.material_morph_runtime import restore_material_proxies_after_read
+
+        restore_material_proxies_after_read()
+    except Exception as exc:
+        om.MGlobal.displayWarning(f"MMD material proxy restoration failed: {exc}")
+
+
 def _register_after_open_callback():
     """Register scene-open/new callbacks, tolerating host limitations."""
-    global _after_open_callback_id, _after_new_callback_id
+    global _after_open_callback_id, _after_new_callback_id, _after_read_callback_id
     if _after_open_callback_id is None:
         try:
             _after_open_callback_id = om.MSceneMessage.addCallback(
@@ -590,14 +601,23 @@ def _register_after_open_callback():
             )
         except Exception:
             _after_new_callback_id = None
+    if _after_read_callback_id is None:
+        try:
+            _after_read_callback_id = om.MSceneMessage.addCallback(
+                om.MSceneMessage.kAfterSceneReadAndRecordEdits,
+                _after_scene_read,
+            )
+        except Exception:
+            _after_read_callback_id = None
 
 
 def _remove_after_open_callback():
     """Remove the owned scene-open/new callbacks if they exist."""
-    global _after_open_callback_id, _after_new_callback_id
-    callback_ids = (_after_open_callback_id, _after_new_callback_id)
+    global _after_open_callback_id, _after_new_callback_id, _after_read_callback_id
+    callback_ids = (_after_open_callback_id, _after_new_callback_id, _after_read_callback_id)
     _after_open_callback_id = None
     _after_new_callback_id = None
+    _after_read_callback_id = None
     for callback_id in callback_ids:
         if callback_id is None:
             continue

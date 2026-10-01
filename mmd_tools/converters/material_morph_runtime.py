@@ -681,6 +681,56 @@ def _connect_proxy_inputs(base, authored, size):
             cmds.connectAttr(source, destination, force=True)
 
 
+def restore_material_proxies_after_read(*_args):
+    """Recreate ASCII-damaged RGB proxies owned by material evaluator bases.
+
+    Run once after file I/O, never during evaluation. Ordinary connected RGB
+    attributes, referenced nodes and non-MMD proxies are left untouched.
+    """
+    undo_enabled = cmds.undoInfo(query=True, state=True)
+    if undo_enabled:
+        cmds.undoInfo(stateWithoutFlush=False)
+    try:
+        for shader in cmds.ls(type="standardSurface") or []:
+            # Recreating referenced attributes records destructive reference
+            # edits and can fail halfway through restoring attribute metadata.
+            if cmds.referenceQuery(shader, isNodeReferenced=True) or any(cmds.lockNode(shader, query=True, lock=True)):
+                continue
+            for route in hardware_morph_routes("dx11Shader"):
+                attribute = _AUTHORED_MATERIAL_ATTRIBUTES.get(route.uniform)
+                if route.size != 3 or not attribute or not cmds.attributeQuery(attribute, node=shader, exists=True):
+                    continue
+                authored = f"{shader}.{attribute}"
+                if not maya_proxy_attribute.is_broken_rgb_proxy(authored):
+                    continue
+                sources = _exact_incoming_sources(authored)
+                if len(sources) != 1:
+                    continue
+                source = sources[0]
+                node, base = source.split(".", 1)
+                if cmds.nodeType(node) != EVAL_NODE_TYPE or base != route.evaluator_base:
+                    continue
+                if not all(cmds.attributeQuery(attr, node=node, exists=True)
+                           for attr in ("mmd_material_morph_eval", "mmd_target_shader")):
+                    continue
+                target = cmds.getAttr(f"{node}.mmd_target_shader") or ""
+                # Import prefixes node names, but does not rewrite string metadata.
+                if (not cmds.getAttr(f"{node}.mmd_material_morph_eval") or not target
+                        or not (shader == target or shader.endswith(":" + target))):
+                    continue
+                # Reject partial/custom rewiring even when the parent looks owned.
+                if not all(_same_source(cmds.connectionInfo(dst, sourceFromDestination=True), src)
+                           for src, dst in zip(_expanded_plugs(source, 3)[1:], _expanded_plugs(authored, 3)[1:])):
+                    continue
+                try:
+                    maya_proxy_attribute.set_proxy(authored, True, source)
+                except Exception:
+                    logger.warning("Could not restore material proxy %s after scene read", authored, exc_info=True)
+    finally:
+        if undo_enabled:
+            cmds.undoInfo(stateWithoutFlush=True)
+
+
 def _authored_proxy_source(plug):
     """Recognize only the evaluator-base proxies owned by this binding."""
     if not maya_proxy_attribute.is_proxy(plug):

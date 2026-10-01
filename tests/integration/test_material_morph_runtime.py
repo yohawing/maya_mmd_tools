@@ -517,6 +517,157 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
         self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.2)
 
+    def test_standard_rgb_proxy_roundtrip_keeps_editing_and_drivers(self):
+        """ASCII load repairs only broken MMD proxies, preserving their users."""
+        import tempfile
+        from mmd_tools.core import maya_proxy_attribute
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        converter = MeshConverter("")
+        material = PmxMaterial()
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        _, _, shader, morphs, graph = self._create_scene_with_shader(shader=shader)
+        self.assertTrue(graph["success"], graph)
+        authored = shader + ".diffuse_color"
+        consumer = cmds.createNode("multiplyDivide")
+        cmds.connectAttr(authored, consumer + ".input1")
+        consumer_source = cmds.connectionInfo(consumer + ".input1", sourceFromDestination=True)
+        red = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
+        specular_red = shader + "." + cmds.attributeQuery("specular_color", node=shader, listChildren=True)[0]
+        ambient_green = shader + "." + cmds.attributeQuery("ambient_color", node=shader, listChildren=True)[1]
+        cmds.aliasAttr("authoredRed", shader + "." + red)
+        cmds.setKeyframe(specular_red, time=1, value=0.25)
+        cmds.setKeyframe(specular_red, time=10, value=0.75)
+        cmds.setAttr(ambient_green, lock=True)
+        with tempfile.TemporaryDirectory() as directory:
+            for fmt, suffix in (("mayaAscii", "ma"), ("mayaBinary", "mb"), ("mayaAscii", "ma")):
+                with self.subTest(format=fmt):
+                    path = str(Path(directory) / ("proxy." + suffix))
+                    cmds.file(rename=path)
+                    cmds.file(save=True, type=fmt, force=True)
+                    cmds.file(path, open=True, force=True)
+                    self.assertTrue(maya_proxy_attribute.is_proxy(authored))
+                    self.assertEqual(cmds.connectionInfo(consumer + ".input1", sourceFromDestination=True), consumer_source)
+                    self.assertEqual(cmds.aliasAttr(shader + "." + red, query=True), "authoredRed")
+                    self.assertTrue(cmds.getAttr(ambient_green, lock=True))
+                    for frame, value in ((1, 0.25), (10, 0.75)):
+                        cmds.currentTime(frame)
+                        self.assertAlmostEqual(cmds.getAttr(specular_red), value)
+                    cmds.setAttr(authored, 0.2, 0.3, 0.4, type="double3")
+                    cmds.setAttr(authored, 0.4, 0.5, 0.6, type="double3")
+                    cmds.undo()
+                    self.assertEqual(cmds.getAttr(authored)[0], (0.2, 0.3, 0.4))
+                    cmds.redo()
+                    self.assertEqual(cmds.getAttr(authored)[0], (0.4, 0.5, 0.6))
+                    cmds.setAttr(morphs[0] + ".weight", 0.5)
+                    self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.9)
+
+    def test_rgb_proxy_repair_failure_restores_original_family(self):
+        """A failed automatic recreation must not discard connections or locks."""
+        import tempfile
+        from mmd_tools.core import maya_proxy_attribute
+
+        shader = cmds.shadingNode("standardSurface", asShader=True)
+        evaluator = cmds.createNode("mmdMaterialMorphEval")
+        material_morph_runtime._mark_evaluator(evaluator, shader)
+        cmds.addAttr(shader, longName="diffuse_color", proxy=evaluator + ".baseDiffuse")
+        children = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)
+        for old, axis in zip(children, "RGB"):
+            cmds.renameAttr(shader + "." + old, "color" + axis)
+        cmds.aliasAttr("authoredRed", shader + ".colorR")
+        cmds.setAttr(evaluator + ".baseDiffuse", 0.2, 0.3, 0.4, type="double3")
+        cmds.setAttr(shader + ".colorG", lock=True)
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "failure.ma")
+            cmds.file(rename=path)
+            cmds.file(save=True, type="mayaAscii", force=True)
+            with mock.patch.object(cmds, "renameAttr", side_effect=RuntimeError("injected rename failure")):
+                cmds.file(path, open=True, force=True)
+        self.assertTrue(maya_proxy_attribute.is_broken_rgb_proxy(shader + ".diffuse_color"))
+        self.assertEqual(cmds.getAttr(evaluator + ".baseDiffuse")[0], (0.2, 0.3, 0.4))
+        self.assertEqual(cmds.connectionInfo(shader + ".diffuse_color", sourceFromDestination=True), evaluator + ".baseDiffuse")
+        self.assertEqual(cmds.aliasAttr(shader + ".colorR", query=True), "authoredRed")
+        self.assertTrue(cmds.getAttr(shader + ".colorG", lock=True))
+        material_morph_runtime.restore_material_proxies_after_read()
+        self.assertTrue(maya_proxy_attribute.is_proxy(shader + ".diffuse_color"))
+        self.assertTrue(cmds.getAttr(shader + ".colorG", lock=True))
+
+    def test_standard_rgb_proxy_import_repairs_without_editing_references(self):
+        """Repair local imports; never add destructive edits to a reference."""
+        import tempfile
+        from mmd_tools.core import maya_proxy_attribute
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        converter = MeshConverter("")
+        material = PmxMaterial()
+        shader = converter._create_material(material, material_index=0)
+        converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+        self._create_scene_with_shader(shader=shader)
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "material.ma")
+            cmds.file(rename=path)
+            cmds.file(save=True, type="mayaAscii", force=True)
+            for referenced in (False, True):
+                with self.subTest(referenced=referenced):
+                    cmds.file(new=True, force=True)
+                    kwargs = {"reference": True} if referenced else {"i": True}
+                    cmds.file(path, namespace="model", **kwargs)
+                    plug = "model:" + shader + ".diffuse_color"
+                    if referenced:
+                        self.assertFalse(maya_proxy_attribute.is_proxy(plug))
+                        reference = cmds.referenceQuery("model:" + shader, referenceNode=True)
+                        self.assertFalse(cmds.referenceQuery(reference, editStrings=True))
+                        outer = str(Path(directory) / "outer.ma")
+                        cmds.file(rename=outer)
+                        cmds.file(save=True, type="mayaAscii", force=True)
+                        cmds.file(outer, open=True, force=True)
+                        self.assertFalse(maya_proxy_attribute.is_proxy(plug))
+                        cmds.file(unloadReference=reference)
+                        cmds.file(loadReference=reference)
+                        self.assertFalse(maya_proxy_attribute.is_proxy(plug))
+                        self.assertFalse(cmds.referenceQuery(reference, editStrings=True))
+                        continue
+                    self.assertTrue(maya_proxy_attribute.is_proxy(plug))
+                    cmds.setAttr(plug, 0.4, 0.5, 0.6, type="double3")
+                    self.assertEqual(cmds.getAttr(plug)[0], (0.4, 0.5, 0.6))
+
+    def test_proxy_read_repair_leaves_foreign_and_ordinary_connections(self):
+        """Do not convert ordinary RGB inputs or another owner's proxy family."""
+        import tempfile
+        from mmd_tools.core import maya_proxy_attribute
+
+        source = cmds.createNode("mmdMaterialMorphEval")
+        foreign = cmds.createNode("multiplyDivide")
+        targets = []
+        for kind in ("ordinary", "foreign", "wrong_base", "unmarked", "other_owner"):
+            shader = cmds.shadingNode("standardSurface", asShader=True)
+            if kind == "ordinary":
+                cmds.addAttr(shader, longName="diffuse_color", attributeType="double3")
+                for axis in "RGB":
+                    cmds.addAttr(shader, longName="channel" + axis, attributeType="double", parent="diffuse_color")
+                cmds.connectAttr(source + ".baseDiffuse", shader + ".diffuse_color")
+            else:
+                base = foreign + ".input1" if kind == "foreign" else source + ".baseSpecular"
+                if kind in {"unmarked", "other_owner"}:
+                    evaluator = cmds.createNode("mmdMaterialMorphEval")
+                    base = evaluator + ".baseDiffuse"
+                    if kind == "other_owner":
+                        material_morph_runtime._mark_evaluator(evaluator, "anotherShader")
+                cmds.addAttr(shader, longName="diffuse_color", proxy=base)
+            plug = shader + ".diffuse_color"
+            targets.append((plug, cmds.connectionInfo(plug, sourceFromDestination=True)))
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "other.ma")
+            cmds.file(rename=path)
+            cmds.file(save=True, type="mayaAscii", force=True)
+            cmds.file(path, open=True, force=True)
+            for plug, source in targets:
+                self.assertFalse(maya_proxy_attribute.is_proxy(plug))
+                self.assertEqual(cmds.connectionInfo(plug, sourceFromDestination=True), source)
+
     def test_standard_proxy_animation_survives_rebuild_and_last_morph_removal(self):
         from mmd_tools.core import maya_proxy_attribute
 

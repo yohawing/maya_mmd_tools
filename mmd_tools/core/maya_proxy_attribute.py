@@ -18,6 +18,17 @@ def is_proxy(plug):
     return _attribute(plug).isProxyAttribute
 
 
+def is_broken_rgb_proxy(plug):
+    """Identify the parent flag lost by Maya ASCII, without changing storage."""
+    selection = om.MSelectionList()
+    selection.add(plug)
+    root = selection.getPlug(0)
+    return (root.isCompound and root.numChildren() == 3
+            and om.MFnAttribute(root.attribute()).dynamic
+            and not om.MFnAttribute(root.attribute()).isProxyAttribute
+            and all(om.MFnAttribute(root.child(i).attribute()).isProxyAttribute for i in range(3)))
+
+
 def supports_proxy(plug):
     """Keep customized RGB attribute definitions on their existing route."""
     selection = om.MSelectionList()
@@ -67,8 +78,8 @@ def set_proxy(plug, enabled, source=None):
     definitions = []
     connections = []
     for member in family:
-        name = member.name()
         fn = om.MFnAttribute(member.attribute())
+        name = f"{node}.{fn.name}"
         definition = {"name": name, "command": fn.getAddAttrCmd(False),
                       "keyable": member.isKeyable, "channelBox": member.isChannelBox,
                       "locked": member.isLocked}
@@ -90,32 +101,65 @@ def set_proxy(plug, enabled, source=None):
     root_name = om.MFnAttribute(root.attribute()).name
     if enabled and compound and not source:
         raise RuntimeError("A compound proxy requires its base source")
-    cmds.deleteAttr(root.name())
-    if enabled and compound:
-        # addAttr -proxy creates the internal parent/child proxy storage.
-        cmds.addAttr(node, longName=root_name, proxy=source)
-        created_children = cmds.attributeQuery(root_name, node=node, listChildren=True) or []
-        for old, definition in zip(created_children, definitions[1:]):
-            cmds.renameAttr(f"{node}.{old}", definition["name"].split(".", 1)[1])
-    for definition in definitions:
-        # The command comes from Maya, including exact names, defaults and limits.
-        command = re.sub(r"\s-(?:usedAsProxy|uap)\b", "", definition["command"])
-        if not (enabled and compound):
-            mel.eval(command.rstrip().rstrip(";") + (" -uap" if enabled else "")
-                     + " " + json.dumps(node, ensure_ascii=False) + ";")
-    for definition in definitions:
-        name = definition["name"]
-        if not enabled and "value" in definition:
-            value = definition["value"]
-            if definition["type"] in {"double3", "float3"}:
-                cmds.setAttr(name, *value[0], type=definition["type"])
-            else:
-                cmds.setAttr(name, value)
-        cmds.setAttr(name, keyable=definition["keyable"], channelBox=definition["channelBox"])
-    for source, destination in dict.fromkeys(connections):
-        cmds.connectAttr(source, destination, force=True)
-    for alias, attr in aliases:
-        cmds.aliasAttr(alias, f"{node}.{attr}")
-    for definition in definitions:
-        if definition["locked"]:
-            cmds.setAttr(definition["name"], lock=True)
+    repairing_rgb = enabled and is_broken_rgb_proxy(plug)
+
+    def restore_state():
+        """Restore the saved users and UI state without changing source values."""
+        for definition in definitions:
+            name = definition["name"]
+            if not enabled and "value" in definition:
+                value = definition["value"]
+                if definition["type"] in {"double3", "float3"}:
+                    cmds.setAttr(name, *value[0], type=definition["type"])
+                else:
+                    cmds.setAttr(name, value)
+            cmds.setAttr(name, keyable=definition["keyable"], channelBox=definition["channelBox"])
+        for source, destination in dict.fromkeys(connections):
+            if not cmds.isConnected(source, destination):
+                cmds.connectAttr(source, destination, force=True)
+        for alias, attr in aliases:
+            cmds.aliasAttr(alias, f"{node}.{attr}")
+        for definition in definitions:
+            if definition["locked"]:
+                cmds.setAttr(definition["name"], lock=True)
+
+    try:
+        for alias, _attr in aliases:
+            cmds.aliasAttr(f"{node}.{alias}", remove=True)
+        for definition in definitions:
+            if definition["locked"]:
+                cmds.setAttr(definition["name"], lock=False)
+        cmds.deleteAttr(root.name())
+        if enabled and compound:
+            # addAttr -proxy creates the internal parent/child proxy storage.
+            cmds.addAttr(node, longName=root_name, proxy=source)
+            created_children = cmds.attributeQuery(root_name, node=node, listChildren=True) or []
+            for old, definition in zip(created_children, definitions[1:]):
+                new = definition["name"].split(".", 1)[1]
+                if old != new:
+                    cmds.renameAttr(f"{node}.{old}", new)
+        for definition in definitions:
+            # The command comes from Maya, including exact names, defaults and limits.
+            command = re.sub(r"\s-(?:usedAsProxy|uap)\b", "", definition["command"])
+            if not (enabled and compound):
+                mel.eval(command.rstrip().rstrip(";") + (" -uap" if enabled else "")
+                         + " " + json.dumps(node, ensure_ascii=False) + ";")
+        restore_state()
+    except Exception:
+        if repairing_rgb:
+            # File-read callbacks do not record Undo. Rebuild the original
+            # damaged family on failure, retaining its source values and users.
+            current_aliases = (cmds.aliasAttr(node, query=True) or [])[::2]
+            for alias, _attr in aliases:
+                if alias in current_aliases:
+                    cmds.aliasAttr(f"{node}.{alias}", remove=True)
+            for definition in definitions:
+                if cmds.objExists(definition["name"]):
+                    cmds.setAttr(definition["name"], lock=False)
+            if cmds.objExists(f"{node}.{root_name}"):
+                cmds.deleteAttr(f"{node}.{root_name}")
+            for definition in definitions:
+                mel.eval(definition["command"].rstrip().rstrip(";")
+                         + " " + json.dumps(node, ensure_ascii=False) + ";")
+            restore_state()
+        raise

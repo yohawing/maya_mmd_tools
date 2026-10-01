@@ -637,12 +637,13 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         )
 
     def test_after_open_callback_registers_once_invokes_and_removes(self):
-        add_callback = MagicMock(side_effect=[42, 43])
+        add_callback = MagicMock(side_effect=[42, 43, 44])
         remove_callback = MagicMock()
         self.plugin_main.om = types.SimpleNamespace(
             MSceneMessage=types.SimpleNamespace(
                 kAfterOpen=7,
                 kAfterNew=8,
+                kAfterSceneReadAndRecordEdits=9,
                 addCallback=add_callback,
             ),
             MMessage=types.SimpleNamespace(removeCallback=remove_callback),
@@ -665,16 +666,18 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             [
                 unittest.mock.call(7, self.plugin_main._after_scene_open),
                 unittest.mock.call(8, self.plugin_main._after_scene_new),
+                unittest.mock.call(9, self.plugin_main._after_scene_read),
             ],
         )
         migrate.assert_called_once_with()
         self.assertEqual(reset.call_count, 2)
         self.assertEqual(
             remove_callback.call_args_list,
-            [unittest.mock.call(42), unittest.mock.call(43)],
+            [unittest.mock.call(42), unittest.mock.call(43), unittest.mock.call(44)],
         )
         self.assertIsNone(self.plugin_main._after_open_callback_id)
         self.assertIsNone(self.plugin_main._after_new_callback_id)
+        self.assertIsNone(self.plugin_main._after_read_callback_id)
 
     def test_after_open_callback_registration_failure_is_soft(self):
         add_callback = MagicMock(side_effect=RuntimeError("callback unavailable"))

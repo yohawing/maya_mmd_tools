@@ -1899,6 +1899,12 @@ def test_model_physics(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def material_proxy_reload(session: nox.Session) -> None:
+    """Check material proxy edits, appearance and timings after GUI scene reloads."""
+    session.run(sys.executable, "tools/smoke/maya_material_proxy_reload.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def morph_binding_roundtrip(session: nox.Session) -> None:
     """Verify reported morphs through GUI lists, deformation and PMX export."""
     session.run(sys.executable, "tools/smoke/maya_morph_binding_roundtrip.py", *session.posargs)
