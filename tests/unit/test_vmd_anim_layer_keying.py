@@ -30,6 +30,43 @@ class TestVmdAnimLayerKeying(MayaTestBase):
         super().setUp()
         self.converter = VmdConverter()
 
+    def test_rekey_quaternion_curves_preserves_authored_rotation(self):
+        """Reused quaternion curves must accept fresh Euler API samples."""
+        for layered in (False, True):
+            with self.subTest(layered=layered):
+                node = cmds.createNode("transform", name="rekey_rotation")
+                layer = cmds.animLayer("rekey_layer") if layered else None
+                curve_ids = None
+                for iteration in range(3):
+                    samples = {
+                        attr: [(0.0, value), (10.0, value * 2), (30.0, value * .5)]
+                        for attr, value in zip(
+                            ("rotateX", "rotateY", "rotateZ"),
+                            (7.0 + iteration, 15.0, 33.0 - iteration),
+                        )
+                    }
+                    self.assertTrue(
+                        self.converter._batch_key_scalar_channels(node, samples, layer)
+                    )
+                    curves = [
+                        cmds.animLayer(layer, query=True, findCurveForPlug=f"{node}.{attr}")
+                        if layer else cmds.listConnections(
+                            f"{node}.{attr}", source=True, destination=False, type="animCurve"
+                        )[0]
+                        for attr in samples
+                    ]
+                    cmds.rotationInterpolation(*curves, convert="quaternionSlerp")
+                    ids = [cmds.ls(curve, uuid=True)[0] for curve in curves]
+                    if curve_ids is not None:
+                        self.assertEqual(ids, curve_ids)
+                    curve_ids = ids
+                    for attr, curve in zip(samples, curves):
+                        self.assertEqual(cmds.rotationInterpolation(curve, query=True), "quaternionSlerp")
+                        values = cmds.keyframe(curve, query=True, valueChange=True)
+                        self.assertEqual(len(values), len(samples[attr]))
+                        for actual, (_, expected) in zip(values, samples[attr]):
+                            self.assertAlmostEqual(actual, expected, places=4)
+
     def test_legacy_bone_anim_layer_simple_path_uses_batch_keying(self):
         """通常ボーンの animLayer keying は per-frame setKeyframe ではなく batch helper を使う。"""
         joint = cmds.joint(name="legacy_layer_batch_joint")

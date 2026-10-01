@@ -496,6 +496,20 @@ def batch_key_scalar_channels(
             channel_samples,
             animation_layer=animation_layer,
         )
+        # addKeys writes Euler scalar values. Reusing quaternion curves without
+        # resetting their representation makes Maya reinterpret those values
+        # against the previous quaternion payload. The bone importer reapplies
+        # its requested rotation interpolation after all XYZ keys are written.
+        rotation_curves = [
+            curves[attr].name()
+            for attr in ("rotateX", "rotateY", "rotateZ")
+            if attr in curves
+        ]
+        if len(rotation_curves) == 3 and any(
+            cmds.rotationInterpolation(curve, query=True).startswith("quaternion")
+            for curve in rotation_curves
+        ):
+            cmds.rotationInterpolation(*rotation_curves, convert="none")
     except Exception as exc:
         context.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
         create_error = exc
