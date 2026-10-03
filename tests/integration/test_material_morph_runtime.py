@@ -594,6 +594,29 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertTrue(maya_proxy_attribute.is_proxy(shader + ".diffuse_color"))
         self.assertTrue(cmds.getAttr(shader + ".colorG", lock=True))
 
+    def test_proxy_migration_preserves_duplicate_dag_destinations(self):
+        """Native render shapes may share their short name with another DAG node."""
+        from mmd_tools.core import maya_proxy_attribute
+
+        shader = cmds.createNode("network", name="authored")
+        source = cmds.createNode("multiplyDivide")
+        cmds.addAttr(shader, longName="color", attributeType="double3")
+        for axis in "RGB":
+            cmds.addAttr(shader, longName="color" + axis, parent="color", attributeType="double")
+        targets = []
+        for index in range(2):
+            parent = cmds.createNode("transform", name="group" + str(index))
+            child = cmds.createNode("transform", name="render", parent=parent)
+            targets.append(cmds.ls(child, long=True)[0] + ".translate")
+        for target in targets:
+            cmds.connectAttr(shader + ".color", target)
+        maya_proxy_attribute.set_proxy(shader + ".color", True, source + ".input1")
+        cmds.setAttr(shader + ".color", .4, .5, .6, type="float3")
+        for target in targets:
+            self.assertTrue(cmds.isConnected(shader + ".color", target))
+            for actual, expected in zip(cmds.getAttr(target)[0], (.4, .5, .6)):
+                self.assertAlmostEqual(actual, expected, places=6)
+
     def test_standard_rgb_proxy_import_repairs_without_editing_references(self):
         """Repair local imports; never add destructive edits to a reference."""
         import tempfile

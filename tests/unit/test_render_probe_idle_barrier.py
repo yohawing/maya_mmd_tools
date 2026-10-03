@@ -1,6 +1,7 @@
 """Scene initialization must drain before the render probe starts editing."""
 
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -28,10 +29,10 @@ class TestRenderProbeIdleBarrier(unittest.TestCase):
             yield
             completed.append("done")
 
-        with patch.dict(sys.modules, {"maya": maya, "PySide6.QtCore": qt}), patch.object(
+        with tempfile.TemporaryDirectory() as output, patch.dict(sys.modules, {"maya": maya, "PySide6.QtCore": qt}), patch.object(
             separation_e2e, "_probe_steps", return_value=steps()
         ):
-            separation_e2e.run_probe("out", "plugin")
+            separation_e2e.run_probe(output, "plugin")
             deferred.pop(0)[0]()
             self.assertEqual(["scene setup"], completed)
             self.assertFalse(timers)

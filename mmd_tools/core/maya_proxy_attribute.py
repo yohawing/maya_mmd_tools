@@ -13,6 +13,14 @@ def _attribute(plug):
     return om.MFnAttribute(selection.getPlug(0).attribute())
 
 
+def _connection_name(plug):
+    """Keep DAG destinations unambiguous while their source is recreated."""
+    name = plug.name()
+    if plug.node().hasFn(om.MFn.kDagNode):
+        return om.MFnDagNode(plug.node()).fullPathName() + "." + name.split(".", 1)[1]
+    return name
+
+
 def is_proxy(plug):
     """Return the proxy flag without evaluating the connected value."""
     return _attribute(plug).isProxyAttribute
@@ -92,7 +100,7 @@ def set_proxy(plug, enabled, source=None):
             connections.append((cmds.connectionInfo(name, sourceFromDestination=True), name))
         # Child queries can report an inherited parent connection. Preserve
         # the actual source, otherwise a scalar is reconnected to an RGB plug.
-        connections.extend((name, target.name()) for target in member.connectedTo(False, True)
+        connections.extend((name, _connection_name(target)) for target in member.connectedTo(False, True)
                            if target.source() == member)
     names = {om.MFnAttribute(member.attribute()).name for member in family}
     aliases = cmds.aliasAttr(node, query=True) or []

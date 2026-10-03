@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -28,6 +29,9 @@ def run_probe(output, plugin, split=False, textured=False):
         from PySide6.QtCore import QTimer
     except ImportError:
         from PySide2.QtCore import QTimer
+    Path(output).mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(Path(output) / "runtime.log", mode="w", encoding="utf-8")
+    logging.getLogger("mmd_tools").addHandler(handler)
     steps = _probe_steps(output, plugin, split, textured)
     initializing = True
 
@@ -36,6 +40,8 @@ def run_probe(output, plugin, split=False, textured=False):
         try:
             next(steps)
         except StopIteration:
+            logging.getLogger("mmd_tools").removeHandler(handler)
+            handler.close()
             return
         if initializing:
             initializing = False
