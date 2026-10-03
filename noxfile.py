@@ -1893,6 +1893,13 @@ def render_override_visual_gate(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def leg_authoring_inputs(session: nox.Session) -> None:
+    """Measure pre-IK leg editing inputs with and without a bone morph."""
+    session.run(sys.executable, "tools/probes/leg_authoring_inputs.py",
+                *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def test_model_physics(session: nox.Session) -> None:
     """Measure TestModel gravity, mesh evaluation, collision and reset playback."""
     session.run(sys.executable, "tools/probes/test_model_physics.py", *session.posargs)
