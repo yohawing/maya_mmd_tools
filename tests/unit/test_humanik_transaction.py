@@ -276,6 +276,61 @@ class TestHumanIkTransaction(unittest.TestCase):
             StanceMel(),
         )
         self.assertEqual(restore_state.input_type, 0)
+        self.assertEqual(restore_state.input_source, "")
+
+    def test_restore_inactive_stance_disconnects_hik_before_restoring_rig(self):
+        class InactiveStanceMel(FakeMel):
+            def __init__(self, cmds):
+                super().__init__()
+                self.source = ""
+                self.cmds = cmds
+                self.inactive_calls = 0
+
+            def eval(self, command):
+                if command.startswith("hikGetInputType"):
+                    return 3 if self.source else 0
+                if command.startswith("hikGetState2SKFromCharacter"):
+                    return ["HIKState2SK"]
+                if command.startswith("hikSetInactiveStanceInput"):
+                    self.inactive_calls += 1
+                    self.source = ""
+                    self.cmds.connections["other.rotateX"] = []
+                    return None
+                if command.startswith("hikSetCharacterInput"):
+                    # Maya enables the state-to-skeleton writer even for "".
+                    self.cmds.connections["other.rotateX"] = ["HIKState2SK.HipsRx"]
+                return super().eval(command)
+
+        cmds = FakeCmds()
+        mel = InactiveStanceMel(cmds)
+        cmds.values["other.rotateX"] = 2.5
+        state = capture_humanik_restore_state("owner:A", "Target", ["dst.tx", "other.rotateX"], [], cmds, mel)
+        mel.source = "Source"
+        cmds.connections["dst.tx"] = []
+        cmds.connections["other.rotateX"] = ["HIKState2SK.HipsRx"]
+        cmds.values["other.rotateX"] = 45.0
+
+        apply_humanik_restore_state(state, "owner:A", cmds, mel)
+        apply_humanik_restore_state(state, "owner:A", cmds, mel)
+
+        self.assertEqual(mel.inactive_calls, 2)
+        self.assertEqual(cmds.connections["other.rotateX"], [])
+        self.assertEqual(cmds.connections["dst.tx"], ["src.tx"])
+        self.assertEqual(cmds.values["other.rotateX"], 2.5)
+
+        # A previous empty-source retarget attempt can leave HIK enabled while
+        # the source name already matches the captured empty string.
+        cmds.connections["other.rotateX"] = ["HIKState2SK.HipsRx"]
+        apply_humanik_restore_state(state, "owner:A", cmds, mel)
+        self.assertEqual(mel.inactive_calls, 3)
+        self.assertEqual(cmds.connections["other.rotateX"], [])
+
+        cmds.connections["other.rotateX"] = ["foreignHIK.HipsRx"]
+        mel.source = "Source"
+        with self.assertRaisesRegex(RuntimeError, "foreign topology drift"):
+            apply_humanik_restore_state(state, "owner:A", cmds, mel)
+        self.assertEqual(mel.inactive_calls, 3)
+        self.assertEqual(cmds.connections["other.rotateX"], ["foreignHIK.HipsRx"])
 
     def test_missing_character_node_is_skipped_with_warning_not_error(self):
         """HUMANIK-RESTORE-GAPS-1 fix 1a: a deleted character must not raise.

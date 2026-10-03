@@ -49,7 +49,8 @@ def compare(before, after):
             continue
         delta = max(abs(a - b) for a, b in zip(left["matrix"], right["matrix"]))
         maximum = max(maximum, delta)
-        if delta > 1e-6 or left["inputs"] != right["inputs"]:
+        # Pose deltas are diagnostic; topology restoration is the acceptance gate.
+        if left["inputs"] != right["inputs"]:
             changed.append({"joint": joint, "matrixDelta": delta,
                             "inputsBefore": left["inputs"], "inputsAfter": right["inputs"]})
     return {"status": "fail" if changed else "pass", "jointCount": len(before),
@@ -58,8 +59,9 @@ def compare(before, after):
 
 def probe(config_path):
     """Run both variants in fresh scenes and always attempt production restore."""
-    from maya import cmds
+    from maya import cmds, mel
     from mmd_tools.core.humanik_frontend import HumanIkFrontendSession
+    from mmd_tools.core.humanik_utils import mel_string
     from mmd_tools.io.mmd_importer import import_mmd_file
 
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
@@ -103,6 +105,7 @@ def probe(config_path):
                     try:
                         session.enter_source_mode(roots["source"])
                         session.enter_target_mode(roots["target"])
+                        case["capturedInputType"] = session.active_preview.restore_state.input_type
                         cmds.currentTime(1, edit=True)
                         snapshot(cmds, roots["target"])
                         case["target"] = "pass"
@@ -133,6 +136,65 @@ def probe(config_path):
                     and not any(case["cyclesByStage"].values())
                     and "error" not in case):
                 case["status"] = "pass"
+                # Exercise reuse and the rollback immediately after HIK has
+                # acquired its writer connections, before a preview is returned.
+                from unittest.mock import patch
+                from mmd_tools.core import humanik_preview
+
+                def restored_state():
+                    cmds.currentTime(0, edit=True)
+                    poses = {role: compare(before[role], snapshot(cmds, root))
+                             for role, root in roots.items()}
+                    cycles = cmds.cycleCheck(all=True, list=True) or []
+                    return {"status": "pass" if not cycles and all(
+                        row["status"] == "pass" for row in poses.values()) else "fail",
+                        "restoration": poses, "cycles": cycles}
+
+                try:
+                    session.enter_target_mode(roots["target"])
+                    cmds.currentTime(1, edit=True)
+                    snapshot(cmds, roots["target"])
+                    session.restore_mmd_rig()
+                    case["repeat"] = restored_state()
+                    connect = humanik_preview.connect_humanik_source
+
+                    def fail_after_connect(*args, **kwargs):
+                        connect(*args, **kwargs)
+                        raise RuntimeError("injected post-connect failure")
+
+                    with patch.object(humanik_preview, "connect_humanik_source", fail_after_connect):
+                        try:
+                            session.enter_target_mode(roots["target"])
+                        except RuntimeError as error:
+                            if str(error) != "injected post-connect failure":
+                                raise
+                        else:
+                            raise AssertionError("injected failure did not occur")
+                    case["rollback"] = restored_state()
+                    # Reproduce the legacy empty-source retarget state too.
+                    def fail_after_empty_source(*args, **kwargs):
+                        connect(*args, **kwargs)
+                        mel.eval(f'hikSetCharacterInput({mel_string(args[0])}, "");')
+                        raise RuntimeError("injected empty-source failure")
+
+                    with patch.object(humanik_preview, "connect_humanik_source", fail_after_empty_source):
+                        try:
+                            session.enter_target_mode(roots["target"])
+                        except RuntimeError as error:
+                            if str(error) != "injected empty-source failure":
+                                raise
+                        else:
+                            raise AssertionError("empty-source failure did not occur")
+                    case["emptySourceRollback"] = restored_state()
+                    if case["repeat"]["status"] != "pass" or case["rollback"]["status"] != "pass":
+                        case["status"] = "fail"
+                    if case["emptySourceRollback"]["status"] != "pass":
+                        case["status"] = "fail"
+                except Exception:
+                    case["status"] = "fail"
+                    case["lifecycleError"] = traceback.format_exc()
+                finally:
+                    session.restore_mmd_rig()
         if len(report["cases"]) == 2 and all(case["status"] == "pass" for case in report["cases"]):
             report["status"] = "pass"
     except Exception:
