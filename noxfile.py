@@ -1899,6 +1899,12 @@ def test_model_physics(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_arm_variant(session: nox.Session) -> None:
+    """Compare normal/arm-IK PMX setup, target preview and restoration in Maya GUI."""
+    session.run(sys.executable, "tools/probes/humanik_arm_variant.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def material_proxy_reload(session: nox.Session) -> None:
     """Check material proxy edits, appearance and timings after GUI scene reloads."""
     session.run(sys.executable, "tools/smoke/maya_material_proxy_reload.py", *session.posargs)
