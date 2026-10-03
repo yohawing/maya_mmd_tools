@@ -15,6 +15,84 @@ sys.path.insert(0, str(ROOT))
 MARKER = "TEST_MODEL_PHYSICS_COMPLETE"
 
 
+def probe_import_scales(out):
+    """Measure imported dimensions and acceleration without contacts or joints.
+
+    Scene-space and model-relative drops are reported separately: this probe
+    verifies scale propagation, not MMD parity or production reset stability.
+    """
+    from maya import cmds
+    from maya.api import OpenMaya as om
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
+    from mmd_tools.io.mmd_importer import import_mmd_file
+
+    fixture = PmxData().parse_file(str(ROOT / "tests/data/yw_test_model.pmx"))
+    body = PmxRigidBody(fixture.header.bone_index_size, fixture.header.encoding_flag)
+    body.name = body.name_english = "free_fall"
+    body.position = (0, 100, 0)
+    body.size = (.5, 0, 0)
+    body.mass = 1
+    body.physics_mode = 1
+    fixture.rigid_bodies = [body]
+    fixture.joints = []
+    fixture_path = out / "free-fall.pmx"
+    fixture.write_file(str(fixture_path))
+    rows = []
+    for scale in (.1, 1.0, 10.0):
+        for fps, unit in ((30, "ntsc"), (60, "ntscf")):
+            cmds.file(new=True, force=True)
+            cmds.currentUnit(time=unit)
+            cmds.currentTime(0)
+            root = import_mmd_file(str(fixture_path), options={
+                "scale": scale, "import_physics": True, "setup_rig": True,
+            })
+            assert root, (scale, fps)
+            solver, = cmds.ls(type="mmdPhysicsSolver")
+            world, = cmds.ls(type="mmdPhysicsWorldShape")
+            shape, = cmds.ls(type="mmdRigidBodyShape")
+            selection = om.MSelectionList()
+            selection.add(solver)
+            node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+            cmds.setAttr(world + ".enable", True)
+            samples = []
+            for frame in range(fps + 1):
+                cmds.currentTime(frame)
+                status = cmds.getAttr(solver + ".outStatus")
+                assert status in ("reset", "stepped", "cached", "pose-updated"), status
+                state, = node._world.copy_rigidbody_states()
+                position, quaternion = state
+                assert all(math.isfinite(v) for v in (*position, *quaternion))
+                samples.append(list(position))
+            rows.append({
+                "scale": scale, "fps": fps,
+                "radius": cmds.getAttr(shape + ".shapeSize")[0][0],
+                "authoredPosition": cmds.getAttr(shape + ".position")[0],
+                "resetPositionOffset": samples[0][1] - cmds.getAttr(shape + ".position")[0][1],
+                "sceneGravity": cmds.getAttr(world + ".gravity")[0],
+                "nativeGravity": node._world.get_gravity(),
+                "samples": samples,
+                "dropAfterOneSecond": samples[0][1] - samples[-1][1],
+                "modelRelativeDrop": (samples[0][1] - samples[-1][1]) / scale,
+                "cycles": cmds.cycleCheck(all=True, list=True) or [],
+            })
+    drops = [row["dropAfterOneSecond"] for row in rows]
+    checks = {
+        "scaledDimensionsAndAuthoredPosition": all(
+            abs(row["radius"] - .5 * row["scale"]) < 1e-5
+            and abs(row["authoredPosition"][1] - 100 * row["scale"]) < 1e-4 for row in rows),
+        "gravityTransferred": all(
+            max(abs(a-b) for a, b in zip(row["sceneGravity"], row["nativeGravity"])) < 1e-5
+            for row in rows),
+        "sameSceneSpaceDrop": max(drops) - min(drops) < .002,
+        "downwardFreeFall": all(48 < drop < 50 for drop in drops),
+        "noCycles": all(not row["cycles"] for row in rows),
+    }
+    return {"status": "pass" if all(checks.values()) else "fail", "checks": checks,
+            "cases": rows, "scope": "import scale and scene-space free fall only",
+            "nativeReset": "not_run", "mmdOracle": "not_run"}
+
+
 def run_probe(config_path):
     from maya import cmds
     from maya.api import OpenMaya as om
@@ -31,6 +109,9 @@ def run_probe(config_path):
     try:
         cmds.loadPlugin(config["plugin"], quiet=True)
         cmds.loadPlugin(str(ROOT / "plug-ins/mmd_tools_plugin.py"), quiet=True)
+        if config.get("import_scale_only"):
+            report = probe_import_scales(out)
+            return
         model_path = ROOT / "tests/data/yw_test_model.pmx"
         pmx = parse_pmx_file(str(model_path), use_native_pmx_parse=False)
         report["model"] = str(model_path)
@@ -183,12 +264,14 @@ def main():
     parser.add_argument("--maya", default="2024")
     parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--port", type=int, default=7797)
+    parser.add_argument("--import-scale-only", action="store_true")
     args = parser.parse_args()
     out = args.out_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
     plugin = ROOT / f"plug-ins/{args.maya}/Release/mmd_tools_cpp.mll"
     config = out / "input.json"
-    config.write_text(json.dumps({"plugin": str(plugin), "out": str(out)}), encoding="utf-8")
+    config.write_text(json.dumps({"plugin": str(plugin), "out": str(out),
+                                 "import_scale_only": args.import_scale_only}), encoding="utf-8")
     result = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=out, port=args.port, timeout=600,
         log_path=out / "probe.log", report_path=out / "report.json", marker=MARKER,
