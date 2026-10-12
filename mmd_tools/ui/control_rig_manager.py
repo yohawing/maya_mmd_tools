@@ -13,6 +13,10 @@ from ..services.scene_model_service import SceneModelService
 from .combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from .qt_compat import (
     QLabel,
+    QCheckBox,
+    QLineEdit,
+    QTimer,
+    QScrollArea,
     QPushButton,
     QComboBox,
     QGridLayout,
@@ -90,6 +94,29 @@ class ControlRigManagerWindow(QWidget):
             actions_layout.addWidget(button, index // 2, index % 2)
         layout.addWidget(actions_group)
 
+        self.secondary_group = QGroupBox()
+        secondary_layout = QVBoxLayout(self.secondary_group)
+        self.secondary_status = QLabel()
+        secondary_layout.addWidget(self.secondary_status)
+        self.secondary_buttons = {}
+        secondary_actions = QGridLayout()
+        for index, action in enumerate(("build", "remove", "bake_current", "bake_range")):
+            button = QPushButton()
+            button.setObjectName(f"SecondaryBoneAction_{action}")
+            button.clicked.connect(lambda _checked=False, key=action: self.perform_secondary_action(key))
+            self.secondary_buttons[action] = button
+            secondary_actions.addWidget(button, index // 2, index % 2)
+        secondary_layout.addLayout(secondary_actions)
+        groups_widget = QWidget()
+        self.secondary_groups_layout = QVBoxLayout(groups_widget)
+        groups_scroll = QScrollArea()
+        groups_scroll.setWidgetResizable(True)
+        groups_scroll.setMaximumHeight(180)
+        groups_scroll.setWidget(groups_widget)
+        secondary_layout.addWidget(groups_scroll)
+        self._secondary_group_state = ()
+        layout.addWidget(self.secondary_group)
+
         self.message_label = QLabel("")
         self.message_label.setWordWrap(True)
         self.message_label.setObjectName("ControlRigMessage")
@@ -101,6 +128,10 @@ class ControlRigManagerWindow(QWidget):
         self.destroyed.connect(self._on_destroyed)
         self.retranslateUi()
         self.refresh()
+        self._secondary_timer = QTimer(self)
+        self._secondary_timer.setInterval(1000)
+        self._secondary_timer.timeout.connect(self._refresh_secondary_status)
+        self._secondary_timer.start()
 
     @staticmethod
     def _maya_main_window():
@@ -167,6 +198,11 @@ class ControlRigManagerWindow(QWidget):
         self.setWindowTitle(tr("window_title"))
         self.refresh_btn.setText(tr("refresh"))
         self.message_label.setText("")
+        self.secondary_group.setTitle(tr("secondary_title"))
+        for action, button in self.secondary_buttons.items():
+            button.setText(tr(f"secondary_{action}"))
+            if action.startswith("bake_"):
+                button.setToolTip(tr("secondary_bake_tooltip"))
         for action, _translation_key in self._ACTION_LABELS:
             button = self.action_buttons[action]
             button.setText(tr(f"{action}"))
@@ -312,6 +348,100 @@ class ControlRigManagerWindow(QWidget):
 
         if self.selected_model_root() is None:
             self.message_label.clear()
+        self._refresh_secondary_status(rebuild_groups=True)
+
+    def _refresh_secondary_status(self, *, rebuild_groups=False) -> None:
+        """Query existing physics authority without changing the scene."""
+        if not rebuild_groups and not self.isVisible():
+            return
+        root = self.selected_model_root()
+        state = {"exists": False, "physics_enabled": False, "groups": []}
+        try:
+            if root:
+                from ..core import secondary_bone_controls
+
+                state = secondary_bone_controls.inspect(root, cmds_module=self._maya_cmds())
+        except Exception as exc:
+            self._set_status("status_error", error=exc)
+            self.secondary_status.setText(str(exc))
+            for button in self.secondary_buttons.values():
+                button.setEnabled(False)
+            return
+        exists = bool(state["exists"])
+        self.secondary_buttons["build"].setEnabled(bool(root) and not exists)
+        self.secondary_buttons["remove"].setEnabled(exists)
+        for action in ("bake_current", "bake_range"):
+            self.secondary_buttons[action].setEnabled(exists and bool(state["physics_enabled"]))
+        status = "secondary_absent" if not exists else (
+            "secondary_physics_on" if state["physics_enabled"] else "secondary_physics_off"
+        )
+        self.secondary_status.setText(self._translator.translate(status, "control_rig_manager"))
+        group_state = tuple((group["id"], group["label"], group["visible"], group["count"]) for group in state["groups"])
+        if rebuild_groups or group_state != getattr(self, "_secondary_group_state", ()):
+            self._secondary_group_state = group_state
+            while self.secondary_groups_layout.count():
+                item = self.secondary_groups_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            for group in state["groups"]:
+                row = QWidget()
+                row_layout = QHBoxLayout(row)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                visibility = QCheckBox(str(group["count"]))
+                visibility.setChecked(group["visible"])
+                label = QLineEdit(group["label"])
+                group_id = group["id"]
+                visibility.toggled.connect(
+                    lambda visible, key=group_id, owner=root: self._edit_secondary_group(owner, key, visible=visible)
+                )
+                label.editingFinished.connect(
+                    lambda field=label, key=group_id, owner=root: self._edit_secondary_group(owner, key, label=field.text())
+                )
+                row_layout.addWidget(visibility)
+                row_layout.addWidget(label)
+                self.secondary_groups_layout.addWidget(row)
+
+    def _edit_secondary_group(self, root, group_id, *, visible=None, label=None) -> None:
+        """Edit only the controller group's presentation metadata."""
+        try:
+            from ..core import secondary_bone_controls
+
+            if visible is not None:
+                secondary_bone_controls.set_group_visibility(root, group_id, visible, cmds_module=self._maya_cmds())
+            if label is not None:
+                secondary_bone_controls.rename_group(root, group_id, label, cmds_module=self._maya_cmds())
+        except Exception as exc:
+            self._set_status("status_error", error=exc)
+
+    def perform_secondary_action(self, action: str) -> None:
+        """Dispatch an explicit secondary-controller lifecycle operation."""
+        root = self.selected_model_root()
+        if not root:
+            self._set_status("status_no_character")
+            return
+        try:
+            from ..core import secondary_bone_controls
+
+            cmds = self._maya_cmds()
+            if action == "build":
+                secondary_bone_controls.build(root, cmds_module=cmds)
+            elif action == "remove":
+                secondary_bone_controls.remove(root, cmds_module=cmds)
+            elif action in ("bake_current", "bake_range"):
+                if action == "bake_current":
+                    start = end = cmds.currentTime(query=True)
+                else:
+                    start = cmds.playbackOptions(query=True, minTime=True)
+                    end = cmds.playbackOptions(query=True, maxTime=True)
+                secondary_bone_controls.bake(root, start, end, cmds_module=cmds)
+            else:
+                raise ValueError(f"unknown secondary controller action: {action}")
+            self._set_status("status_transition")
+            self.state_changed.emit(root, f"secondary_{action}")
+            self.refresh()
+        except Exception as exc:
+            logger.error("Secondary controller action failed", exc_info=True)
+            self._set_status("status_error", error=exc)
 
     def _set_status(self, key: str, **values) -> None:
         message = self._translator.translate(key, "control_rig_manager")

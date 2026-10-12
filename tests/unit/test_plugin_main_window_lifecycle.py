@@ -564,6 +564,18 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
 
         soft_check.assert_called_once_with()
 
+    def test_secondary_callbacks_reinstalled_after_read_and_cleared_on_new(self):
+        """Persisted controls regain edit locks without executing scene scripts."""
+        controls = types.ModuleType("mmd_tools.core.secondary_bone_controls")
+        controls.install_scene_callbacks = MagicMock()
+        controls.clear_callbacks = MagicMock()
+        import mmd_tools.core
+        with unittest.mock.patch.object(mmd_tools.core, "secondary_bone_controls", controls, create=True):
+            self.plugin_main._after_scene_read()
+            controls.install_scene_callbacks.assert_called_once_with()
+            self.plugin_main._after_scene_new()
+            controls.clear_callbacks.assert_called_once_with()
+
     def test_initialize_registers_missing_rig_types_while_cpp_plugin_is_loaded(self):
         """A loaded C++ plug-in does not prove that it owns the rig node types."""
         self.plugin_main.install_mmd_menu = MagicMock()
@@ -637,6 +649,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         )
 
     def test_after_open_callback_registers_once_invokes_and_removes(self):
+        self.plugin_main._sync_secondary_control_callbacks = MagicMock()
         add_callback = MagicMock(side_effect=[42, 43, 44])
         remove_callback = MagicMock()
         self.plugin_main.om = types.SimpleNamespace(
