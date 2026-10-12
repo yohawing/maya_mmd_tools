@@ -111,6 +111,45 @@ class _PhysicsCmds:
 
 
 class PhysicsAuthoredRouteTests(unittest.TestCase):
+    def test_joint_inventory_excludes_only_marked_secondary_controls(self):
+        cmds = mock.MagicMock()
+        cmds.ls.return_value = ["bone", "secondary", "unmarked"]
+        cmds.listRelatives.return_value = ["bone", "secondary", "unmarked"]
+        cmds.nodeType.return_value = "transform"
+        cmds.attributeQuery.side_effect = lambda _attr, node, **_kwargs: node == "secondary"
+        cmds.getAttr.return_value = True
+        with mock.patch.object(collector_module, "cmds", cmds):
+            for root in (None, "model"):
+                self.assertEqual(VmdSceneCollector()._find_joints(root), ["bone", "unmarked"])
+
+    def test_validated_proxy_preserves_secondary_controller_source(self):
+        channels = collector_module._PHYSICS_PRE_INPUT_ATTRS
+        current = {channel: ("|secondary", channel) for channel in channels}
+        proxy = {channel: ("|proxy", channel) for channel in channels}
+        authority = {channel: ("|driver", attr) for channel, attr in channels.items()}
+        routes = {"|model|bone": dict(current)}
+        with mock.patch.object(collector_module, "cmds", _PhysicsCmds()), mock.patch.object(
+            collector_module, "resolve_redirected_authoring_proxy_authority",
+            return_value=(proxy, authority, True),
+        ), mock.patch.object(
+            collector_module, "secondary_control_input_route",
+            side_effect=lambda _driver, _joint, channel, **_kwargs: current[channel],
+        ):
+            VmdSceneCollector()._merge_redirected_authoring_proxy_routes(["|model|bone"], routes)
+        self.assertEqual(routes["|model|bone"], current)
+
+    def test_secondary_controller_is_sampled_for_keys_and_values_in_both_modes(self):
+        for strict in (False, True):
+            with self.subTest(strict=strict), mock.patch.object(
+                collector_module, "secondary_control_input_route",
+                side_effect=lambda _driver, _joint, channel, **_kwargs: ("|secondary", channel),
+            ):
+                _collector, routes = self._collect_routes(_PhysicsCmds(), strict_bake_timeline=strict)
+                self.assertEqual(
+                    routes["|model|bone"],
+                    {channel: ("|secondary", channel) for channel in collector_module._PHYSICS_PRE_INPUT_ATTRS},
+                )
+
     def _collect_routes(
         self,
         cmds,
