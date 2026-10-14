@@ -100,12 +100,12 @@ class ControlRigManagerWindow(QWidget):
         secondary_layout.addWidget(self.secondary_status)
         self.secondary_buttons = {}
         secondary_actions = QGridLayout()
-        for index, action in enumerate(("build", "remove")):
+        for index, action in enumerate(("build", "remove", "bake")):
             button = QPushButton()
             button.setObjectName(f"SecondaryBoneAction_{action}")
             button.clicked.connect(lambda _checked=False, key=action: self.perform_secondary_action(key))
             self.secondary_buttons[action] = button
-            secondary_actions.addWidget(button, index // 2, index % 2)
+            secondary_actions.addWidget(button, 0, index)
         secondary_layout.addLayout(secondary_actions)
         self.secondary_visibility_label = QLabel()
         secondary_layout.addWidget(self.secondary_visibility_label)
@@ -375,6 +375,7 @@ class ControlRigManagerWindow(QWidget):
         exists = bool(state["exists"])
         self.secondary_buttons["build"].setEnabled(bool(root) and not exists)
         self.secondary_buttons["remove"].setEnabled(exists)
+        self.secondary_buttons["bake"].setEnabled(exists and bool(state["physics_enabled"]))
         status = "secondary_absent" if not exists else (
             "secondary_physics_on" if state["physics_enabled"] else "secondary_physics_off"
         )
@@ -432,6 +433,10 @@ class ControlRigManagerWindow(QWidget):
                 secondary_bone_controls.build(root, cmds_module=cmds)
             elif action == "remove":
                 secondary_bone_controls.remove(root, cmds_module=cmds)
+            elif action == "bake":
+                start = cmds.playbackOptions(query=True, minTime=True)
+                end = cmds.playbackOptions(query=True, maxTime=True)
+                secondary_bone_controls.bake(root, start, end, cmds_module=cmds)
             else:
                 raise ValueError(f"unknown secondary controller action: {action}")
             self._set_status("status_transition")

@@ -19,6 +19,8 @@
     "secondary_status_tooltip": "With physics OFF, edit and key the channels allowed by each bone. With physics ON, controls follow bones for display only. Authored keys are retained. This does not add simulated sway to manual animation.",
     "secondary_visibility_tooltip": "Toggle controller visibility by collision group. The number is the controller count. Hiding controls does not stop physics or animation.",
     "secondary_label_tooltip": "A label for this visibility list, saved in the scene. Renaming it does not change node names or PMX collision settings.",
+    "secondary_bake": "Bake",
+    "secondary_bake_tooltip": "Bake simulated motion over the current playback range to controller keys. This turns OFF the shared physics world, stopping simulation for other models in that world too. Available when physics is ON.",
     "secondary_title": "Create Controllers from Physics",
     "secondary_build": "Create",
     "secondary_remove": "Delete",

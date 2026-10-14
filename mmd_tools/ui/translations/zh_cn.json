@@ -19,6 +19,8 @@
     "secondary_status_tooltip": "关闭物理时，可按骨骼设置编辑位移、旋转和关键帧。开启物理时仅跟随显示，无法操作。保留手动关键帧，但不会在手动动画上叠加物理摇摆。",
     "secondary_visibility_tooltip": "按碰撞组切换控制器显示。数字是控制器数量。隐藏不会停止物理或动画。",
     "secondary_label_tooltip": "显示列表中的名称，保存在场景中。修改名称不会改变节点名称或PMX碰撞设置。",
+    "secondary_bake": "烘焙",
+    "secondary_bake_tooltip": "将当前播放范围内的物理运动烘焙为控制器关键帧。完成后关闭共享物理世界，同一世界中的其他模型也会停止模拟。仅在物理开启时可用。",
     "secondary_title": "从物理创建控制器",
     "secondary_build": "创建",
     "secondary_remove": "删除",
