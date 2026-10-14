@@ -339,22 +339,25 @@ def set_bone_keyframes(
             f"reason={route.get('block_reason') or 'authored_route_unresolved'}"
         )
     states = []
+    unlock_channels = set(route.get("secondary_control_channels", ()))
     if route.get("fixed_axis_twist"):
-        attr_targets = route.get("attr_targets", {})
-        for attr in ("rotateX", "rotateY"):
-            target_node, target_attr = attr_targets.get(attr, (joint, attr))
-            plug = f"{target_node}.{target_attr}"
-            if not cmds.objExists(plug) or not bool(cmds.getAttr(plug, lock=True)):
-                continue
-            states.append(
-                (
-                    plug,
-                    bool(cmds.getAttr(plug, keyable=True)),
-                    bool(cmds.getAttr(plug, channelBox=True)),
-                )
-            )
-            cmds.setAttr(plug, lock=False)
+        unlock_channels.update(("rotateX", "rotateY"))
     try:
+        if unlock_channels:
+            attr_targets = route.get("attr_targets", {})
+            for attr in sorted(unlock_channels):
+                target_node, target_attr = attr_targets.get(attr, (joint, attr))
+                plug = f"{target_node}.{target_attr}"
+                if not cmds.objExists(plug) or not bool(cmds.getAttr(plug, lock=True)):
+                    continue
+                states.append(
+                    (
+                        plug,
+                        bool(cmds.getAttr(plug, keyable=True)),
+                        bool(cmds.getAttr(plug, channelBox=True)),
+                    )
+                )
+                cmds.setAttr(plug, lock=False)
         _set_bone_keyframes_impl(context, joint, frames, vmd_bone_name, route)
     finally:
         for plug, keyable, channel_box in states:

@@ -32,6 +32,52 @@ class TestVmdBoneAnimation(MayaTestBase):
         super().setUp()
         self.converter = VmdConverter()
 
+    def test_secondary_unlock_preparation_failure_restores_prior_locks(self):
+        from mmd_tools.converters.vmd_bone_animation import set_bone_keyframes
+
+        control = cmds.createNode("transform", name="secondary_unlock_failure")
+        channels = ("rotateX", "rotateY")
+        for channel in channels:
+            cmds.setAttr(f"{control}.{channel}", lock=True, keyable=False)
+        get_attr = cmds.getAttr
+
+        def fail_second_lock(plug, **kwargs):
+            if plug == f"{control}.rotateY" and kwargs.get("lock"):
+                raise RuntimeError("injected lock query failure")
+            return get_attr(plug, **kwargs)
+
+        with patch.object(cmds, "getAttr", side_effect=fail_second_lock):
+            with self.assertRaisesRegex(RuntimeError, "injected lock query failure"):
+                set_bone_keyframes(
+                    self.converter._bone_animation_context(), control, [], "bone",
+                    {"attr_targets": {channel: (control, channel) for channel in channels},
+                     "secondary_control_channels": channels},
+                )
+        for channel in channels:
+            self.assertTrue(cmds.getAttr(f"{control}.{channel}", lock=True))
+            self.assertFalse(cmds.getAttr(f"{control}.{channel}", keyable=True))
+
+    def test_secondary_locked_channels_import_and_restore_locks(self):
+        from mmd_tools.converters.vmd_bone_animation import set_bone_keyframes
+
+        joint = cmds.joint(name="secondary_source")
+        control = cmds.createNode("transform", name="secondary_control")
+        channels = tuple(f"{family}{axis}" for family in ("translate", "rotate") for axis in "XYZ")
+        for channel in channels:
+            cmds.setAttr(f"{control}.{channel}", lock=True, keyable=False)
+        self.converter._bone_bind_poses["bone"] = (2.0, 0.0, 0.0)
+        set_bone_keyframes(
+            self.converter._bone_animation_context(), joint,
+            [_bone_frame("bone", 10, (3.0, 0.0, 0.0))], "bone",
+            {"attr_targets": {channel: (control, channel) for channel in channels},
+             "secondary_control_channels": channels},
+        )
+        for channel in channels:
+            self.assertTrue(cmds.getAttr(f"{control}.{channel}", lock=True))
+            self.assertFalse(cmds.getAttr(f"{control}.{channel}", keyable=True))
+        cmds.currentTime(10, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{control}.translateX"), 5.0)
+
     def test_rotation_bind_terms_are_reused_only_within_keying_context(self):
         """A later keying batch must observe rebuilt bind maps, including JO/order."""
         joint = cmds.joint(name="cached_rotation_joint")
