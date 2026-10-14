@@ -175,3 +175,64 @@ def test_animator_cleanup_detaches_manager_callbacks_before_presenter_teardown()
     assert window._control_rig_manager is None
     assert window._control_rig_state_callback is None
     assert window._control_rig_manager_connected is False
+
+
+def test_secondary_bake_dispatch_uses_playback_range_and_current_frame():
+    manager = _manager()
+    manager._cmds.currentTime.return_value = 12
+    manager._cmds.playbackOptions.side_effect = [1, 48]
+    core = MagicMock()
+    with patch("mmd_tools.core.secondary_bone_controls", core):
+        manager.perform_secondary_action("bake_current")
+        core.bake.assert_called_once_with("|character|MMDModel", 12, 12, cmds_module=manager._cmds)
+        core.bake.reset_mock()
+        manager.perform_secondary_action("bake_range")
+        core.bake.assert_called_once_with("|character|MMDModel", 1, 48, cmds_module=manager._cmds)
+    manager._cmds.setAttr.assert_not_called()
+
+
+def test_secondary_status_is_query_only_and_reflects_physics_authority():
+    manager = _manager()
+    manager.isVisible = lambda: True
+    manager.secondary_buttons = {key: MagicMock() for key in ("build", "remove", "bake_current", "bake_range")}
+    manager.secondary_status = MagicMock()
+    manager._translator = MagicMock()
+    core = MagicMock()
+    core.inspect.return_value = {"exists": True, "physics_enabled": True, "groups": []}
+    with patch("mmd_tools.core.secondary_bone_controls", core):
+        manager._refresh_secondary_status()
+    manager._translator.translate.assert_called_once_with("secondary_physics_on", "control_rig_manager")
+    manager.secondary_buttons["build"].setEnabled.assert_called_once_with(False)
+    manager.secondary_buttons["bake_range"].setEnabled.assert_called_once_with(True)
+    core.inspect.return_value["physics_enabled"] = False
+    with patch("mmd_tools.core.secondary_bone_controls", core):
+        manager._refresh_secondary_status()
+    manager.secondary_buttons["bake_range"].setEnabled.assert_called_with(False)
+    core.build.assert_not_called()
+    core.bake.assert_not_called()
+    manager._cmds.setAttr.assert_not_called()
+
+
+def test_secondary_inspection_failure_disables_mutations():
+    manager = _manager()
+    manager.isVisible = lambda: True
+    manager.secondary_buttons = {key: MagicMock() for key in ("build", "remove", "bake_current", "bake_range")}
+    manager.secondary_status = MagicMock()
+    core = MagicMock()
+    core.inspect.side_effect = ValueError("Missing physics world")
+    with patch("mmd_tools.core.secondary_bone_controls", core):
+        manager._refresh_secondary_status()
+    for button in manager.secondary_buttons.values():
+        button.setEnabled.assert_called_once_with(False)
+    manager._set_status.assert_called_once()
+
+
+def test_secondary_group_label_and_visibility_do_not_edit_collision_settings():
+    manager = _manager()
+    core = MagicMock()
+    with patch("mmd_tools.core.secondary_bone_controls", core):
+        manager._edit_secondary_group("|character|MMDModel", 3, label="Hair")
+        manager._edit_secondary_group("|character|MMDModel", 3, visible=False)
+    core.rename_group.assert_called_once_with("|character|MMDModel", 3, "Hair", cmds_module=manager._cmds)
+    core.set_group_visibility.assert_called_once_with("|character|MMDModel", 3, False, cmds_module=manager._cmds)
+    manager._cmds.setAttr.assert_not_called()

@@ -28,6 +28,54 @@ def _bone_frame(bone_name, frame_number, position, rotation=(0.0, 0.0, 0.0, 1.0)
 class TestVmdMotionClear(MayaTestBase):
     """Existing VMD motion clearing tests."""
 
+    def test_secondary_clear_removes_keys_and_restores_omitted_track_pose(self):
+        self._secondary_clear_scenario()
+
+    def test_secondary_clear_removes_owned_layer_and_restores_omitted_track_pose(self):
+        self._secondary_clear_scenario(layered=True)
+
+    def _secondary_clear_scenario(self, layered=False):
+        root = cmds.group(empty=True, name="secondary_clear_root")
+        joint = cmds.createNode("joint", name="secondary_clear_joint", parent=root)
+        control = cmds.createNode("transform", name="secondary_clear_control", parent=root)
+        cmds.addAttr(control, longName="mmdSecondaryControl", attributeType="bool", defaultValue=True)
+        cmds.setAttr(f"{joint}.translateX", 2.0)
+        self.converter.bone_name_mapping = {"bone": joint}
+        record_bind_poses(self.converter._import_state_context())
+        layer = "missing_layer"
+        if layered:
+            cmds.setAttr(f"{control}.translateX", 2.0)
+            layer = cmds.animLayer("VMD_Motion_secondary")
+            cmds.animLayer(layer, edit=True, attribute=f"{control}.translateX")
+        key_args = {"animLayer": layer} if layered else {}
+        cmds.setKeyframe(control, attribute="translateX", time=4, value=8.0, **key_args)
+        cmds.connectAttr(f"{control}.translateX", f"{joint}.translateX")
+        cmds.currentTime(4, edit=True)
+        cmds.setAttr(f"{control}.translateX", lock=True)
+        routes = {joint: {
+            "attr_targets": {"translateX": (control, "translateX")},
+            "secondary_control_channels": ("translateX",),
+        }}
+        snapshot = self.converter._capture_mmd_control_rig_scene_snapshot(root, None, authored_routes=routes)
+        if not layered:
+            captured = [row for row in snapshot["channels"] if row["node"].endswith(control) and row["attribute"] == "translateX"]
+            self.assertTrue(captured, snapshot)
+            self.assertTrue(captured[0]["curve_payload"].get("keys"), captured)
+        clear_existing_motion(
+            self._import_state_context(), layer, target_model=root,
+            authored_routes=routes,
+        )
+        self.assertFalse(cmds.keyframe(control, attribute="translateX", query=True, timeChange=True))
+        self.assertTrue(cmds.isConnected(f"{control}.translateX", f"{joint}.translateX"))
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 2.0)
+        self.assertTrue(cmds.getAttr(f"{control}.translateX", lock=True))
+        if not layered:
+            self.assertIsNone(self.converter._restore_mmd_control_rig_scene_snapshot(snapshot))
+            self.assertTrue(cmds.getAttr(f"{control}.translateX", lock=True))
+            cmds.setAttr(f"{control}.translateX", lock=False)
+            self.assertEqual(cmds.keyframe(control, attribute="translateX", query=True, timeChange=True), [4.0])
+            self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 8.0)
+
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
@@ -774,7 +822,11 @@ class TestVmdMotionClear(MayaTestBase):
         cmds.parent(joint, target_model)
         cmds.addAttr(joint, longName=ATTR_MMD_BONE_NAME, dataType="string")
         cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
-        cmds.setKeyframe(joint, attribute="translateX", time=1, value=10.0)
+        control = cmds.createNode("transform", name="clear_existing_secondary_control", parent=target_model)
+        cmds.addAttr(control, longName="mmdSecondaryControl", attributeType="bool", defaultValue=True)
+        cmds.setKeyframe(control, attribute="translateX", time=1, value=10.0)
+        cmds.connectAttr(f"{control}.translateX", f"{joint}.translateX")
+        old_curve = cmds.listConnections(f"{control}.translateX", source=True, destination=False, type="animCurve")[0]
 
         vmd_data = type("VmdDataStub", (), {})()
         vmd_data.bone_frames = [_bone_frame("センター", 8, (2.0, 0.0, 0.0))]
@@ -790,6 +842,10 @@ class TestVmdMotionClear(MayaTestBase):
             self.converter,
             "_compiled_registered_sparse_frames",
             return_value=(tuple(vmd_data.bone_frames), {}),
+        ), patch.object(
+            self.converter, "_build_legacy_bone_key_routes",
+            return_value={cmds.ls(joint, long=True)[0]: {"attr_targets": {"translateX": (control, "translateX")},
+                                 "secondary_control_channels": ("translateX",)}},
         ):
             self.assertTrue(
                 self.converter.convert(
@@ -799,8 +855,9 @@ class TestVmdMotionClear(MayaTestBase):
                 )
             )
 
-        self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
-        self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
+        self.assertNotIn(1.0, cmds.keyframe(control, attribute="translateX", query=True, timeChange=True) or [])
+        self.assertIn(8.0, cmds.keyframe(control, attribute="translateX", query=True, timeChange=True) or [])
+        self.assertFalse(cmds.objExists(old_curve))
 
     def test_convert_clear_existing_motion_removes_tracks_omitted_by_next_vmd(self):
         """A two-import replacement must remove tracks absent from the second VMD."""

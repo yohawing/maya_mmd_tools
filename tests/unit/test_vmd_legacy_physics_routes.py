@@ -68,6 +68,21 @@ class _PhysicsRouteCmds:
 
 
 class LegacyPhysicsRouteTests(unittest.TestCase):
+    def test_secondary_controller_routes_preserve_absolute_authored_channels(self):
+        with mock.patch.object(
+            routes_module, "secondary_control_input_route",
+            side_effect=lambda _driver, _joint, channel, **_kwargs: ("|secondary", channel),
+        ):
+            route = self._build(_PhysicsRouteCmds())["|model|bone"]
+        self.assertEqual(
+            route["attr_targets"],
+            {channel: ("|secondary", channel) for channel in routes_module._PHYSICS_PRE_INPUT_ATTRS},
+        )
+        self.assertEqual(set(route["secondary_control_channels"]), set(routes_module._PHYSICS_PRE_INPUT_ATTRS))
+        self.assertFalse(route["control_owned"])
+        self.assertTrue(route["quaternion_interpolation_safe"])
+        self.assertEqual(route["control_owned_channels"], ())
+
     def _build(self, cmds, joints=None, *, append=None, ik=None, controls=None):
         joints = joints or {"bone": "|model|bone"}
         converter = mock.MagicMock()

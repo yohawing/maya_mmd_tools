@@ -151,6 +151,8 @@ def _indexed_joints(root_group: str) -> list[str]:
         joints.append(root_group)
     indexed: dict[int, str] = {}
     for joint in joints:
+        if _has_attr(joint, "mmdSecondaryControl") and cmds.getAttr(f"{joint}.mmdSecondaryControl"):
+            continue
         if not _has_attr(joint, ATTR_MMD_BONE_INDEX):
             raise ModelDagDescriptorError(f"{joint}: missing required attribute {ATTR_MMD_BONE_INDEX}")
         index = int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}"))
