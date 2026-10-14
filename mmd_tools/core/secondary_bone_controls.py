@@ -6,6 +6,8 @@ separate child of the result joint, so following simulation never feeds back.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import json
 import math
 
@@ -23,6 +25,17 @@ def _cmds(cmds_module):
         from maya import cmds
         return cmds
     return cmds_module
+
+
+@contextmanager
+def _without_undo(cmds):
+    """Temporarily suppress recording without clearing the existing undo queue."""
+    enabled = cmds.undoInfo(query=True, state=True)
+    cmds.undoInfo(stateWithoutFlush=False)
+    try:
+        yield
+    finally:
+        cmds.undoInfo(stateWithoutFlush=enabled)
 
 
 def _sources(cmds, plug):
@@ -477,22 +490,14 @@ def bake(root, start, end, cmds_module=None):
             if failed:
                 cmds.undo()
     except Exception:
-        undo_enabled = cmds.undoInfo(query=True, state=True)
-        cmds.undoInfo(stateWithoutFlush=False)
-        try:
+        with _without_undo(cmds):
             restoration_errors = _rollback_physics(data["world"], snapshot, all_solvers, cmds)
-        finally:
-            cmds.undoInfo(stateWithoutFlush=undo_enabled)
         if restoration_errors:
             _LOGGER.error("Secondary bake rollback: %s", "; ".join(restoration_errors))
         raise
     finally:
-        undo_enabled = cmds.undoInfo(query=True, state=True)
-        cmds.undoInfo(stateWithoutFlush=False)
-        try:
+        with _without_undo(cmds):
             restoration_errors = _restore_interaction(snapshot, cmds)
-        finally:
-            cmds.undoInfo(stateWithoutFlush=undo_enabled)
         if restoration_errors:
             _LOGGER.error("Secondary bake interaction restore: %s", "; ".join(restoration_errors))
     return inspect(root, cmds)

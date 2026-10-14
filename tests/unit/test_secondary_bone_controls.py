@@ -39,6 +39,24 @@ class SecondaryBoneControlsTests(unittest.TestCase):
                                                      unittest.mock.call("world.enable", False)])
         cmds.undoInfo.assert_any_call(closeChunk=True)
 
+    def test_without_undo_restores_state_even_after_failure(self):
+        for enabled in (True, False):
+            for fail in (True, False):
+                with self.subTest(enabled=enabled, fail=fail):
+                    cmds = Mock()
+                    cmds.undoInfo.return_value = enabled
+                    raised = False
+                    try:
+                        with controls._without_undo(cmds):
+                            cmds.undoInfo.assert_called_with(stateWithoutFlush=False)
+                            if fail:
+                                raise ValueError("restore failed")
+                    except ValueError:
+                        raised = True
+                    self.assertEqual(raised, fail)
+                    cmds.undoInfo.assert_called_with(stateWithoutFlush=enabled)
+                    self.assertEqual(cmds.undoInfo.call_count, 3)
+
     def test_circle_uses_radius_not_capsule_length(self):
         sphere = controls.curve_points(0, (2, 8, 9))
         capsule = controls.curve_points(2, (2, 80, 9))
