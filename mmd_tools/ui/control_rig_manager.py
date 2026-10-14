@@ -100,13 +100,15 @@ class ControlRigManagerWindow(QWidget):
         secondary_layout.addWidget(self.secondary_status)
         self.secondary_buttons = {}
         secondary_actions = QGridLayout()
-        for index, action in enumerate(("build", "remove", "bake_current", "bake_range")):
+        for index, action in enumerate(("build", "remove")):
             button = QPushButton()
             button.setObjectName(f"SecondaryBoneAction_{action}")
             button.clicked.connect(lambda _checked=False, key=action: self.perform_secondary_action(key))
             self.secondary_buttons[action] = button
             secondary_actions.addWidget(button, index // 2, index % 2)
         secondary_layout.addLayout(secondary_actions)
+        self.secondary_visibility_label = QLabel()
+        secondary_layout.addWidget(self.secondary_visibility_label)
         groups_widget = QWidget()
         self.secondary_groups_layout = QVBoxLayout(groups_widget)
         groups_scroll = QScrollArea()
@@ -199,10 +201,13 @@ class ControlRigManagerWindow(QWidget):
         self.refresh_btn.setText(tr("refresh"))
         self.message_label.setText("")
         self.secondary_group.setTitle(tr("secondary_title"))
+        self.secondary_visibility_label.setText(tr("secondary_visibility"))
+        self.secondary_group.setToolTip(tr("secondary_title_tooltip"))
+        self.secondary_status.setToolTip(tr("secondary_status_tooltip"))
+        self.secondary_visibility_label.setToolTip(tr("secondary_visibility_tooltip"))
         for action, button in self.secondary_buttons.items():
             button.setText(tr(f"secondary_{action}"))
-            if action.startswith("bake_"):
-                button.setToolTip(tr("secondary_bake_tooltip"))
+            button.setToolTip(tr(f"secondary_{action}_tooltip"))
         for action, _translation_key in self._ACTION_LABELS:
             button = self.action_buttons[action]
             button.setText(tr(f"{action}"))
@@ -370,8 +375,6 @@ class ControlRigManagerWindow(QWidget):
         exists = bool(state["exists"])
         self.secondary_buttons["build"].setEnabled(bool(root) and not exists)
         self.secondary_buttons["remove"].setEnabled(exists)
-        for action in ("bake_current", "bake_range"):
-            self.secondary_buttons[action].setEnabled(exists and bool(state["physics_enabled"]))
         status = "secondary_absent" if not exists else (
             "secondary_physics_on" if state["physics_enabled"] else "secondary_physics_off"
         )
@@ -390,6 +393,8 @@ class ControlRigManagerWindow(QWidget):
                 visibility = QCheckBox(str(group["count"]))
                 visibility.setChecked(group["visible"])
                 label = QLineEdit(group["label"])
+                visibility.setToolTip(self._translator.translate("secondary_visibility_tooltip", "control_rig_manager"))
+                label.setToolTip(self._translator.translate("secondary_label_tooltip", "control_rig_manager"))
                 group_id = group["id"]
                 visibility.toggled.connect(
                     lambda visible, key=group_id, owner=root: self._edit_secondary_group(owner, key, visible=visible)
@@ -427,13 +432,6 @@ class ControlRigManagerWindow(QWidget):
                 secondary_bone_controls.build(root, cmds_module=cmds)
             elif action == "remove":
                 secondary_bone_controls.remove(root, cmds_module=cmds)
-            elif action in ("bake_current", "bake_range"):
-                if action == "bake_current":
-                    start = end = cmds.currentTime(query=True)
-                else:
-                    start = cmds.playbackOptions(query=True, minTime=True)
-                    end = cmds.playbackOptions(query=True, maxTime=True)
-                secondary_bone_controls.bake(root, start, end, cmds_module=cmds)
             else:
                 raise ValueError(f"unknown secondary controller action: {action}")
             self._set_status("status_transition")
