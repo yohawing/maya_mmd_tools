@@ -8,6 +8,18 @@ from mmd_tools.core import secondary_bone_controls as controls
 
 
 class SecondaryBoneControlsTests(unittest.TestCase):
+    def test_build_without_control_rig_rejects_before_scene_edits(self):
+        cmds = Mock()
+        cmds.ls.return_value = ["|model"]
+        with patch.object(controls, "_read", return_value=None), patch(
+            "mmd_tools.core.mmd_control_rig_builder.inspect_mmd_control_rig", return_value=None
+        ), patch.object(controls, "_plan") as plan:
+            with self.assertRaisesRegex(ValueError, "Set up the Control Rig"):
+                controls.build("|model", cmds)
+        plan.assert_not_called()
+        cmds.createNode.assert_not_called()
+        cmds.undoInfo.assert_not_called()
+
     def test_circle_uses_radius_not_capsule_length(self):
         sphere = controls.curve_points(0, (2, 8, 9))
         capsule = controls.curve_points(2, (2, 80, 9))

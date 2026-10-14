@@ -373,10 +373,10 @@ class ControlRigManagerWindow(QWidget):
                 button.setEnabled(False)
             return
         exists = bool(state["exists"])
-        self.secondary_buttons["build"].setEnabled(bool(root) and not exists)
+        self.secondary_buttons["build"].setEnabled(bool(root) and not exists and bool(state.get("can_build")))
         self.secondary_buttons["remove"].setEnabled(exists)
         self.secondary_buttons["bake"].setEnabled(exists and bool(state["physics_enabled"]))
-        status = "secondary_absent" if not exists else (
+        status = ("secondary_absent" if state.get("can_build") else "secondary_requires_rig") if not exists else (
             "secondary_physics_on" if state["physics_enabled"] else "secondary_physics_off"
         )
         self.secondary_status.setText(self._translator.translate(status, "control_rig_manager"))

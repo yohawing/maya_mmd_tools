@@ -21,9 +21,11 @@ def _supplemental_shapes(model, controls, cmds, check):
     import math
     from maya.api import OpenMaya as om
     from mmd_tools.io.mmd_importer import import_mmd_file
+    from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
 
     cmds.file(new=True, force=True)
-    root = import_mmd_file(model, options={"import_physics": True, "create_mmd_shaders": False, "setup_rig": False})
+    root = import_mmd_file(model, options={"import_physics": True, "create_mmd_shaders": False, "setup_rig": True})
+    build_mmd_control_rig(root)
     initial = controls.build(root)
     collider = initial["controls"][0]["collider"]
     controls.remove(root)
@@ -79,10 +81,21 @@ def _checks(config_path):
         cmds.loadPlugin(str(ROOT / "mmd_tools/plugin_main.py"), quiet=True)
         root = import_mmd_file(config["model"], options={
             "import_physics": True, "create_mmd_shaders": False,
-            "setup_rig": False, "create_mmd_control_rig": False,
+            "setup_rig": True, "create_mmd_control_rig": False,
         })
         check("import", bool(root), root)
         yield
+        before_nodes = set(cmds.ls(long=True))
+        try:
+            controls.build(root)
+        except ValueError as exc:
+            check("requires_base_rig", "Control Rig" in str(exc), str(exc))
+        else:
+            check("requires_base_rig", False)
+        check("rejected_build_preserves_scene", set(cmds.ls(long=True)) == before_nodes)
+        from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
+        base = build_mmd_control_rig(root)
+        check("base_rig_created", bool(base.controls))
         from mmd_tools.core.physics_preroll import run_physics_preroll
         solvers = cmds.ls(type="mmdPhysicsSolver") or []
         initial_world = cmds.ls(type="mmdPhysicsWorldShape", long=True)[0]
@@ -250,7 +263,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--maya", default="2024")
     parser.add_argument("--port", type=int, default=7742)
-    parser.add_argument("--model", default=str(ROOT / "tests/data/physics/test_hair_physics.pmx"))
+    parser.add_argument("--model", default=str(ROOT / "tests/data/yw_test_model.pmx"))
     parser.add_argument("--out", default=str(ROOT / "build/reports/secondary-controls"))
     parser.add_argument("--timeout", type=float, default=600)
     args = parser.parse_args()

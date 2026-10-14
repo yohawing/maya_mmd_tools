@@ -85,7 +85,9 @@ def inspect(root, cmds_module=None):
     cmds = _cmds(cmds_module)
     data = _read(cmds, root)
     if not data:
-        return {"exists": False, "physics_enabled": False, "groups": [], "controls": []}
+        from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig
+        ready = inspect_mmd_control_rig(root, cmds_module=cmds) is not None
+        return {"exists": False, "can_build": ready, "physics_enabled": False, "groups": [], "controls": []}
     result = dict(data, exists=True, physics_enabled=bool(cmds.getAttr(f"{data['world']}.enable")))
     result["groups"] = [dict(group, visible=bool(cmds.getAttr(f"{group['node']}.visibility"))) for group in data["groups"]]
     return result
@@ -206,6 +208,9 @@ def build(root, cmds_module=None):
     root = matches[0]
     if _read(cmds, root):
         raise ValueError("Secondary controls already exist")
+    from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig
+    if inspect_mmd_control_rig(root, cmds_module=cmds) is None:
+        raise ValueError("Set up the Control Rig before creating physics controllers")
     rows, world = _plan(cmds, root)
     # Geometry is evaluated before any input connection is changed.
     points = [_shape_points(cmds, row) for row in rows]

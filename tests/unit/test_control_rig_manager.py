@@ -185,14 +185,14 @@ def test_secondary_status_is_query_only_and_reflects_physics_authority():
     manager._translator = MagicMock()
     core = MagicMock()
     core.inspect.return_value = {"exists": True, "physics_enabled": True, "groups": []}
-    with patch("mmd_tools.core.secondary_bone_controls", core):
+    with patch("mmd_tools.core.secondary_bone_controls", core, create=True):
         manager._refresh_secondary_status()
     manager._translator.translate.assert_called_once_with("secondary_physics_on", "control_rig_manager")
     manager.secondary_buttons["build"].setEnabled.assert_called_once_with(False)
     manager.secondary_buttons["remove"].setEnabled.assert_called_once_with(True)
     manager.secondary_buttons["bake"].setEnabled.assert_called_once_with(True)
     core.inspect.return_value["physics_enabled"] = False
-    with patch("mmd_tools.core.secondary_bone_controls", core):
+    with patch("mmd_tools.core.secondary_bone_controls", core, create=True):
         manager._refresh_secondary_status()
     manager.secondary_buttons["remove"].setEnabled.assert_called_with(True)
     manager.secondary_buttons["bake"].setEnabled.assert_called_with(False)
@@ -208,7 +208,7 @@ def test_secondary_inspection_failure_disables_mutations():
     manager.secondary_status = MagicMock()
     core = MagicMock()
     core.inspect.side_effect = ValueError("Missing physics world")
-    with patch("mmd_tools.core.secondary_bone_controls", core):
+    with patch("mmd_tools.core.secondary_bone_controls", core, create=True):
         manager._refresh_secondary_status()
     for button in manager.secondary_buttons.values():
         button.setEnabled.assert_called_once_with(False)
@@ -218,7 +218,7 @@ def test_secondary_inspection_failure_disables_mutations():
 def test_secondary_group_label_and_visibility_do_not_edit_collision_settings():
     manager = _manager()
     core = MagicMock()
-    with patch("mmd_tools.core.secondary_bone_controls", core):
+    with patch("mmd_tools.core.secondary_bone_controls", core, create=True):
         manager._edit_secondary_group("|character|MMDModel", 3, label="Hair")
         manager._edit_secondary_group("|character|MMDModel", 3, visible=False)
     core.rename_group.assert_called_once_with("|character|MMDModel", 3, "Hair", cmds_module=manager._cmds)
@@ -234,3 +234,19 @@ def test_secondary_bake_uses_current_playback_range():
         manager.perform_secondary_action("bake")
     core.bake.assert_called_once_with("|character|MMDModel", 12, 48, cmds_module=manager._cmds)
     manager._cmds.currentTime.assert_not_called()
+
+
+def test_secondary_creation_requires_control_rig_base():
+    manager = _manager()
+    manager.isVisible = lambda: True
+    manager.secondary_buttons = {key: MagicMock() for key in ("build", "remove", "bake")}
+    manager.secondary_status = MagicMock()
+    manager._translator = MagicMock()
+    core = MagicMock()
+    core.inspect.return_value = {"exists": False, "can_build": False, "physics_enabled": False, "groups": []}
+    with patch("mmd_tools.core.secondary_bone_controls", core, create=True):
+        manager._refresh_secondary_status()
+        manager.secondary_buttons["build"].setEnabled.assert_called_with(False)
+        core.inspect.return_value["can_build"] = True
+        manager._refresh_secondary_status()
+        manager.secondary_buttons["build"].setEnabled.assert_called_with(True)

@@ -24,9 +24,9 @@ class SecondaryControlsVmdTests(MayaTestBase):
         cls.load_plugin(str(plugin))
 
     def test_build_import_remove_preserves_owned_proxy_and_layered_pose(self):
-        fixture = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
+        fixture = Path(__file__).resolve().parents[1] / "data" / "yw_test_model.pmx"
         root = import_mmd_file(str(fixture), options={
-            "import_physics": True, "create_mmd_shaders": False, "setup_rig": False,
+            "import_physics": True, "create_mmd_shaders": False, "setup_rig": True,
         })
         rows, world = controls._plan(cmds, root)
         cmds.setAttr(f"{world}.enable", False)
@@ -49,6 +49,8 @@ class SecondaryControlsVmdTests(MayaTestBase):
                 values.append(tuple(cmds.getAttr(controls._pre(driver, channel)) for channel in controls._CHANNELS))
             return values
 
+        from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
+        build_mmd_control_rig(root)
         expected = sample()
         state = controls.build(root)
         built = next(item for item in state["controls"] if item["joint"] == joint)
