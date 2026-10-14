@@ -20,6 +20,25 @@ class SecondaryBoneControlsTests(unittest.TestCase):
         cmds.createNode.assert_not_called()
         cmds.undoInfo.assert_not_called()
 
+    def test_physics_toggle_updates_existing_world(self):
+        cmds = Mock()
+        with patch.object(controls, "inspect", return_value={"world": "world"}):
+            controls.set_physics_enabled("root", False, cmds)
+        cmds.setAttr.assert_called_once_with("world.enable", False)
+        cmds.undoInfo.assert_any_call(closeChunk=True)
+
+    def test_physics_toggle_restores_previous_state_when_solver_fails(self):
+        cmds = Mock()
+        cmds.getAttr.side_effect = lambda plug: plug == "solver.enable"
+        with patch.object(controls, "inspect", return_value={"world": "world"}), patch(
+            "mmd_tools.core.physics_preroll._world_solvers", return_value=["solver"]
+        ):
+            with self.assertRaisesRegex(ValueError, "Physics did not solve"):
+                controls.set_physics_enabled("root", True, cmds)
+        self.assertEqual(cmds.setAttr.call_args_list, [unittest.mock.call("world.enable", True),
+                                                     unittest.mock.call("world.enable", False)])
+        cmds.undoInfo.assert_any_call(closeChunk=True)
+
     def test_circle_uses_radius_not_capsule_length(self):
         sphere = controls.curve_points(0, (2, 8, 9))
         capsule = controls.curve_points(2, (2, 80, 9))

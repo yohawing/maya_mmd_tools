@@ -80,6 +80,42 @@ def _write(cmds, root, data):
     cmds.setAttr(f"{root}.{_ATTR}", json.dumps(saved), type="string")
 
 
+def _physics_world(cmds, root):
+    from mmd_tools.core.model_registry import list_model_registry_members, REGISTRY_CATEGORY_PHYSICS
+    members = list_model_registry_members(root, REGISTRY_CATEGORY_PHYSICS)
+    solvers = (cmds.listConnections(f"{root}.message", source=False, destination=True,
+                                   type="mmdPhysicsSolver") or []) if members is None else [
+        node for node in members if cmds.nodeType(node) == "mmdPhysicsSolver"]
+    worlds = {world for solver in solvers for world in (
+        cmds.listConnections(f"{solver}.inWorldSettings", source=True, destination=False, shapes=True) or [])}
+    if len(worlds) > 1:
+        raise ValueError("Model uses multiple physics worlds")
+    return next(iter(worlds), None)
+
+
+def set_physics_enabled(root, enabled, cmds_module=None):
+    """Toggle the existing shared world; roll back if simulation cannot solve."""
+    cmds = _cmds(cmds_module)
+    state = inspect(root, cmds)
+    world = state.get("world")
+    if not world:
+        raise ValueError("No physics world for the selected model")
+    from mmd_tools.core.physics_preroll import _world_solvers
+    previous = bool(cmds.getAttr(f"{world}.enable"))
+    cmds.undoInfo(openChunk=True, chunkName="MMD Physics Enable")
+    try:
+        cmds.setAttr(f"{world}.enable", bool(enabled))
+        if enabled:
+            for solver in _world_solvers(world, cmds):
+                if cmds.getAttr(f"{solver}.enable") and not cmds.getAttr(f"{solver}.outSolved"):
+                    raise ValueError(f"Physics did not solve: {solver}")
+    except Exception:
+        cmds.setAttr(f"{world}.enable", previous)
+        raise
+    finally:
+        cmds.undoInfo(closeChunk=True)
+
+
 def inspect(root, cmds_module=None):
     """Return saved controls and current display/physics state for the UI."""
     cmds = _cmds(cmds_module)
@@ -87,7 +123,10 @@ def inspect(root, cmds_module=None):
     if not data:
         from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig
         ready = inspect_mmd_control_rig(root, cmds_module=cmds) is not None
-        return {"exists": False, "can_build": ready, "physics_enabled": False, "groups": [], "controls": []}
+        world = _physics_world(cmds, root)
+        return {"exists": False, "can_build": ready, "world": world,
+                "physics_enabled": bool(cmds.getAttr(f"{world}.enable")) if world else False,
+                "groups": [], "controls": []}
     result = dict(data, exists=True, physics_enabled=bool(cmds.getAttr(f"{data['world']}.enable")))
     result["groups"] = [dict(group, visible=bool(cmds.getAttr(f"{group['node']}.visibility"))) for group in data["groups"]]
     return result

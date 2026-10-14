@@ -96,7 +96,8 @@ class ControlRigManagerWindow(QWidget):
 
         self.secondary_group = QGroupBox()
         secondary_layout = QVBoxLayout(self.secondary_group)
-        self.secondary_status = QLabel()
+        self.secondary_status = QCheckBox()
+        self.secondary_status.toggled.connect(self._toggle_secondary_physics)
         secondary_layout.addWidget(self.secondary_status)
         self.secondary_buttons = {}
         secondary_actions = QGridLayout()
@@ -203,6 +204,7 @@ class ControlRigManagerWindow(QWidget):
         self.secondary_group.setTitle(tr("secondary_title"))
         self.secondary_visibility_label.setText(tr("secondary_visibility"))
         self.secondary_group.setToolTip(tr("secondary_title_tooltip"))
+        self.secondary_status.setText(tr("secondary_enable_physics"))
         self.secondary_status.setToolTip(tr("secondary_status_tooltip"))
         self.secondary_visibility_label.setToolTip(tr("secondary_visibility_tooltip"))
         for action, button in self.secondary_buttons.items():
@@ -368,7 +370,7 @@ class ControlRigManagerWindow(QWidget):
                 state = secondary_bone_controls.inspect(root, cmds_module=self._maya_cmds())
         except Exception as exc:
             self._set_status("status_error", error=exc)
-            self.secondary_status.setText(str(exc))
+            self.secondary_status.setEnabled(False)
             for button in self.secondary_buttons.values():
                 button.setEnabled(False)
             return
@@ -376,10 +378,12 @@ class ControlRigManagerWindow(QWidget):
         self.secondary_buttons["build"].setEnabled(bool(root) and not exists and bool(state.get("can_build")))
         self.secondary_buttons["remove"].setEnabled(exists)
         self.secondary_buttons["bake"].setEnabled(exists and bool(state["physics_enabled"]))
-        status = ("secondary_absent" if state.get("can_build") else "secondary_requires_rig") if not exists else (
-            "secondary_physics_on" if state["physics_enabled"] else "secondary_physics_off"
-        )
-        self.secondary_status.setText(self._translator.translate(status, "control_rig_manager"))
+        blocked = self.secondary_status.blockSignals(True)
+        try:
+            self.secondary_status.setChecked(bool(state["physics_enabled"]))
+            self.secondary_status.setEnabled(bool(state.get("world")))
+        finally:
+            self.secondary_status.blockSignals(blocked)
         group_state = tuple((group["id"], group["label"], group["visible"], group["count"]) for group in state["groups"])
         if rebuild_groups or group_state != getattr(self, "_secondary_group_state", ()):
             self._secondary_group_state = group_state
@@ -406,6 +410,19 @@ class ControlRigManagerWindow(QWidget):
                 row_layout.addWidget(visibility)
                 row_layout.addWidget(label)
                 self.secondary_groups_layout.addWidget(row)
+
+    def _toggle_secondary_physics(self, enabled):
+        root = self.selected_model_root()
+        if not root:
+            return
+        try:
+            from ..core import secondary_bone_controls
+            secondary_bone_controls.set_physics_enabled(root, enabled, cmds_module=self._maya_cmds())
+        except Exception as exc:
+            logger.error("Physics toggle failed", exc_info=True)
+            self._set_status("status_error", error=exc)
+        finally:
+            self._refresh_secondary_status()
 
     def _edit_secondary_group(self, root, group_id, *, visible=None, label=None) -> None:
         """Edit only the controller group's presentation metadata."""
