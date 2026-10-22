@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - Unreleased
+
+### Added
+- Added physics bone controllers to Control Rig Manager for posing and animating secondary bones. Creating these controllers requires an existing Control Rig.
+- Preserved physics controller animation routes during VMD import, motion clearing, and VMD export.
+
+### Changed
+- Simplified physics controller actions and added explanatory tooltips.
+- Added an Enable Physics checkbox and restored physics baking for the current playback range.
+
 ## [0.8.1] - 2026-09-27
 
 ### Changed
