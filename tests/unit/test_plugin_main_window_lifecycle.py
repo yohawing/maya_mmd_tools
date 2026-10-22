@@ -653,7 +653,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         plugin._secondary_history_callback_ids = []
         plugin.om = types.SimpleNamespace(
             MEventMessage=types.SimpleNamespace(addEventCallback=MagicMock(side_effect=[11, 12])),
-            MSceneMessage=types.SimpleNamespace(kAfterSceneRead=99, addCallback=MagicMock(return_value=13)),
+            MSceneMessage=types.SimpleNamespace(kAfterSceneReadAndRecordEdits=99, addCallback=MagicMock(return_value=13)),
             MMessage=types.SimpleNamespace(removeCallback=MagicMock()),
         )
         plugin._sync_secondary_control_callbacks = MagicMock()

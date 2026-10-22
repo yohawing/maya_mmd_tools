@@ -599,7 +599,7 @@ def _register_secondary_history_callbacks():
             om.MEventMessage.addEventCallback(event, _secondary_controls_after_history)
         )
     _secondary_history_callback_ids.append(
-        om.MSceneMessage.addCallback(om.MSceneMessage.kAfterSceneRead, _secondary_controls_after_history)
+        om.MSceneMessage.addCallback(om.MSceneMessage.kAfterSceneReadAndRecordEdits, _secondary_controls_after_history)
     )
 
 
