@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.9.0] - Unreleased
+## [0.8.3] - Unreleased
 
 ### Added
 - Added physics bone controllers to Control Rig Manager for posing and animating secondary bones. Creating these controllers requires an existing Control Rig.
