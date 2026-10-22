@@ -39,6 +39,18 @@ class TestModelDagDescriptor(MayaTestBase):
         super().setUp()
         cmds.file(new=True, force=True)
 
+    def test_owned_secondary_control_is_not_a_model_bone(self):
+        from mmd_tools.core.model_dag_descriptor import _indexed_joints
+        root = cmds.createNode("transform", name="root")
+        bone = cmds.createNode("joint", name="bone", parent=root)
+        cmds.addAttr(bone, longName=ATTR_MMD_BONE_INDEX, attributeType="long", defaultValue=0)
+        control = cmds.createNode("joint", name="secondary_CTRL", parent=root)
+        cmds.addAttr(control, longName="mmdSecondaryControl", attributeType="bool", defaultValue=True)
+        self.assertEqual(_indexed_joints(root), cmds.ls(bone, long=True))
+        cmds.setAttr(f"{control}.mmdSecondaryControl", False)
+        with self.assertRaises(ModelDagDescriptorError):
+            _indexed_joints(root)
+
     def _scene(self):
         root = cmds.group(empty=True, name="model_root")
         joints = []

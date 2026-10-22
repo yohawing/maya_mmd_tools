@@ -45,6 +45,7 @@ from mmd_tools.core.mmd_control_rig_motion import (
     resolve_control_rig_direct_vmd_export_routes,
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
+from mmd_tools.core.secondary_bone_controls import secondary_control_input_route
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from mmd_tools.converters.vmd_camera_animation import (
@@ -3680,6 +3681,19 @@ class VmdSceneCollector:
                 channel: routes.get(route_key, {}).get(channel, (joint, channel))
                 for channel in authority
             }
+            # A secondary controller can be inserted upstream of a validated
+            # VMD proxy without changing that proxy's driver ownership.
+            secondary = {
+                channel: secondary_control_input_route(
+                    target[0], joint, channel, cmds_module=cmds
+                ) if target[1] == _PHYSICS_PRE_INPUT_ATTRS.get(channel) else None
+                for channel, target in authority.items()
+            }
+            if proxy_route and all(
+                secondary[channel] == current[channel] and secondary[channel]
+                for channel in authority
+            ):
+                continue
             if not proxy_route or not redirected_authority_matches(current, authority):
                 raise ValueError(
                     "VMD collection blocked by stale redirected authoring proxy "
@@ -3838,6 +3852,12 @@ class VmdSceneCollector:
                 for logical_attr, pre_attr in _PHYSICS_PRE_INPUT_ATTRS.items():
                     if logical_attr in completed_route:
                         continue
+                    secondary_source = secondary_control_input_route(
+                        driver, target_path, logical_attr, cmds_module=cmds
+                    )
+                    if secondary_source:
+                        completed_route[logical_attr] = secondary_source
+                        continue
                     authored_source = _unique_nonphysics_source(
                         f"{target_path}.{logical_attr}"
                     )
@@ -3877,6 +3897,12 @@ class VmdSceneCollector:
                 if logical_attr in route:
                     # append/IK/control-rig authored routes remain the
                     # established priority and must never be overwritten.
+                    continue
+                secondary_source = secondary_control_input_route(
+                    driver, target_path, logical_attr, cmds_module=cmds
+                )
+                if secondary_source:
+                    route[logical_attr] = secondary_source
                     continue
                 if pre_inputs_exist and _unique_nonphysics_source(
                     f"{driver}.{pre_attr}"
@@ -4902,13 +4928,15 @@ class VmdSceneCollector:
 
     def _find_joints(self, target_model: Optional[str]) -> list[str]:
         if not target_model:
-            return cmds.ls(type="joint") or []
-        descendants = cmds.listRelatives(target_model, allDescendents=True, type="joint", fullPath=True) or []
-        nodes = []
-        if cmds.nodeType(target_model) == "joint":
-            nodes.append(target_model)
-        nodes.extend(descendants)
-        return nodes
+            nodes = cmds.ls(type="joint") or []
+        else:
+            nodes = cmds.listRelatives(target_model, allDescendents=True, type="joint", fullPath=True) or []
+            if cmds.nodeType(target_model) == "joint":
+                nodes.insert(0, target_model)
+        return [node for node in nodes if not (
+            _has_attr(node, "mmdSecondaryControl")
+            and cmds.getAttr(f"{node}.mmdSecondaryControl")
+        )]
 
     def _find_blend_shapes(self, target_model: Optional[str] = None) -> list[str]:
         """Find blendShapes on mesh history below the selected model root.

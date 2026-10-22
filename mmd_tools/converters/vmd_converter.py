@@ -680,6 +680,7 @@ class VmdConverter:
         undo_was_enabled = True
         refresh_suspended = False
         legacy_bone_key_routes = None
+        detached_motion_curves = []
         import_context = self._import_context(
             vmd_data=vmd_data,
             target_namespace=target_namespace,
@@ -759,7 +760,7 @@ class VmdConverter:
                     legacy_bone_key_routes = self._build_legacy_bone_key_routes()
                 except Exception:
                     self.logger.debug("Failed to build VMD clear routes", exc_info=True)
-                self._clear_existing_motion(
+                detached_motion_curves = self._clear_existing_motion(
                     import_context.layer_name,
                     import_context.target_namespace,
                     target_model=import_context.target_model,
@@ -1051,6 +1052,9 @@ class VmdConverter:
                 self._discard_mmd_control_rig_detached_motion_curves(
                     control_rig_transaction
                 )
+            self._discard_mmd_control_rig_detached_motion_curves(
+                {"detached_motion_curve_nodes": detached_motion_curves}
+            )
             self.logger.info("VMD animation conversion completed")
             return True
 
@@ -2283,7 +2287,14 @@ class VmdConverter:
             if not node or not attr or not cmds.objExists(f"{node}.{attr}"):
                 continue
             destination = f"{node}.{attr}"
+            secondary_locked = (
+                cmds.attributeQuery("mmdSecondaryControl", node=node, exists=True)
+                and bool(cmds.getAttr(f"{node}.mmdSecondaryControl"))
+                and bool(cmds.getAttr(destination, lock=True))
+            )
             try:
+                if secondary_locked:
+                    cmds.setAttr(destination, lock=False)
                 _restore_animation_channel_snapshot(
                     cmds,
                     row,
@@ -2292,6 +2303,9 @@ class VmdConverter:
                 )
             except Exception as exc:
                 errors.append(f"restore scene channel {destination} failed: {exc}")
+            finally:
+                if secondary_locked:
+                    cmds.setAttr(destination, lock=True)
 
         timeline = snapshot.get("timeline") or {}
         try:
