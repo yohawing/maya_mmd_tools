@@ -1,5 +1,6 @@
 """Geometry, authoring policy and ownership guards for secondary controls."""
 
+import json
 import math
 import unittest
 from unittest.mock import Mock, patch
@@ -8,6 +9,21 @@ from mmd_tools.core import secondary_bone_controls as controls
 
 
 class SecondaryBoneControlsTests(unittest.TestCase):
+    def test_copied_metadata_cannot_remove_another_models_controls(self):
+        cmds = Mock()
+        data = {"world": "world", "nodes": ["|original|control"], "groups": [],
+                "controls": [{"joint": "|original|joint", "collider": "|original|collider",
+                              "control": "|original|control", "proxy": "|original|proxy",
+                              "driver": "driver"}]}
+        cmds.getAttr.return_value = json.dumps(data)
+        cmds.ls.side_effect = lambda node, **kwargs: [node]
+        cmds.objectType.return_value = True
+        with self.assertRaisesRegex(ValueError, "belongs to another model"):
+            controls.remove("|duplicate", cmds)
+        cmds.undoInfo.assert_not_called()
+        cmds.delete.assert_not_called()
+        cmds.disconnectAttr.assert_not_called()
+
     def test_build_without_control_rig_rejects_before_scene_edits(self):
         cmds = Mock()
         cmds.ls.return_value = ["|model"]

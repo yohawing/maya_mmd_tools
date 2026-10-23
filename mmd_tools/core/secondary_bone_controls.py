@@ -79,6 +79,19 @@ def _read(cmds, root):
                                    for channel, plug in row["destinations"].items()}
     for group in data["groups"]:
         group["node"] = resolved.get(group["node"], group["node"])
+    # Duplicate copies the JSON but gives its DAG nodes new UUIDs.  Never let
+    # that copied metadata authorize edits to the original model's nodes.
+    roots = cmds.ls(root, long=True) or []
+    if len(roots) != 1:
+        raise ValueError(f"Secondary control model is missing or ambiguous: {root}")
+    owned_dag = [row[field] for row in data["controls"]
+                 for field in ("joint", "collider", "control", "proxy")]
+    owned_dag.extend(group["node"] for group in data["groups"])
+    owned_dag.extend(node for node in data["nodes"] if cmds.objectType(node, isAType="dagNode"))
+    for node in owned_dag:
+        paths = cmds.ls(node, long=True) or []
+        if len(paths) != 1 or not paths[0].startswith(roots[0] + "|"):
+            raise ValueError(f"Secondary control node belongs to another model: {node}")
     return data
 
 

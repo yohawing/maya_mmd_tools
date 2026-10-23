@@ -23,6 +23,21 @@ class SecondaryControlsVmdTests(MayaTestBase):
         plugin = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
         cls.load_plugin(str(plugin))
 
+    def test_duplicate_cannot_remove_original_secondary_controls(self):
+        from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
+
+        fixture = Path(__file__).resolve().parents[1] / "data" / "yw_test_model.pmx"
+        root = import_mmd_file(str(fixture), options={
+            "import_physics": True, "create_mmd_shaders": False, "setup_rig": True,
+        })
+        build_mmd_control_rig(root)
+        original = controls.build(root)
+        duplicate = cmds.duplicate(root, name="duplicateModel")[0]
+        with self.assertRaisesRegex(ValueError, "belongs to another model"):
+            controls.remove(duplicate)
+        self.assertTrue(all(cmds.objExists(node) for node in original["nodes"]))
+        self.assertTrue(controls.inspect(root)["exists"])
+
     def test_build_import_remove_preserves_owned_proxy_and_layered_pose(self):
         fixture = Path(__file__).resolve().parents[1] / "data" / "yw_test_model.pmx"
         root = import_mmd_file(str(fixture), options={
