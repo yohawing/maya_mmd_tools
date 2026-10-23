@@ -82,6 +82,8 @@ def _checks(config_path):
         root = import_mmd_file(config["model"], options={
             "import_physics": True, "create_mmd_shaders": False,
             "setup_rig": True, "create_mmd_control_rig": False,
+            "use_namespace": bool(config.get("namespace")),
+            "custom_namespace": config.get("namespace"),
         })
         check("import", bool(root), root)
         yield
@@ -104,12 +106,21 @@ def _checks(config_path):
             report["before_build_preroll"] = "pass"
         except Exception:
             report["before_build_preroll"] = traceback.format_exc()
+        cmds.namespace(add="unrelatedBuildContext")
+        cmds.namespace(set=":unrelatedBuildContext")
+        build_namespace = cmds.namespaceInfo(currentNamespace=True)
         state = controls.build(root)
         cmds.undo()
         check("undo_build", not controls.inspect(root)["exists"], {"redo_name": cmds.undoInfo(query=True, redoName=True)})
         cmds.redo()
         state = controls.inspect(root)
         check("redo_build", state["exists"] and bool(state["controls"]))
+        check("current_namespace_preserved", cmds.namespaceInfo(currentNamespace=True) == build_namespace)
+        cmds.namespace(set=":")
+        expected_namespace = base.control_group.rsplit("|", 1)[-1].rpartition(":")[0]
+        check("secondary_node_namespaces", all(
+            node.rsplit("|", 1)[-1].rpartition(":")[0] == expected_namespace
+            for node in state["nodes"]), state["nodes"])
         check("build_no_cycles", not cmds.cycleCheck(all=True, list=True))
         try:
             run_physics_preroll(state["world"], solvers, maya_cmds=cmds)
@@ -121,7 +132,7 @@ def _checks(config_path):
         from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig, remove_mmd_control_rig, MmdControlRigBuildError
         check("base_rig_inspection", inspect_mmd_control_rig(root).control_group == base.control_group)
         check("controls_hierarchy", all(
-            item[field].startswith(base.control_group + "|Secondary|")
+            item[field].startswith(base.control_group + "|" + (expected_namespace + ":" if expected_namespace else "") + "Secondary|")
             for item in state["controls"] for field in ("control", "proxy")))
         try:
             remove_mmd_control_rig(root)
@@ -242,6 +253,9 @@ def _checks(config_path):
         yield
         state = controls.inspect(root)
         check("reload_controls", state["exists"] and len(state["controls"]) == report["control_count"])
+        check("reload_namespaces", all(
+            node.rsplit("|", 1)[-1].rpartition(":")[0] == expected_namespace
+            for node in state["nodes"]))
         check("reload_base_rig", inspect_mmd_control_rig(root) is not None)
         group = next(item for item in state["groups"] if item["id"] == group_id)
         check("reload_group", group["visible"] and group["label"] == "Hair test")
@@ -317,11 +331,12 @@ def main():
     parser.add_argument("--model", default=str(ROOT / "tests/data/yw_test_model.pmx"))
     parser.add_argument("--out", default=str(ROOT / "build/reports/secondary-controls"))
     parser.add_argument("--timeout", type=float, default=600)
+    parser.add_argument("--namespace", default="")
     args = parser.parse_args()
     output = Path(args.out).resolve()
     output.mkdir(parents=True, exist_ok=True)
     config = output / "config.json"
-    config.write_text(json.dumps({"model": str(Path(args.model).resolve()), "out": str(output)}, ensure_ascii=False), encoding="utf-8")
+    config.write_text(json.dumps({"model": str(Path(args.model).resolve()), "out": str(output), "namespace": args.namespace}, ensure_ascii=False), encoding="utf-8")
     command = "import sys\nsys.path.insert(0, {!r})\nfrom tools.maya_gui.secondary_controls_e2e import run_check\nrun_check({!r})".format(str(ROOT), str(config))
     report = run_maya_e2e(
         project_root=ROOT, version=args.maya, out_dir=output, port=args.port,

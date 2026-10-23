@@ -258,9 +258,10 @@ def _shape_points(cmds, row):
 
 
 def _attach_curve(cmds, parent, points):
-    temporary = cmds.curve(degree=1, point=points)
+    temporary = cmds.curve(name=f":{parent.rsplit('|', 1)[-1]}_curve", degree=1, point=points)
     for shape in cmds.listRelatives(temporary, shapes=True, fullPath=True) or []:
-        cmds.parent(shape, parent, shape=True, relative=True)
+        shape = cmds.parent(shape, parent, shape=True, relative=True)[0]
+        cmds.rename(shape, f":{parent.rsplit('|', 1)[-1]}Shape")
     cmds.delete(temporary)
     return cmds.listRelatives(parent, shapes=True, fullPath=True) or []
 
@@ -286,10 +287,11 @@ def build(root, cmds_module=None):
     root = matches[0]
     if _read(cmds, root):
         raise ValueError("Secondary controls already exist")
-    from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig
+    from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig, _namespace_prefix
     base = inspect_mmd_control_rig(root, cmds_module=cmds)
     if base is None:
         raise ValueError("Set up the Control Rig before creating physics controllers")
+    namespace = _namespace_prefix(base.control_group)
     rows, world = _plan(cmds, root)
     # Geometry is evaluated before any input connection is changed.
     points = [_shape_points(cmds, row) for row in rows]
@@ -297,15 +299,15 @@ def build(root, cmds_module=None):
     cmds.undoInfo(openChunk=True, chunkName="Build secondary bone controls")
     failed = False
     try:
-        container = cmds.createNode("transform", name="Secondary", parent=base.control_group)
+        container = cmds.createNode("transform", name=f"{namespace}Secondary", parent=base.control_group)
         container = base.control_group + "|" + container.rsplit("|", 1)[-1]
         data["nodes"].append(container)
-        reverse = cmds.createNode("reverse", name="secondaryPhysicsOff")
+        reverse = cmds.createNode("reverse", name=f"{namespace}secondaryPhysicsOff")
         data["nodes"].append(reverse)
         cmds.connectAttr(f"{world}.enable", f"{reverse}.inputX")
         groups = {}
         for group_id in sorted({row["group_id"] for row in rows}):
-            node = cmds.createNode("transform", name=f"secondaryGroup{group_id + 1}", parent=container)
+            node = cmds.createNode("transform", name=f"{namespace}secondaryGroup{group_id + 1}", parent=container)
             node = container + "|" + node.rsplit("|", 1)[-1]
             groups[group_id] = node
             data["nodes"].append(node)
@@ -315,11 +317,12 @@ def build(root, cmds_module=None):
             joint = row["joint"]
             parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
             group = groups[row["group_id"]]
-            space = cmds.createNode("transform", name=joint.rsplit("|", 1)[-1] + "_secondary_SPACE", parent=group)
+            bone_name = joint.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+            space = cmds.createNode("transform", name=f"{namespace}{bone_name}_secondary_SPACE", parent=group)
             space = group + "|" + space.rsplit("|", 1)[-1]
             data["nodes"].append(space)
             _follow_world(cmds, space, parents[0])
-            control = cmds.createNode("joint", name=joint.rsplit("|", 1)[-1] + "_secondary_CTRL", parent=space)
+            control = cmds.createNode("joint", name=f"{namespace}{bone_name}_secondary_CTRL", parent=space)
             control = space + "|" + control.rsplit("|", 1)[-1]
             row["control"] = control
             data["nodes"].append(control)
@@ -339,7 +342,7 @@ def build(root, cmds_module=None):
             for attr in ("rotateOrder", "segmentScaleCompensate"):
                 cmds.setAttr(f"{control}.{attr}", cmds.getAttr(f"{joint}.{attr}"))
             data["nodes"].extend(_attach_curve(cmds, control, geometry))
-            proxy = cmds.createNode("transform", name="secondaryPhysicsDisplay", parent=group)
+            proxy = cmds.createNode("transform", name=f"{namespace}{bone_name}_secondary_DISPLAY", parent=group)
             proxy = group + "|" + proxy.rsplit("|", 1)[-1]
             row["proxy"] = proxy
             data["nodes"].append(proxy)
@@ -347,7 +350,7 @@ def build(root, cmds_module=None):
             data["nodes"].extend(_attach_curve(cmds, proxy, geometry))
             cmds.setAttr(f"{proxy}.overrideEnabled", True)
             cmds.setAttr(f"{proxy}.overrideDisplayType", 2)
-            visibility = cmds.createNode("multiplyDivide", name="secondaryGroupVisibility")
+            visibility = cmds.createNode("multiplyDivide", name=f"{namespace}{bone_name}_secondary_VISIBILITY")
             data["nodes"].append(visibility)
             for axis, mode, destination in (("X", f"{reverse}.outputX", control), ("Y", f"{world}.enable", proxy)):
                 cmds.connectAttr(mode, f"{visibility}.input1{axis}")
