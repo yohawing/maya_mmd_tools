@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simplified physics controller actions and added explanatory tooltips.
 - Added an Enable Physics checkbox and restored physics baking for the current playback range.
 
+### Fixed
+- Prevented copied physics controller metadata from modifying the original model's nodes.
+- Excluded physics controller joints from Bone Sync registration as PMX bones.
+- Kept physics controllers under the Controls hierarchy with matching namespaces.
+- Used the supported Maya scene-read callback for restoring physics controllers.
+
+### Known Limitations
+- macOS plugin and runtime rebuilds are temporarily skipped. Bundled macOS binaries remain from earlier versions and are not validated for v0.8.3.
+
 ## [0.8.1] - 2026-09-27
 
 ### Changed
