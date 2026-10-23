@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "golden-oracle" / "generate_oracle.py"
@@ -19,7 +19,7 @@ _SPEC.loader.exec_module(generator)
 
 
 class _FakeLibrary:
-    def __init__(self, path: Path, abi: int = 2, flags: int = 7):
+    def __init__(self, path: Path, abi: int = 3, flags: int = 7):
         self._name = str(path)
         self._abi = abi
         self._flags = flags
@@ -36,6 +36,33 @@ class TestGoldenOracleGenerator(unittest.TestCase):
         "name": "sample",
         "oracle": {"path": "oracle/sample.oracle.jsonl"},
     }
+
+    def test_each_sample_resets_history_and_reset_failure_stops_generation(self):
+        from mmd_tools.core.native import mmd_anim_runtime as runtime
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "model.pmx").write_bytes(b"model")
+            (directory / "motion.vmd").write_bytes(b"motion")
+            case = {"name": "sample", "assets": {"model": "model.pmx", "motion": "motion.vmd"},
+                    "frames": [5, 0, 5]}
+            instance = Mock()
+            instance.get_world_matrices.return_value = []
+            with patch("mmd_tools.core.mmd_parser.parse_pmx_file", return_value=SimpleNamespace(bones=[])), \
+                    patch.object(runtime.MmdRuntimeModel, "from_pmx_bytes"), \
+                    patch.object(runtime.MmdRuntimeClip, "from_vmd_bytes_for_model"), \
+                    patch.object(runtime.MmdRuntimeInstance, "for_model", return_value=instance):
+                output = directory / "candidate.jsonl"
+                generator._generate_case(directory / "manifest.json", case, output, {})
+                self.assertEqual([call[0] for call in instance.mock_calls],
+                                 ["reset_ik_history", "evaluate_clip_frame", "get_world_matrices"] * 3)
+                original = output.read_bytes()
+                instance.reset_mock()
+                instance.reset_ik_history.return_value = False
+                with self.assertRaisesRegex(RuntimeError, "reset_ik_history failed"):
+                    generator._generate_case(directory / "manifest.json", case, output, {})
+                instance.evaluate_clip_frame.assert_not_called()
+                self.assertEqual(output.read_bytes(), original)
 
     def test_default_output_is_candidate_directory_by_case_filename(self):
         output = generator._output_path(
@@ -80,13 +107,13 @@ class TestGoldenOracleGenerator(unittest.TestCase):
                 _runtime_loader=SimpleNamespace(_runtime_lib_path=runtime_path),
             )
             with patch.object(generator, "_submodule_commit", return_value="a" * 40):
-                provenance = generator._establish_provenance(runtime_path, "0.2.0", module)
+                provenance = generator._establish_provenance(runtime_path, "0.5.3", module)
 
-        self.assertEqual(provenance["mmdAnimVersion"], "0.2.0")
+        self.assertEqual(provenance["mmdAnimVersion"], "0.5.3")
         self.assertEqual(provenance["runtimeRequestedPath"], str(runtime_path.resolve()))
         self.assertEqual(provenance["runtimeLoadedPath"], str(runtime_path.resolve()))
         self.assertEqual(provenance["runtimeSha256"], hashlib.sha256(payload).hexdigest())
-        self.assertEqual(provenance["runtimeAbi"], 2)
+        self.assertEqual(provenance["runtimeAbi"], 3)
         self.assertEqual(provenance["runtimeFeatureFlags"], 7)
         self.assertEqual(provenance["mmdAnimCommit"], "a" * 40)
 
@@ -101,7 +128,7 @@ class TestGoldenOracleGenerator(unittest.TestCase):
                 _runtime_loader=SimpleNamespace(_runtime_lib_path=actual),
             )
             with self.assertRaisesRegex(RuntimeError, "loaded runtime path mismatch"):
-                generator._establish_provenance(requested, "0.2.0", module)
+                generator._establish_provenance(requested, "0.5.3", module)
 
     def test_provenance_fails_on_wrong_abi_or_missing_library(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -113,9 +140,9 @@ class TestGoldenOracleGenerator(unittest.TestCase):
             )
             missing = SimpleNamespace(get_mmd_runtime_library=lambda: None)
             with self.assertRaisesRegex(RuntimeError, "runtime ABI mismatch"):
-                generator._establish_provenance(runtime_path, "0.2.0", wrong_abi)
+                generator._establish_provenance(runtime_path, "0.5.3", wrong_abi)
             with self.assertRaisesRegex(RuntimeError, "failed to load"):
-                generator._establish_provenance(runtime_path, "0.2.0", missing)
+                generator._establish_provenance(runtime_path, "0.5.3", missing)
 
     def test_provenance_fails_when_source_commit_is_unknown(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -129,13 +156,13 @@ class TestGoldenOracleGenerator(unittest.TestCase):
                 with self.assertRaisesRegex(
                     RuntimeError, "source commit could not be established"
                 ):
-                    generator._establish_provenance(runtime_path, "0.2.0", module)
+                    generator._establish_provenance(runtime_path, "0.5.3", module)
 
     def test_missing_runtime_file_and_invalid_explicit_version_fail_closed(self):
         with self.assertRaises(FileNotFoundError):
             generator._establish_provenance(
                 Path("definitely-missing-runtime.dll"),
-                "0.2.0",
+                "0.5.3",
                 SimpleNamespace(get_mmd_runtime_library=lambda: None),
             )
         with self.assertRaisesRegex(ValueError, "invalid semantic version"):
