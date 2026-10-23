@@ -118,6 +118,45 @@ def _checks(config_path):
             report["after_build_preroll"] = traceback.format_exc()
         report["control_count"] = len(state["controls"])
         check("build", state["exists"] and bool(state["controls"]))
+        from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig, remove_mmd_control_rig, MmdControlRigBuildError
+        check("base_rig_inspection", inspect_mmd_control_rig(root).control_group == base.control_group)
+        check("controls_hierarchy", all(
+            item[field].startswith(base.control_group + "|Secondary|")
+            for item in state["controls"] for field in ("control", "proxy")))
+        try:
+            remove_mmd_control_rig(root)
+        except MmdControlRigBuildError as exc:
+            check("base_remove_guard", "secondary bone controls" in str(exc), str(exc))
+        else:
+            check("base_remove_guard", False)
+        foreign = cmds.createNode("transform", name="unownedSecondaryChild", parent=state["groups"][0]["node"])
+        try:
+            inspect_mmd_control_rig(root)
+        except MmdControlRigBuildError as exc:
+            check("foreign_child_rejected", "topology changed" in str(exc))
+        else:
+            check("foreign_child_rejected", False)
+        cmds.delete(foreign)
+        secondary_group = state["groups"][0]["node"]
+        secondary_parent = cmds.listRelatives(secondary_group, parent=True, fullPath=True)[0]
+        moved = cmds.parent(secondary_group, root, relative=True)[0]
+        try:
+            inspect_mmd_control_rig(root)
+        except MmdControlRigBuildError as exc:
+            check("moved_secondary_rejected", "topology changed" in str(exc))
+        else:
+            check("moved_secondary_rejected", False)
+        cmds.parent(moved, secondary_parent, relative=True)
+        metadata_plug = root + ".mmdSecondaryControls"
+        saved_metadata = cmds.getAttr(metadata_plug)
+        cmds.setAttr(metadata_plug, "{", type="string")
+        try:
+            inspect_mmd_control_rig(root)
+        except MmdControlRigBuildError:
+            check("invalid_secondary_metadata_rejected", True)
+        else:
+            check("invalid_secondary_metadata_rejected", False)
+        cmds.setAttr(metadata_plug, saved_metadata, type="string")
         group_id = state["groups"][0]["id"]
         controls.rename_group(root, group_id, "Hair test")
         controls.set_group_visibility(root, group_id, False)
@@ -137,6 +176,16 @@ def _checks(config_path):
         cmds.setKeyframe(control, attribute=channel, time=5, value=20)
         cmds.currentTime(5)
         check("off_fk_moves_joint", max(abs(a-b) for a,b in zip(before, matrix(joint))) > 1e-4)
+        check("off_control_follows", max(abs(a-b) for item in state["controls"]
+              for a,b in zip(matrix(item["control"]), matrix(item["joint"]))) < 1e-4)
+        parent = cmds.listRelatives(joint, parent=True, fullPath=True)[0]
+        original_scale = cmds.getAttr(parent + ".scale")[0]
+        try:
+            cmds.setAttr(parent + ".scale", 1.2, 0.8, 1.4)
+            scale_error = max(abs(a-b) for a,b in zip(matrix(control), matrix(joint)))
+            check("parent_nonuniform_scale", scale_error < 1e-4, scale_error)
+        finally:
+            cmds.setAttr(parent + ".scale", *original_scale)
         curves = cmds.listConnections(control + "." + channel, source=True, destination=False, type="animCurve")
         check("authored_curve", bool(curves))
         keys = cmds.keyframe(curves, query=True, valueChange=True)
@@ -193,6 +242,7 @@ def _checks(config_path):
         yield
         state = controls.inspect(root)
         check("reload_controls", state["exists"] and len(state["controls"]) == report["control_count"])
+        check("reload_base_rig", inspect_mmd_control_rig(root) is not None)
         group = next(item for item in state["groups"] if item["id"] == group_id)
         check("reload_group", group["visible"] and group["label"] == "Hair test")
         check("reload_pose", max(abs(a-b) for a,b in zip(expected[10], matrix(joint))) < 1e-4)
@@ -226,6 +276,7 @@ def _checks(config_path):
         check("undo_remove", controls.inspect(root)["exists"])
         cmds.redo()
         check("redo_remove", not controls.inspect(root)["exists"])
+        check("base_rig_after_remove", inspect_mmd_control_rig(root) is not None)
         check("removed_no_cycles", not cmds.cycleCheck(all=True, list=True))
         _supplemental_shapes(config["model"], controls, cmds, check)
         report["status"] = "pass" if all(item["pass"] for item in report["checks"].values()) else "fail"

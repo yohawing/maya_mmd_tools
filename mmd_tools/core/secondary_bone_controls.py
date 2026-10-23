@@ -1,7 +1,7 @@
 """FK authoring controls for physics bones, with a separate read-only live display.
 
-Only local authored channels enter the physics driver.  The live display is a
-separate child of the result joint, so following simulation never feeds back.
+Only local authored channels enter the physics driver.  Controls and the
+read-only live display follow bone matrices from beneath the Controls group.
 """
 
 from __future__ import annotations
@@ -262,6 +262,19 @@ def _attach_curve(cmds, parent, points):
     for shape in cmds.listRelatives(temporary, shapes=True, fullPath=True) or []:
         cmds.parent(shape, parent, shape=True, relative=True)
     cmds.delete(temporary)
+    return cmds.listRelatives(parent, shapes=True, fullPath=True) or []
+
+
+def owned_nodes(root, cmds_module=None):
+    """Resolve the Controls layout; legacy v1 nodes live outside that DAG."""
+    data = _read(_cmds(cmds_module), root)
+    return data["nodes"] if data and data.get("version", 1) >= 2 else []
+
+
+def _follow_world(cmds, node, source):
+    """Follow a bone independently of the organizational Controls hierarchy."""
+    cmds.setAttr(f"{node}.inheritsTransform", False)
+    cmds.connectAttr(f"{source}.worldMatrix[0]", f"{node}.offsetParentMatrix")
 
 
 def build(root, cmds_module=None):
@@ -274,22 +287,26 @@ def build(root, cmds_module=None):
     if _read(cmds, root):
         raise ValueError("Secondary controls already exist")
     from mmd_tools.core.mmd_control_rig_builder import inspect_mmd_control_rig
-    if inspect_mmd_control_rig(root, cmds_module=cmds) is None:
+    base = inspect_mmd_control_rig(root, cmds_module=cmds)
+    if base is None:
         raise ValueError("Set up the Control Rig before creating physics controllers")
     rows, world = _plan(cmds, root)
     # Geometry is evaluated before any input connection is changed.
     points = [_shape_points(cmds, row) for row in rows]
-    data = dict(version=1, world=world, controls=[], groups=[], nodes=[])
+    data = dict(version=2, world=world, controls=[], groups=[], nodes=[])
     cmds.undoInfo(openChunk=True, chunkName="Build secondary bone controls")
     failed = False
     try:
+        container = cmds.createNode("transform", name="Secondary", parent=base.control_group)
+        container = base.control_group + "|" + container.rsplit("|", 1)[-1]
+        data["nodes"].append(container)
         reverse = cmds.createNode("reverse", name="secondaryPhysicsOff")
         data["nodes"].append(reverse)
         cmds.connectAttr(f"{world}.enable", f"{reverse}.inputX")
         groups = {}
         for group_id in sorted({row["group_id"] for row in rows}):
-            node = cmds.createNode("transform", name=f"secondaryGroup{group_id + 1}", parent=root)
-            node = root + "|" + node.rsplit("|", 1)[-1]
+            node = cmds.createNode("transform", name=f"secondaryGroup{group_id + 1}", parent=container)
+            node = container + "|" + node.rsplit("|", 1)[-1]
             groups[group_id] = node
             data["nodes"].append(node)
             data["groups"].append(dict(id=group_id, label=f"Group {group_id + 1}", visible=True,
@@ -297,8 +314,13 @@ def build(root, cmds_module=None):
         for row, geometry in zip(rows, points):
             joint = row["joint"]
             parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
-            control = cmds.createNode("joint", name=joint.rsplit("|", 1)[-1] + "_secondary_CTRL", parent=parents[0])
-            control = parents[0] + "|" + control.rsplit("|", 1)[-1]
+            group = groups[row["group_id"]]
+            space = cmds.createNode("transform", name=joint.rsplit("|", 1)[-1] + "_secondary_SPACE", parent=group)
+            space = group + "|" + space.rsplit("|", 1)[-1]
+            data["nodes"].append(space)
+            _follow_world(cmds, space, parents[0])
+            control = cmds.createNode("joint", name=joint.rsplit("|", 1)[-1] + "_secondary_CTRL", parent=space)
+            control = space + "|" + control.rsplit("|", 1)[-1]
             row["control"] = control
             data["nodes"].append(control)
             cmds.setAttr(f"{control}.drawStyle", 2)
@@ -316,12 +338,13 @@ def build(root, cmds_module=None):
                 cmds.setAttr(f"{control}.inverseScale", *cmds.getAttr(f"{joint}.inverseScale")[0])
             for attr in ("rotateOrder", "segmentScaleCompensate"):
                 cmds.setAttr(f"{control}.{attr}", cmds.getAttr(f"{joint}.{attr}"))
-            _attach_curve(cmds, control, geometry)
-            proxy = cmds.createNode("transform", name="secondaryPhysicsDisplay", parent=joint)
-            proxy = joint + "|" + proxy.rsplit("|", 1)[-1]
+            data["nodes"].extend(_attach_curve(cmds, control, geometry))
+            proxy = cmds.createNode("transform", name="secondaryPhysicsDisplay", parent=group)
+            proxy = group + "|" + proxy.rsplit("|", 1)[-1]
             row["proxy"] = proxy
             data["nodes"].append(proxy)
-            _attach_curve(cmds, proxy, geometry)
+            _follow_world(cmds, proxy, joint)
+            data["nodes"].extend(_attach_curve(cmds, proxy, geometry))
             cmds.setAttr(f"{proxy}.overrideEnabled", True)
             cmds.setAttr(f"{proxy}.overrideDisplayType", 2)
             visibility = cmds.createNode("multiplyDivide", name="secondaryGroupVisibility")
