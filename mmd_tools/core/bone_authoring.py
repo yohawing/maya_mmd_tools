@@ -557,8 +557,12 @@ def make_bone_reset_plan(
         order = tuple(requested_order or ())
         if len(set(order)) != len(order):
             _fail("requested_order must not contain duplicate bindings")
-        if any(binding not in discovered_by_binding for binding in order):
+        if any(binding not in discovered_by_binding and binding not in existing_by_binding for binding in order):
             _fail("requested_order contains a non-descendant binding")
+        # The Bone Tab still contains rows for joints deleted since its last
+        # refresh. Let the removal checks below validate those known bindings,
+        # while preserving the requested order of surviving joints.
+        order = tuple(binding for binding in order if binding in discovered_by_binding)
         ordered_bindings = list(order)
         ordered_bindings.extend(binding for binding in bindings if binding not in ordered_bindings)
         target_items: list[MmdBoneSpec] = []

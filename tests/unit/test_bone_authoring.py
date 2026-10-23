@@ -7,6 +7,7 @@ import pytest
 from mmd_tools.core.bone_authoring import (
     BoneAuthoringError,
     capture_rest,
+    make_bone_reset_plan,
     register_bone,
     reindex_bones,
     replace_bone,
@@ -18,6 +19,82 @@ from mmd_tools.core.model_authoring_spec import (
     MmdModelSpec,
     MmdMorphSpec,
 )
+
+
+def test_reset_ignores_deleted_registered_rows_in_pending_order():
+    """Bone Sync can remove a deleted joint while keeping the user's row order."""
+    spec = MmdModelAuthoringSpec(
+        model=MmdModelSpec("Model"),
+        bones=tuple(
+            MmdBoneSpec(name, index=index, binding_identity=name)
+            for index, name in enumerate(("first", "deleted", "last"))
+        ),
+    )
+    plan = make_bone_reset_plan(
+        spec, (spec.bones[0], spec.bones[2]),
+        requested_order=("last", "deleted", "first"),
+    )
+    assert plan.is_valid, plan.blockers
+    assert plan.removed_bindings == ("deleted",)
+    assert plan.requested_order == ("last", "first")
+    assert [(bone.binding_identity, bone.index) for bone in plan.target_spec.bones] == [
+        ("last", 0), ("first", 1),
+    ]
+
+
+@pytest.mark.parametrize("order", [("unknown", "first"), ("deleted", "deleted", "first")])
+def test_reset_still_blocks_invalid_pending_order(order):
+    spec = MmdModelAuthoringSpec(
+        model=MmdModelSpec("Model"),
+        bones=(
+            MmdBoneSpec("first", index=0, binding_identity="first"),
+            MmdBoneSpec("deleted", index=1, binding_identity="deleted"),
+        ),
+    )
+    plan = make_bone_reset_plan(spec, (spec.bones[0],), requested_order=order)
+    assert not plan.is_valid
+    assert plan.target_spec is None
+
+
+def test_reset_deleted_pending_row_still_blocks_live_morph_reference():
+    spec = MmdModelAuthoringSpec(
+        model=MmdModelSpec("Model"),
+        bones=(
+            MmdBoneSpec("first", index=0, binding_identity="first"),
+            MmdBoneSpec("deleted", index=1, binding_identity="deleted"),
+        ),
+        morphs=(MmdMorphSpec(
+            "boneMorph", index=0, morph_type="bone",
+            offsets=({"bone_index": 1, "translation": [1.0, 0.0, 0.0]},),
+        ),),
+    )
+    plan = make_bone_reset_plan(spec, (spec.bones[0],), requested_order=("first", "deleted"))
+    assert not plan.is_valid
+    assert any("morphs[0]" in blocker for blocker in plan.blockers)
+
+
+def test_reset_deleted_pending_row_remaps_surviving_morph_without_mutating_source():
+    spec = MmdModelAuthoringSpec(
+        model=MmdModelSpec("Model"),
+        bones=tuple(
+            MmdBoneSpec(name, index=index, binding_identity=name)
+            for index, name in enumerate(("first", "deleted", "last"))
+        ),
+        morphs=(MmdMorphSpec(
+            "boneMorph", index=0, morph_type="bone",
+            offsets=({"bone_index": 2, "translation": [1.0, 0.0, 0.0]},),
+        ),),
+    )
+    original = spec.fingerprint()
+    plan = make_bone_reset_plan(
+        spec, (spec.bones[0], spec.bones[2]),
+        requested_order=("last", "deleted", "first"),
+    )
+    assert plan.is_valid, plan.blockers
+    assert plan.target_spec.morphs[0].offsets[0]["bone_index"] == 0
+    assert plan.target_spec.morphs[0].offsets[0]["translation"] == (1.0, 0.0, 0.0)
+    assert spec.fingerprint() == original
+    assert spec.morphs[0].offsets[0]["bone_index"] == 2
 
 
 def _base_spec() -> MmdModelAuthoringSpec:
