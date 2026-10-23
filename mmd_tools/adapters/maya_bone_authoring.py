@@ -162,10 +162,13 @@ def _canonical_identity(adapter: Any, node: Any) -> str:
 
 
 def _descendant_joints(adapter: Any, root: str) -> list[str]:
+    """Collect model bones, excluding generated secondary-controller joints."""
     joints = _call(adapter, "list_relatives", root, allDescendents=True, fullPath=True, type="joint") or []
     if isinstance(joints, (str, bytes, bytearray)):
         _fail("joint descendants must be a sequence")
-    return [str(joint) for joint in joints]
+    return [str(joint) for joint in joints
+            if not (_exists(adapter, str(joint), "mmdSecondaryControl")
+                    and _get(adapter, str(joint), "mmdSecondaryControl"))]
 
 
 def _direct_joint_children(adapter: Any, joint: str, descendants: set[str]) -> tuple[str, ...]:

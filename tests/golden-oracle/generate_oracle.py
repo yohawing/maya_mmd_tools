@@ -22,7 +22,7 @@ REPO_ROOT = SCRIPT.parents[2]
 DEFAULT_MANIFEST = SCRIPT.parent / "manifest.json"
 DEFAULT_OUT_DIR = REPO_ROOT / "build" / "golden-oracle" / "candidate"
 TRACKED_ORACLE_DIR = SCRIPT.parent / "oracle"
-EXPECTED_RUNTIME_ABI = 2
+EXPECTED_RUNTIME_ABI = 3
 _SEMVER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
@@ -172,6 +172,8 @@ def _generate_case(
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             for frame in frames:
+                if not instance.reset_ik_history():
+                    raise RuntimeError(f"reset_ik_history failed at frame {frame}")
                 if not instance.evaluate_clip_frame(clip, float(frame)):
                     raise RuntimeError(f"evaluate_clip_frame failed at frame {frame}")
                 matrices = instance.get_world_matrices()
@@ -189,6 +191,7 @@ def _generate_case(
                     "mmdVersion": "mmd-anim",
                     "dumperVersion": "1.0.0",
                     "backend": "mmd-anim.ffi",
+                    "sampling": "independent-reset-ik-history",
                     "model": str(pmx_path),
                     "motion": str(vmd_path),
                     "evaluatedFrame": float(frame),

@@ -390,6 +390,9 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
                 self.per_frame_calls.append(frame)
                 return True
 
+            def reset_ik_history(self):
+                return True
+
             def get_world_matrices(self):
                 return []
 

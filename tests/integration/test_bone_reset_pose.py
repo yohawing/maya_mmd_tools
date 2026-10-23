@@ -1,6 +1,7 @@
 """Maya integration tests for keyless Bone Reset Pose."""
 
 import unittest
+from pathlib import Path
 
 from maya import cmds
 
@@ -15,6 +16,38 @@ class TestBoneResetPoseMaya(unittest.TestCase):
 
     def tearDown(self):
         cmds.file(new=True, force=True)
+
+    def test_bone_sync_does_not_register_secondary_controllers(self):
+        from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition
+        from mmd_tools.core.mmd_control_rig_builder import build_mmd_control_rig
+        from mmd_tools.core import secondary_bone_controls
+        from mmd_tools.converters.export_scene_collector import _collect_model_bones
+        from mmd_tools.io.mmd_importer import import_mmd_file
+
+        project = Path(__file__).resolve().parents[2]
+        plugin = str(project / "mmd_tools/plugin_main.py")
+        already_loaded = cmds.pluginInfo(plugin, query=True, loaded=True)
+        if not already_loaded:
+            cmds.loadPlugin(plugin, quiet=True)
+        try:
+            root = import_mmd_file(str(project / "tests/data/yw_test_model.pmx"), options={
+                "import_physics": True, "create_mmd_shaders": False, "setup_rig": True,
+            })
+            build_mmd_control_rig(root)
+            state = secondary_bone_controls.build(root)
+            coordinator = build_maya_authoring_composition(cmds).coordinator
+            before = len(coordinator.read_spec(root).bones)
+            plan = coordinator.plan_bone_reset(root)
+            self.assertTrue(plan.is_valid, plan.blockers)
+            self.assertFalse(plan.added_bindings)
+            self.assertEqual(len(coordinator.reset_bones(root, plan).bones), before)
+            self.assertEqual(len(_collect_model_bones(root)), before)
+            for row in state["controls"]:
+                self.assertFalse(cmds.attributeQuery("mmd_bone_index", node=row["control"], exists=True))
+        finally:
+            cmds.file(new=True, force=True)
+            if not already_loaded:
+                cmds.unloadPlugin(plugin)
 
     def test_reset_pose_temporarily_overrides_anim_curve_without_keying(self):
         root = cmds.createNode("transform", name="model")

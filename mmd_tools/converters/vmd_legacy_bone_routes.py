@@ -13,6 +13,7 @@ from ..core.mmd_control_rig_motion import (
     control_rig_fixed_axis_twist_joints,
 )
 from ..core.model_registry import get_model_registry
+from ..core.secondary_bone_controls import secondary_control_input_route
 from .bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
@@ -198,7 +199,9 @@ def _physics_pre_input_routes(
             blocked[mapped[target]] = "duplicate_physics_target_or_bone_index"
             continue
         routes[mapped[target]] = {
-            source_attr: (driver, target_attr)
+            source_attr: secondary_control_input_route(
+                driver, target, source_attr, cmds_module=cmds
+            ) or (driver, target_attr)
             for source_attr, target_attr in _PHYSICS_PRE_INPUT_ATTRS.items()
         }
     return routes, blocked
@@ -324,6 +327,13 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
         # Control Rig, and IK ownership decisions above.
         for channel, target in physics_routes.get(joint, {}).items():
             route["attr_targets"].setdefault(channel, target)
+        route["secondary_control_channels"] = tuple(
+            channel
+            for channel, target in physics_routes.get(joint, {}).items()
+            if target[1] == channel and route["attr_targets"].get(channel) == target
+        )
+        if all(channel in route["secondary_control_channels"] for channel in rotation_channels):
+            route["quaternion_interpolation_safe"] = True
 
         accumulator_block = bone_morph_resolution.blocked.get(joint)
         if accumulator_block:

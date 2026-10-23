@@ -185,17 +185,17 @@ RELEASE_ADDICTION_CAMERA_VMD = (
     "F:/MMD/vmd/175_Addictionカメラモーションv1.3/"
     "Addictionカメラモーション/Addictionカメラ用モーション(一人用).vmd"
 )
-MMD_ANIM_CLI_VERSION = "v0.2.0"
+MMD_ANIM_CLI_VERSION = "v0.5.3"
 MMD_ANIM_CLI_REPO = "yohawing/mmd-anim"
 MMD_ANIM_CLI_ASSETS = {
     "Windows": {
-        "archive": "mmd-anim-v0.2.0-x86_64-pc-windows-msvc.zip",
-        "sha256": "e50315413aec8525ca4d04f8ea5e2770d1656cb7e7de8b7987db7e3f3218405f",
+        "archive": "mmd-anim-v0.5.3-x86_64-pc-windows-msvc.zip",
+        "sha256": "2aef54defc8d8dba4ff80bdd58f39e3f509a2f7cb383267b1e8784ee89a96bac",
         "exe": "mmd-anim.exe",
     },
     "Linux": {
-        "archive": "mmd-anim-v0.2.0-x86_64-unknown-linux-gnu.tar.gz",
-        "sha256": "11dedde4b929aaca53d9e4ce6966627425fcba31beba61686e7a9e7c87c1ae0e",
+        "archive": "mmd-anim-v0.5.3-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "146ec79202267b2fd0754e2aa1e3bf96a240609c49e8056ff3c1bc281e673d9e",
         "exe": "mmd-anim",
     },
 }
@@ -914,6 +914,18 @@ def real_asset_bake_rig_parity(session: nox.Session) -> None:
     _run_python_module(
         session,
         module="tests.viewport.real_asset_bake_rig_parity",
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+    )
+
+
+@nox.session(venv_backend="none")
+def secondary_controls_e2e(session: nox.Session) -> None:
+    """Verify secondary bone controls in an isolated Maya GUI scene."""
+    _run_python_module(
+        session,
+        module="tools.maya_gui.secondary_controls_e2e",
         posargs=session.posargs,
         python_executable=sys.executable,
         environment=dict(os.environ),

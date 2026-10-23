@@ -405,6 +405,21 @@ def _make_reduction_batch():
 # ----------------------------------------------------------------------
 
 class TestEvaluateClipFrame(unittest.TestCase):
+    def test_reset_ik_history_status_and_legacy_compatibility(self):
+        lib = _FakeRuntimeLib()
+        instance = MmdRuntimeInstance(lib, 1)
+        self.assertTrue(instance.reset_ik_history())
+        reset = mock.Mock(return_value=0)
+        lib.mmd_runtime_instance_reset_ik_history = reset
+        self.assertTrue(instance.reset_ik_history())
+        reset.assert_called_once_with(1)
+        reset.return_value = 2
+        self.assertFalse(instance.reset_ik_history())
+        instance.free()
+        reset.reset_mock()
+        self.assertFalse(instance.reset_ik_history())
+        reset.assert_not_called()
+
     def test_evaluate_passes_frame_and_returns_true(self):
         lib = _FakeRuntimeLib(evaluate_result=True)
         inst = _make_instance(lib)

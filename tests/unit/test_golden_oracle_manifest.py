@@ -18,6 +18,8 @@ MANIFEST_PATH = Path(__file__).resolve().parents[1] / "golden-oracle" / "manifes
 class GoldenOracleManifestTest(unittest.TestCase):
     def test_motion_numeric_cases_have_oracle_focus_and_requested_frames(self):
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        nox_source = (MANIFEST_PATH.parents[2] / "noxfile.py").read_text(encoding="utf-8")
+        cli_version = re.search(r'MMD_ANIM_CLI_VERSION = "v([^"]+)"', nox_source).group(1)
         default_focus = manifest["defaults"]["focus"]["bones"]
         motion_cases = [
             case for case in manifest["cases"] if case.get("kind") == "motion-numeric"
@@ -63,8 +65,9 @@ class GoldenOracleManifestTest(unittest.TestCase):
 
             for record in records:
                 source = record["source"]
-                self.assertEqual(source["mmdAnimVersion"], "0.2.0")
-                self.assertEqual(source["runtimeAbi"], 2)
+                self.assertEqual(source["mmdAnimVersion"], cli_version)
+                self.assertEqual(source["runtimeAbi"], 3)
+                self.assertEqual(source["sampling"], "independent-reset-ik-history")
                 self.assertIsInstance(source["runtimeFeatureFlags"], int)
                 self.assertRegex(source["runtimeSha256"], r"^[0-9a-f]{64}$")
                 self.assertEqual(

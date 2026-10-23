@@ -298,6 +298,17 @@ def test_plan_adds_descendant_updates_rest_and_compacts_indices():
     assert plan.target_spec.bones[0].rest_position == (1.0, 2.0, 3.0)
 
 
+@pytest.mark.parametrize("marked", [True, False])
+def test_sync_excludes_only_marked_secondary_controller_joints(marked):
+    control = "|root|joint|secondary_CTRL"
+    adapter = _DerivedSceneAdapter({"|root|joint": [control]})
+    adapter.attrs[(control, "mmdSecondaryControl")] = marked
+    plan = plan_bone_reset("|root", _spec(), adapter)
+    assert plan.is_valid, plan.blockers
+    assert (control in plan.added_bindings) is not marked
+    assert len(plan.target_spec.bones) == (1 if marked else 2)
+
+
 def test_animation_warning_is_non_blocking_and_read_only_is_blocking():
     current = _spec()
     animated = plan_bone_reset("|root", current, _SceneAdapter(animated=True))

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - Unreleased
+
+### Added
+- Added physics bone controllers to Control Rig Manager for posing and animating secondary bones. Creating these controllers requires an existing Control Rig.
+- Preserved physics controller animation routes during VMD import, motion clearing, and VMD export.
+
+### Changed
+- Updated the mmd-anim source, Windows runtime, and validation CLI to v0.5.3, including upstream IK and append-rotation fixes. The bundled macOS runtime still requires a rebuild.
+- Reset retained IK history for each independent bake sample when native batch evaluation falls back to per-frame evaluation.
+- Simplified physics controller actions and added explanatory tooltips.
+- Added an Enable Physics checkbox and restored physics baking for the current playback range.
+
+### Fixed
+- Prevented copied physics controller metadata from modifying the original model's nodes.
+- Excluded physics controller joints from Bone Sync registration as PMX bones.
+- Kept physics controllers under the Controls hierarchy with matching namespaces.
+- Used the supported Maya scene-read callback for restoring physics controllers.
+
+### Known Limitations
+- macOS plugin and runtime rebuilds are temporarily skipped. Bundled macOS binaries remain from earlier versions and are not validated for v0.8.3.
+
 ## [0.8.1] - 2026-09-27
 
 ### Changed

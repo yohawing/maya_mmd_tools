@@ -517,6 +517,8 @@ def remove_mmd_control_rig(model_root: str, *, cmds_module=None) -> bool:
     metadata = _read_metadata(cmds, root)
     if metadata is None:
         return False
+    if cmds.attributeQuery("mmdSecondaryControls", node=root, exists=True):
+        raise MmdControlRigBuildError("remove secondary bone controls before removing the Control Rig")
     if metadata["state"] not in {CONTROL_RIG_ATTACHED, CONTROL_RIG_BAKED}:
         raise MmdControlRigBuildError("return the control rig to ATTACHED before removal")
     if metadata.get("owner") != CONTROL_RIG_MMD_OWNED:
@@ -897,6 +899,16 @@ def _validate_control_rig_topology(
         for node in set(resolved.values()) - {selection_set}
         if _is_dag_node(cmds, node)
     }
+    from mmd_tools.core.secondary_bone_controls import owned_nodes
+
+    root = cmds.ls(metadata["modelRootUuid"], long=True)[0]
+    try:
+        secondary_nodes = owned_nodes(root, cmds_module=cmds)
+    except (ValueError, RuntimeError) as exc:
+        raise MmdControlRigBuildError(str(exc)) from exc
+    recorded_dag.update(
+        node for node in secondary_nodes if _is_dag_node(cmds, node)
+    )
     if actual != recorded_dag:
         changed = ", ".join(sorted(actual.symmetric_difference(recorded_dag)))
         raise MmdControlRigBuildError(

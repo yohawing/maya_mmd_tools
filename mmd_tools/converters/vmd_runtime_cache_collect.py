@@ -353,6 +353,8 @@ def _collect_runtime_bake_cache(
                 context.logger.debug("mmd-anim runtime batch evaluation unavailable; using per-frame ABI")
             for maya_time, vmd_frame in bake_samples:
                 eval_copy_start = time.perf_counter()
+                if not instance.reset_ik_history():
+                    raise RuntimeError("mmd-anim IK history reset failed before independent bake sample")
                 if not instance.evaluate_clip_frame(clip, float(vmd_frame)):
                     eval_copy_elapsed += time.perf_counter() - eval_copy_start
                     continue

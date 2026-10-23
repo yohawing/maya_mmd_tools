@@ -1,5 +1,5 @@
 {
-  "description": "GoldenOracle numeric manifest — Maya bake vs mmd-anim runtime parity gate",
+  "description": "Pinned mmd-anim FFI regression snapshots vs release CLI; not an independent Maya or original-MMD parity oracle",
   "defaults": {
     "compare": {
       "epsilon": 0.003

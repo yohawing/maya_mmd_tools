@@ -184,7 +184,12 @@ def collect_clearable_authoring_attrs(
             # Append, Control Rig, and IK routes have their own ownership
             # checks below.  Only the two route planners that already prove a
             # native node belongs to this joint are accepted here.
-            if node_type not in _CLEARABLE_PHYSICAL_ROUTE_TYPES:
+            secondary_channel = (
+                channel in route.get("secondary_control_channels", ())
+                and node_type in {"joint", "transform"}
+                and attribute == channel
+            )
+            if node_type not in _CLEARABLE_PHYSICAL_ROUTE_TYPES and not secondary_channel:
                 continue
             if str(node) == str(joint) and str(attribute) == str(channel):
                 continue
@@ -255,17 +260,45 @@ def clear_existing_motion(
 
     # Clear the validated physical destinations selected by the keying route
     # planner so an omitted track cannot survive upstream of its joint.
+    secondary_defaults = {}
+    for joint, route in (authored_routes or {}).items():
+        canonical = cmds.ls(joint, long=True) or []
+        translate = fallback_translates.get(canonical[0]) if len(canonical) == 1 else None
+        if translate is None:
+            continue
+        for channel in route.get("secondary_control_channels", ()):
+            destination = route.get("attr_targets", {}).get(channel)
+            if destination:
+                secondary_defaults[destination] = (
+                    translate["XYZ".index(channel[-1])]
+                    if channel.startswith("translate") else 0.0
+                )
     for node, attrs in collect_clearable_authoring_attrs(
         authored_routes,
         target_joints,
         context.logger,
     ).items():
         owned_motion_nodes.add(node)
-        cleared += cut_keyable_attrs(
-            node,
-            tuple(sorted(attrs)),
-            preserve_curve_nodes=True,
-        )
+        secondary_locks = {
+            attr: bool(cmds.getAttr(f"{node}.{attr}", lock=True))
+            for attr in attrs if (node, attr) in secondary_defaults
+        }
+        try:
+            for attr, locked in secondary_locks.items():
+                if locked:
+                    cmds.setAttr(f"{node}.{attr}", lock=False)
+            cleared += cut_keyable_attrs(
+                node,
+                tuple(sorted(attrs)),
+                preserve_curve_nodes=True,
+                detached_curve_nodes=(
+                    detached_curve_nodes if detached_curve_nodes is not None else []
+                ) if secondary_locks else None,
+            )
+        finally:
+            for attr, locked in secondary_locks.items():
+                if locked:
+                    cmds.setAttr(f"{node}.{attr}", lock=True)
 
     # In CONTROL_OWNED/EDIT, authored VMD channels are redirected to the
     # controller curves.  Clear those curves as part of the same root-scoped
@@ -403,6 +436,18 @@ def clear_existing_motion(
     # cutKey はアニメーション曲線を削除するが joint の attribute 値はポーズのまま残る。
     # 後続の _record_bind_poses が正しい rest position を取得できるよう dagPose で復元する。
     _restore_joints_to_rest(target_joints, fallback_translates, context.logger)
+    # Empty direct curves were detached above and kept alive for rollback.
+    # Restore the authored rest values without introducing new motion keys.
+    for (node, attr), value in secondary_defaults.items():
+        plug = f"{node}.{attr}"
+        locked = bool(cmds.getAttr(plug, lock=True))
+        try:
+            if locked:
+                cmds.setAttr(plug, lock=False)
+            cmds.setAttr(plug, value)
+        finally:
+            if locked:
+                cmds.setAttr(plug, lock=True)
 
     context.logger.info(
         "Cleared existing VMD motion: keys_or_layers=%d joints=%d morph_nodes=%d",

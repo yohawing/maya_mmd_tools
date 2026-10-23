@@ -1582,6 +1582,19 @@ class MmdRuntimeInstance:
     def handle(self) -> c_void_p:
         return self._handle
 
+    def reset_ik_history(self) -> bool:
+        """Begin independent sampling; pre-0.5.3 libraries need no reset."""
+        if not self._handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_reset_ik_history", None)
+        if func is None:
+            return True
+        try:
+            return func(self._handle) == MMD_RUNTIME_STATUS_OK
+        except Exception:
+            logger.error("reset_ik_history failed", exc_info=True)
+            return False
+
     def evaluate_clip_frame(self, clip: MmdRuntimeClip, frame: float) -> bool:
         """
         指定フレームでクリップを評価します。

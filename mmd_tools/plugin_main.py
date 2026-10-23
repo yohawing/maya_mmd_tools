@@ -37,6 +37,7 @@ _python_physics_driver_registered = False
 _after_open_callback_id = None
 _after_new_callback_id = None
 _active_view_callback_id = None
+_secondary_history_callback_ids = []
 _MAIN_WINDOW_NAME = "MMDToolsMainWindow"
 _MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
 # Maya's scripted plug-in loader can execute this file without binding
@@ -452,6 +453,7 @@ def _after_scene_new(*_args):
     """Drop process-owned HumanIK state after Maya creates a new scene."""
     _reset_humanik_session_after_scene_change()
     _refresh_animator_toolset_after_scene_change()
+    _sync_secondary_control_callbacks(clear=True)
     _soft_sync_dx11_device_pixel_ratio(force=True)
 
 
@@ -571,6 +573,42 @@ def _deregister_humanik_control_rig_watch():
         pass
 
 
+def _sync_secondary_control_callbacks(*, clear=False):
+    """Keep secondary-control edit locks in sync with the current scene."""
+    try:
+        from mmd_tools.core import secondary_bone_controls
+
+        if clear:
+            secondary_bone_controls.clear_callbacks()
+        else:
+            secondary_bone_controls.install_scene_callbacks()
+    except Exception as exc:
+        om.MGlobal.displayWarning(f"MMD secondary controller callbacks failed: {exc}")
+
+
+def _secondary_controls_after_history(*_args):
+    """Reinstall watches when Undo/Redo restores controller metadata."""
+    _sync_secondary_control_callbacks()
+
+
+def _register_secondary_history_callbacks():
+    if _secondary_history_callback_ids:
+        return
+    for event in ("Undo", "Redo"):
+        _secondary_history_callback_ids.append(
+            om.MEventMessage.addEventCallback(event, _secondary_controls_after_history)
+        )
+    _secondary_history_callback_ids.append(
+        om.MSceneMessage.addCallback(om.MSceneMessage.kAfterSceneReadAndRecordEdits, _secondary_controls_after_history)
+    )
+
+
+def _remove_secondary_history_callbacks():
+    for callback in _secondary_history_callback_ids:
+        om.MMessage.removeCallback(callback)
+    _secondary_history_callback_ids.clear()
+
+
 def _register_after_open_callback():
     """Register scene-open/new callbacks, tolerating host limitations."""
     global _after_open_callback_id, _after_new_callback_id
@@ -682,6 +720,9 @@ def initializePlugin(mobject):
         _register_after_open_callback()
         _register_active_view_callback()
         _register_humanik_control_rig_watch()
+        _register_secondary_history_callbacks()
+        if not _scene_file_is_being_read():
+            _sync_secondary_control_callbacks()
         _trace_initialize_step("initialize:done")
     except Exception as e:
         _trace_initialize_step(f"initialize:error:{type(e).__name__}:{e}")
@@ -700,6 +741,8 @@ def uninitializePlugin(mobject):
             raise RuntimeError("HumanIK session restore failed; plugin unload was aborted")
         _close_humanik_window()
         _deregister_humanik_control_rig_watch()
+        _remove_secondary_history_callbacks()
+        _sync_secondary_control_callbacks(clear=True)
         _remove_active_view_callback()
         _remove_after_open_callback()
         close_control_rig_manager()
