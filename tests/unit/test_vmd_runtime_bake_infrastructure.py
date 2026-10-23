@@ -198,11 +198,14 @@ class TestVmdRuntimeBakeInfrastructure(unittest.TestCase):
         )
 
         def evaluate_clip_frame(_clip, frame):
+            self.assertEqual(resets.call_count, len(evaluated) + 1)
             evaluated.append(frame)
             return frame != 1.0
 
+        resets = MagicMock(return_value=True)
         instance = SimpleNamespace(
             evaluate_clip_frame_batch=lambda *_args, **_kwargs: None,
+            reset_ik_history=resets,
             evaluate_clip_frame=evaluate_clip_frame,
             get_world_matrices=lambda: [],
             get_morph_weights=lambda: [0.25, 0.75],

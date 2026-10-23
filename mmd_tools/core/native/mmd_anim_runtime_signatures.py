@@ -132,6 +132,7 @@ def setup_function_signatures(lib: CDLL) -> None:
 
     lib.mmd_runtime_instance_create_for_model.restype = c_void_p
     lib.mmd_runtime_instance_create_for_model.argtypes = [c_void_p]
+    set_sig(lib, "mmd_runtime_instance_reset_ik_history", c_int32, [c_void_p])
 
     lib.mmd_runtime_instance_evaluate_clip_frame.restype = c_bool
     lib.mmd_runtime_instance_evaluate_clip_frame.argtypes = [c_void_p, c_void_p, c_float]

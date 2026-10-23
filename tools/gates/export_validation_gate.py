@@ -20,7 +20,7 @@ DEFAULT_ASSETS = (
 )
 DEFAULT_MODEL = Path("tests/data/mmt_test_model.pmx")
 DEFAULT_MOTION = Path("tests/data/mmt_test_model_test_motion.vmd")
-DEFAULT_EXPECTED_CLI_VERSION = "mmd-anim 0.2.0"
+DEFAULT_EXPECTED_CLI_VERSION = "mmd-anim 0.5.3"
 MAX_EVIDENCE_LINE_LENGTH = 256
 MAX_CASE_ERROR_LENGTH = 256
 MAX_JSON_SUMMARY_DEPTH = 3
