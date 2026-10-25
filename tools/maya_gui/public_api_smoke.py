@@ -46,7 +46,7 @@ def run_check(config_path):
     try:
         report["maya"] = cmds.about(version=True)
         cmds.loadPlugin(str(ROOT / "mmd_tools/plugin_main.py"), quiet=True)
-        from mmd_tools.api import get_model_skeleton, list_models
+        from mmd_tools.services.scene_model_service import SceneModelService
         from mmd_tools.core.mmd_parser import parse_pmx_file
         from mmd_tools.io.mmd_importer import import_mmd_file
 
@@ -61,10 +61,11 @@ def run_check(config_path):
         joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
         cmds.select(root, replace=True)
         before = snapshot(joints)
-        models = list_models()
-        skeleton = get_model_skeleton(root)
+        scene = SceneModelService()
+        models = scene.list_mmd_models()
+        skeleton = scene.get_model_skeleton(root)
         check("initial_reads_preserve_scene", before == snapshot(joints))
-        check("model_list", isinstance(models, tuple) and root in models, models)
+        check("model_list", isinstance(models, list) and root in models, models)
         check("canonical_root", skeleton["model_root"] == root, skeleton["model_root"])
         bones = skeleton["bones"]
         check("bone_count", len(bones) == len(pmx.bones), len(bones))
@@ -90,8 +91,8 @@ def run_check(config_path):
         cmds.setKeyframe(animated_joint, attribute="translateX", time=10, value=initial + 2.0)
         cmds.currentTime(10)
         before = snapshot(joints)
-        changed_pose = get_model_skeleton(root)
-        repeated_models = list_models()
+        changed_pose = scene.get_model_skeleton(root)
+        repeated_models = scene.list_mmd_models()
         check("animated_reads_preserve_scene", before == snapshot(joints))
         check("animated_model_list", repeated_models == models)
         check("saved_bind_is_pose_independent", changed_pose == skeleton)

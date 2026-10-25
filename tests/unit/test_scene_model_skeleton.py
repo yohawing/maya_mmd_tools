@@ -1,6 +1,5 @@
 """Public skeleton reads compose existing model and bone readers without writes."""
 
-import importlib
 import json
 import sys
 from types import SimpleNamespace
@@ -8,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from mmd_tools import api
+from mmd_tools.services.scene_model_service import SceneModelService
 from mmd_tools.adapters.maya_scene_metadata_backend import MayaSceneMetadataError
 from tests.unit.test_maya_scene_metadata_backend import FakeCmds, _bone
 
@@ -35,11 +34,8 @@ class _Scene(FakeCmds):
 
 
 @pytest.fixture
-def scene(monkeypatch):
-    scene = _Scene()
-    monkeypatch.setattr("mmd_tools.adapters.MayaCmdsAdapter", lambda **kwargs: scene)
-    monkeypatch.setattr("mmd_tools.services.scene_model_service.MayaCmdsAdapter", lambda **kwargs: scene)
-    return scene
+def scene():
+    return _Scene()
 
 
 @pytest.fixture
@@ -58,8 +54,9 @@ def test_namespaced_snapshot_preserves_pmx_identity_and_saved_bind(scene, bind_r
     _bone(scene, parent, 0)
     scene.attrs[(parent, "mmd_bone_name")] = "センター"
 
-    assert api.list_models() == (scene.root,)
-    result = api.get_model_skeleton("character:model")
+    service = SceneModelService(cmds_adapter=scene)
+    assert service.list_mmd_models() == [scene.root]
+    result = service.get_model_skeleton("character:model")
 
     assert result["model_root"] == scene.root
     assert [bone["index"] for bone in result["bones"]] == [0, 1]
@@ -79,7 +76,7 @@ def test_namespaced_snapshot_preserves_pmx_identity_and_saved_bind(scene, bind_r
 @pytest.mark.parametrize("root", [None, "", "missing", "ambiguous", "|ordinary", "|deleted"])
 def test_rejects_missing_ambiguous_or_non_model_roots(scene, bind_resolver, root):
     with pytest.raises(ValueError):
-        api.get_model_skeleton(root)
+        SceneModelService(cmds_adapter=scene).get_model_skeleton(root)
     bind_resolver.assert_not_called()
     assert scene.write_history == []
 
@@ -88,7 +85,7 @@ def test_duplicate_bone_indices_keep_existing_metadata_error(scene, bind_resolve
     _bone(scene, scene.root + "|first", 0)
     _bone(scene, scene.root + "|second", 0)
     with pytest.raises(MayaSceneMetadataError, match="duplicate mmd_bone_index"):
-        api.get_model_skeleton(scene.root)
+        SceneModelService(cmds_adapter=scene).get_model_skeleton(scene.root)
     bind_resolver.assert_not_called()
 
 
@@ -97,11 +94,6 @@ def test_bind_failure_is_propagated_without_pose_fallback(scene, bind_resolver):
     error = RuntimeError("bind_basis_missing")
     bind_resolver.side_effect = error
     with pytest.raises(RuntimeError) as caught:
-        api.get_model_skeleton(scene.root)
+        SceneModelService(cmds_adapter=scene).get_model_skeleton(scene.root)
     assert caught.value is error
     assert scene.write_history == []
-
-
-def test_import_public_api_does_not_require_maya(monkeypatch):
-    monkeypatch.setitem(sys.modules, "maya", None)
-    assert importlib.reload(api).__all__ == ["list_models", "get_model_skeleton"]

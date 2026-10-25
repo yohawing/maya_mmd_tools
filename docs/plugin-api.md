@@ -1,6 +1,6 @@
 # 外部プラグインからモデルと骨を取得する
 
-`mmd_tools.api`は、外部プラグインからMMDモデルを扱うPythonの入口です。モデルの内部属性名やadapterの構築を知らずに、モデル一覧と骨の基準姿勢を取得できます。
+既存の`mmd_tools.services.scene_model_service.SceneModelService`を外部プラグインから利用します。モデルの内部属性名やadapterの構築を知らずに、モデル一覧と骨の基準姿勢を取得できます。
 
 このAPIはMaya内のメインスレッドで使います。MMD Toolsでモデルをインポートしてから呼び出します。現在の公開範囲は読み取り操作です。
 
@@ -9,26 +9,27 @@
 次の例はモデル一覧を表示し、モデルが1つだけの場合に骨情報を取得します。複数モデルがある場合は、呼び出し側のUIで選んだrootを渡します。
 
 ```python
-from mmd_tools import api
+from mmd_tools.services.scene_model_service import SceneModelService
 
-models = api.list_models()
+scene = SceneModelService()
+models = scene.list_mmd_models()
 print(models)
 
 if len(models) == 1:
-    skeleton = api.get_model_skeleton(models[0])
+    skeleton = scene.get_model_skeleton(models[0])
     for bone in skeleton["bones"]:
         print(bone["index"], bone["name"], bone["joint"])
 ```
 
 APIはシーンの選択、現在時刻、キー、接続を変更しません。返される値は呼び出し時点のスナップショットで、JSONに変換できます。モデルや骨をリネーム・削除した場合は取得し直します。
 
-## `list_models()`
+## `list_mmd_models()`
 
-MMDモデルrootのDAG full pathを名前順の`tuple[str, ...]`で返します。モデルがなければ空のtupleです。名前空間はpathに含まれます。
+MMDモデルrootのDAG full pathを名前順の`list[str]`で返します。モデルがなければ空のlistです。名前空間はpathに含まれます。
 
 ## `get_model_skeleton(model_root)`
 
-`model_root`には`list_models()`で取得したrootを渡します。一意に解決できる名前も受け付けますが、存在しない名前、曖昧な短い名前、MMDモデルroot以外は拒否します。
+`model_root`には`list_mmd_models()`で取得したrootを渡します。一意に解決できる名前も受け付けますが、存在しない名前、曖昧な短い名前、MMDモデルroot以外は拒否します。
 
 戻り値は次の辞書です。
 
