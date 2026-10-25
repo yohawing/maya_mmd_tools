@@ -1428,7 +1428,7 @@ def _import_model_action(
     return _canonical_imported_model_root(root)
 
 
-def _import_vmd_action(root: str, model: Path, source: Path) -> str:
+def _import_vmd_action(root: str, source: Path) -> str:
     """Apply a VMD through the production ImportVmdAction boundary."""
 
     from mmd_tools.actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
@@ -1436,7 +1436,6 @@ def _import_vmd_action(root: str, model: Path, source: Path) -> str:
     options = {
         **_import_options(),
         "target_model": root,
-        "pmx_path": str(model),
         "bake_mode": False,
     }
     result = ImportVmdAction().execute(
@@ -2676,7 +2675,7 @@ def _run_vmd_case(
         dict[str, Any] | None,
     ]:
         root = _import_model_action(source_model)
-        _import_vmd_action(root, source_model, source_vmd)
+        _import_vmd_action(root, source_vmd)
         ik_witness = (
             _capture_ik_import_witness(root, source_data.ik_show_hide_frames)
             if source_data.ik_show_hide_frames
@@ -2787,7 +2786,7 @@ def _run_vmd_case(
         dict[str, Any] | None,
     ]:
         fresh_root = _import_model_action(source_model)
-        _import_vmd_action(fresh_root, source_model, output)
+        _import_vmd_action(fresh_root, output)
         fresh_ik_witness = (
             _capture_ik_import_witness(fresh_root, source_data.ik_show_hide_frames)
             if source_ik_witness is not None

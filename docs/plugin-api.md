@@ -103,4 +103,27 @@ print(result.succeeded, result.state, result.report, result.error)
 
 `start`と`end`は個別に指定できます。たとえば`session.bake_to_mmd_rig(start=0, end=120)`は明示範囲、`session.bake_to_mmd_rig(end=120)`は再生開始から120までを使います。省略した開始は再生開始を切り上げ、終了は再生終了を切り下げた整数フレームです。整数フレームを含まない範囲は`ValueError`で拒否します。
 
+## 読み込んだモデルにVMDを適用する
+
+モデル向けVMDは`ImportVmdAction`で適用します。モデルに元PMXの保存先が記録され、そのファイルが存在する場合は、PMXパスの再指定は不要です。次の例では対象モデルを選択し、VMDパスを実際のファイルへ置き換えて実行します。
+
+```python
+from mmd_tools.actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
+from mmd_tools.services.scene_model_service import SceneModelService
+
+root = SceneModelService().resolve_model_from_selection()
+if root is None:
+    raise ValueError("VMDを適用するMMDモデルを1つ選択してください")
+
+result = ImportVmdAction().execute(
+    ImportVmdRequest(
+        file_path=r"C:\work\motion.vmd",
+        options={"target_model": root},
+    )
+)
+print(result.succeeded, result.outcome, result.warnings, result.error)
+```
+
+`result.outcome`が`success`なら読み込み完了です。`partial`の場合は`result.warnings`を確認し、`fatal`の場合は`result.error`を確認します。別のPMXを明示する場合は、`options`の`pmx_path`にパスを指定します。
+
 このページの呼び出し方はv0.9.0向けに整備中です。0.xではAPIが変更される場合があります。
