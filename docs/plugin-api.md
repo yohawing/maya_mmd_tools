@@ -1,8 +1,8 @@
-# 外部プラグインからモデルと骨を取得する
+# 外部プラグインから既存サービスを使う
 
 既存の`mmd_tools.services.scene_model_service.SceneModelService`を外部プラグインから利用します。モデルの内部属性名やadapterの構築を知らずに、モデル一覧と骨の基準姿勢を取得できます。
 
-このAPIはMaya内のメインスレッドで使います。MMD Toolsでモデルをインポートしてから呼び出します。現在の公開範囲は読み取り操作です。
+これらのサービスはMaya内のメインスレッドで使います。MMD Toolsでモデルをインポートしてから呼び出します。
 
 ## モデルを選んで骨を取得する
 
@@ -21,7 +21,7 @@ if len(models) == 1:
         print(bone["index"], bone["name"], bone["joint"])
 ```
 
-APIはシーンの選択、現在時刻、キー、接続を変更しません。返される値は呼び出し時点のスナップショットで、JSONに変換できます。モデルや骨をリネーム・削除した場合は取得し直します。
+モデル・骨情報の読み取りはシーンの選択、現在時刻、キー、接続を変更しません。返される値は呼び出し時点のスナップショットで、JSONに変換できます。モデルや骨をリネーム・削除した場合は取得し直します。
 
 ## `list_mmd_models()`
 
@@ -73,4 +73,26 @@ if root is not None:
 
 骨の取得は、返されたjointへ直接接続してよいという保証ではありません。既存のIK・付与・モーフ・物理との駆動切替、ベイク、解除は別の操作契約として整備します。
 
-この入口はv0.9.0向けの開発中APIです。0.xではAPIが変更される場合があります。
+## シーンのモーションをVMDへ出力する
+
+`ExportWorkflowService`は、内部のactionやadapterを用意せずに使えます。標準の出力処理が既定で設定されます。次の例では、出力先を実在するフォルダー内のパスに置き換えます。
+
+```python
+from mmd_tools.services import ExportWorkflowRequest, ExportWorkflowService
+from mmd_tools.services.scene_model_service import SceneModelService
+
+root = SceneModelService().resolve_model_from_selection()
+if root is None:
+    raise ValueError("出力するMMDモデルを1つ選択してください")
+
+request = ExportWorkflowRequest(
+    file_path=r"C:\work\motion.vmd",
+    options={"current_model_root": root, "start_frame": 0, "end_frame": 120},
+)
+result = ExportWorkflowService().execute(request)
+print(result.succeeded, result.state, result.report, result.error)
+```
+
+拡張子からVMD出力を判定し、指定範囲をBake Timelineで評価します。成功は`result.succeeded`で確認します。検証エラーや未承認の警告がある場合は出力を止め、`result.report`に理由を返します。独自のVMD actionが必要な呼び出し元は、従来どおりコンストラクターの`vmd_action`で指定できます。
+
+このページの呼び出し方はv0.9.0向けに整備中です。0.xではAPIが変更される場合があります。

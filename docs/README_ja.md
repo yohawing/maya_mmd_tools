@@ -2,7 +2,7 @@
 
 [English](../README.md)
 
-外部プラグインの作者向け: [モデル・骨情報を取得するPython API](plugin-api.md)
+外部プラグインの作者向け: [既存サービスによるモデル取得・VMD出力](plugin-api.md)
 
 
 MayaでMikuMikuDance (MMD) のPMD/PMX/VMDを読み込み、編集、書き出しをするためのツールです。

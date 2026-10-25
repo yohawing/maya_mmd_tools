@@ -1,7 +1,6 @@
 """Presenter for the single-action PMX/VMD/VPD export workflow."""
 
 from ..qt_compat import QApplication, QMessageBox, QObject
-from ...adapters.maya_vmd_prepare_backend import create_maya_bake_timeline_vmd_action
 from ...core.logger import get_logger
 from ...services.export_workflow_service import (
     ExportWorkflowResult,
@@ -34,7 +33,6 @@ class ExportPresenter(QObject):
         if workflow_service is None:
             workflow_service = ExportWorkflowService(
                 scene_service=getattr(app_state, "scene_model_service", None),
-                vmd_action=create_maya_bake_timeline_vmd_action(),
             )
         self.workflow_service = workflow_service
         self._cancel_requested = False
