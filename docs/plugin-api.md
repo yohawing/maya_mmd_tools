@@ -27,6 +27,20 @@ APIはシーンの選択、現在時刻、キー、接続を変更しません�
 
 MMDモデルrootのDAG full pathを名前順の`list[str]`で返します。モデルがなければ空のlistです。名前空間はpathに含まれます。
 
+## 選択中のモデルを使う
+
+候補一覧を用意せず、選択されたモデルやその子nodeからrootを取得できます。
+
+```python
+root = scene.resolve_model_from_selection()
+if root is not None:
+    skeleton = scene.get_model_skeleton(root)
+```
+
+引数を省略するか`None`を渡すと、シーン内のMMDモデルを候補にします。未選択、候補に含まれない選択、複数モデルにまたがる選択は`None`を返します。
+
+`resolve_model_from_selection(available_models)`に一覧を渡すと、その候補だけから解決します。空の一覧は「候補なし」で、自動列挙しません。UIの候補や取得済み一覧を維持したい場合に使います。
+
 ## `get_model_skeleton(model_root)`
 
 `model_root`には`list_mmd_models()`で取得したrootを渡します。一意に解決できる名前も受け付けますが、存在しない名前、曖昧な短い名前、MMDモデルroot以外は拒否します。

@@ -64,7 +64,11 @@ def run_check(config_path):
         scene = SceneModelService()
         models = scene.list_mmd_models()
         skeleton = scene.get_model_skeleton(root)
+        selected_model = scene.resolve_model_from_selection()
+        empty_candidate_model = scene.resolve_model_from_selection([])
         check("initial_reads_preserve_scene", before == snapshot(joints))
+        check("selected_model_without_candidates", selected_model == root, selected_model)
+        check("empty_candidates_stay_empty", empty_candidate_model is None)
         check("model_list", isinstance(models, list) and root in models, models)
         check("canonical_root", skeleton["model_root"] == root, skeleton["model_root"])
         bones = skeleton["bones"]

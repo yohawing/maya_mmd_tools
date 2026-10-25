@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import Mock
 
 from mmd_tools.adapters import MayaCmdsAdapter
 from mmd_tools.core.constants import (
@@ -395,6 +396,48 @@ class TestSceneModelService(unittest.TestCase):
             service.list_mmd_models(),
             ["|groupA|model_root", "|groupB|model_root"],
         )
+
+    def test_resolve_model_from_selection_defaults_to_scene_models(self):
+        cmds = _FakeCmds()
+        root = "|group|character:model"
+        cmds.transforms = [root]
+        cmds.selection = [root + "|character:joint"]
+        cmds.parents = {cmds.selection[0]: root}
+        cmds.attrs = {root: {ATTR_MMD_MODEL_NAME: "Model"}}
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(service.resolve_model_from_selection(), root)
+        self.assertEqual(service.resolve_model_from_selection(None), root)
+
+    def test_resolve_model_from_selection_keeps_explicit_candidate_restrictions(self):
+        cmds = _FakeCmds()
+        root = "|modelA"
+        cmds.selection = [root]
+        cmds.attrs = {root: {ATTR_MMD_MODEL_NAME: "A"}}
+        service = SceneModelService(cmds_module=cmds)
+        service.list_mmd_models = Mock(side_effect=AssertionError("must not enumerate"))
+
+        for candidates in ([], (), ["|modelB"]):
+            with self.subTest(candidates=candidates):
+                self.assertIsNone(service.resolve_model_from_selection(candidates))
+        self.assertEqual(service.resolve_model_from_selection([root]), root)
+        service.list_mmd_models.assert_not_called()
+
+    def test_resolve_model_from_selection_without_selection_does_not_enumerate(self):
+        service = SceneModelService(cmds_module=_FakeCmds())
+        service.list_mmd_models = Mock(side_effect=AssertionError("must not enumerate"))
+
+        self.assertIsNone(service.resolve_model_from_selection())
+        service.list_mmd_models.assert_not_called()
+
+    def test_resolve_model_from_selection_defaults_reject_multiple_selected_models(self):
+        cmds = _FakeCmds()
+        cmds.transforms = ["|modelA", "|modelB"]
+        cmds.selection = list(cmds.transforms)
+        cmds.attrs = {root: {ATTR_MMD_MODEL_NAME: root} for root in cmds.transforms}
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertIsNone(service.resolve_model_from_selection())
 
     def test_resolve_model_from_selection_uses_canonical_identity_only(self):
         cmds = _FakeCmds()

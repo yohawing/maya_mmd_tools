@@ -183,11 +183,19 @@ class SceneModelService:
             kwargs["type"] = node_type
         return self._cmds_adapter.ls(**kwargs) or []
 
-    def resolve_model_from_selection(self, available_models):
-        """現在選択から、available_models に含まれるMMDモデル root を推測する。"""
+    def resolve_model_from_selection(self, available_models=None):
+        """現在選択が属する一意なMMDモデル root を返す。
+
+        available_models の省略または None はシーン内のモデルを列挙する。
+        明示した候補リストは対象を制限し、空リストは候補なしとして扱う。
+        選択なし、または複数モデルにまたがる選択では None を返す。
+        """
         selected = self.get_selected_nodes()
         if not selected:
             return None
+
+        if available_models is None:
+            available_models = self.list_mmd_models()
 
         available_identities = set()
         for model_root in available_models or []:
