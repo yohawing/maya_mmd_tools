@@ -1895,6 +1895,52 @@ class TestVmdSceneCollector(unittest.TestCase):
             ]
         )
 
+    def test_control_rig_layered_translation_with_runtime_rotation_route(self):
+        self.cmds.node_types.update({
+            "model_root": "transform", "joint": "joint",
+            "blend": "animBlendNodeAdditiveDL", "curve": "animCurveTL",
+            "layer": "animLayer", "runtime": "mmdCcdIk", "driver": "pairBlend",
+        })
+        self.cmds.children["model_root"] = ["joint"]
+        self.cmds.attrs["joint", ATTR_MMD_BONE_NAME] = "足首"
+        self.cmds.keys["joint", "translateX"] = {0.0: 1.0, 2.0: 2.0}
+        self.cmds.connections["joint", "translateX", True, False] = ["blend.output"]
+        self.cmds.connections[
+            "runtime", "inputRotate[0].inputRotateElementX", True, False
+        ] = ["driver.outRotateX"]
+        self.cmds.blend_connection_pairs["blend"] = [
+            "blend.inputB", "curve.output",
+            "blend.weightA", "layer.backgroundWeight",
+            "blend.weightB", "layer.foregroundWeight",
+        ]
+        route = {
+            f"rotate{axis}": ("runtime", f"inputRotate[0].inputRotateElement{axis}")
+            for axis in "XYZ"
+        }
+        self.assertIsNone(collector_module._bake_timeline_single_key_bone_route("joint", route))
+        collector_module.read_mmd_control_rig_metadata = lambda _model: {
+            "state": "EDIT", "owner": "CONTROL_OWNED", "bindings": {},
+        }
+        with mock.patch.object(
+            collector_module, "resolve_control_rig_direct_vmd_export_routes",
+            return_value={"candidates": {}, "ikStateRoutes": {}},
+        ), mock.patch.object(
+            VmdSceneCollector, "_scene_authored_input_routes", return_value={"joint": route},
+        ):
+            plan = VmdSceneCollector()._control_rig_direct_export_plan("model_root", ["joint"])
+            self.assertEqual(plan["joints"], ["joint"])
+            self.assertEqual(plan["value_routes"]["joint"], route)
+
+            # Group validation must still reject animated layer state and
+            # an arbitrary foreign driver substituted for the layer weight.
+            self.cmds.keys["layer", "weight"] = {0.0: 1.0}
+            with self.assertRaisesRegex(ValueError, "dependency output"):
+                VmdSceneCollector()._control_rig_direct_export_plan("model_root", ["joint"])
+            self.cmds.keys.pop(("layer", "weight"))
+            self.cmds.blend_connection_pairs["blend"][-1] = "driver.outRotateX"
+            with self.assertRaisesRegex(ValueError, "dependency output"):
+                VmdSceneCollector()._control_rig_direct_export_plan("model_root", ["joint"])
+
     def test_unsupported_dependency_classifier_keeps_fatal_graph_reasons(self):
         def classify(source_type, sources, destinations=()):
             self.cmds.node_types = {
