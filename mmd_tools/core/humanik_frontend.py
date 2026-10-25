@@ -8,6 +8,7 @@ tested without opening HumanIK panels.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import math
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult, bake_humanik_target_preview
@@ -1177,20 +1178,41 @@ class HumanIkFrontendSession:
         self._persist_control_rig_transactions()
         return True
 
-    def bake_to_mmd_rig(self, start: int, end: int) -> HumanIkBakeResult:
-        """Bake the active target preview into the target MMD rig."""
+    def _resolve_bake_frame_range(self, start, end) -> Tuple[int, int]:
+        """Resolve omitted endpoints to the playback range's integer frames."""
+        if start is None or end is None:
+            cmds = self._cmds or maya_cmds()
+            if start is None:
+                start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
+            if end is None:
+                end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
+        start, end = int(start), int(end)
+        if end < start:
+            raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
+        return start, end
+
+    def bake_to_mmd_rig(
+        self, start: Optional[int] = None, end: Optional[int] = None,
+    ) -> HumanIkBakeResult:
+        """Bake the active target preview into the target MMD rig.
+
+        Omitted/None endpoints use the playback minimum (rounded up) and
+        maximum (rounded down). Explicit endpoints retain integer conversion.
+        Empty integer ranges are rejected before sampling or authoring.
+        """
         preview = self.active_preview
         if preview is None or self._target_model_root is None:
             raise RuntimeError("HumanIK target preview is not active")
         target_root = self._target_model_root
         target = self._bindings[target_root]
         transaction = self._control_rig_transactions.get(target_root)
+        start, end = self._resolve_bake_frame_range(start, end)
         try:
             result = bake_humanik_target_preview(
                 preview,
                 (assignment.joint for assignment in target.assignments),
-                int(start),
-                int(end),
+                start,
+                end,
                 cmds_module=self._cmds,
                 mel_module=self._mel,
             )
@@ -1211,7 +1233,9 @@ class HumanIkFrontendSession:
         self._persist_control_rig_transactions()
         return result
 
-    def bake_to_control_rig(self, start: int, end: int) -> HumanIkControlRigBakeResult:
+    def bake_to_control_rig(
+        self, start: Optional[int] = None, end: Optional[int] = None,
+    ) -> HumanIkControlRigBakeResult:
         """Bake the active SOURCE/VMD retarget onto the target Control Rig.
 
         The target preview and its Control Rig transaction are both required.
@@ -1221,6 +1245,9 @@ class HumanIkFrontendSession:
         :meth:`restore_mmd_rig` is explicitly requested.  Successful calls
         persist the transaction's ``baked`` flag so a reopened scene keeps the
         same non-destructive Keep path available.
+
+        Omitted/None endpoints use the integer playback range, as in
+        :meth:`bake_to_mmd_rig`.
         """
         preview = self.active_preview
         if preview is None or self._target_model_root is None:
@@ -1237,10 +1264,11 @@ class HumanIkFrontendSession:
                 "HumanIK target Control Rig character does not match the target binding: "
                 f"transaction={transaction.character}, binding={binding.character}"
             )
+        start, end = self._resolve_bake_frame_range(start, end)
         result = bake_humanik_control_rig(
             transaction,
-            int(start),
-            int(end),
+            start,
+            end,
             cmds_module=self._cmds,
             mel_module=self._mel,
         )
@@ -1249,7 +1277,9 @@ class HumanIkFrontendSession:
         self._persist_control_rig_transactions()
         return result
 
-    def bake_from_control_rig(self, start: int, end: int) -> HumanIkBakeResult:
+    def bake_from_control_rig(
+        self, start: Optional[int] = None, end: Optional[int] = None,
+    ) -> HumanIkBakeResult:
         """Bake edited Control Rig output back to the target MMD rig.
 
         This is the terminal half of the Control Rig round trip.  It reuses
@@ -1257,6 +1287,9 @@ class HumanIkFrontendSession:
         then releases the target Control Rig transaction only after authoring
         succeeds.  A failed authoring attempt leaves the transaction available
         for the normal Restore MMD Rig recovery path.
+
+        Omitted/None endpoints use the integer playback range, as in
+        :meth:`bake_to_mmd_rig`.
         """
         preview = self.active_preview
         if preview is None or self._target_model_root is None:

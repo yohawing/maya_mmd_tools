@@ -1,7 +1,7 @@
 """Unit tests for the UI-neutral HumanIK frontend session."""
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult
 from mmd_tools.core.humanik_builder import HumanIkCharacterCreationError
@@ -147,6 +147,73 @@ class FakeExistingHikMel:
 
 def _session():
     return HumanIkFrontendSession(stance_transaction_factory=FakeStance)
+
+
+class TestHumanIkBakeFrameRange(unittest.TestCase):
+    def _ready_session(self):
+        session = _session()
+        session._cmds = Mock()
+        session._bindings["|target"] = HumanIkFrontendBinding(
+            model_root="|target", character="Character_target", result=_result(),
+        )
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        session._control_rig_transactions["|target"] = FakeControlRigTransaction(
+            character="Character_target",
+        )
+        session._persist_control_rig_transactions = Mock()
+        return session
+
+    def test_bake_methods_resolve_only_omitted_endpoints(self):
+        cases = (
+            ({}, (2, 10), [call(query=True, minTime=True), call(query=True, maxTime=True)]),
+            ({"start": 0}, (0, 10), [call(query=True, maxTime=True)]),
+            ({"end": 9}, (2, 9), [call(query=True, minTime=True)]),
+            ({"start": 0.9, "end": 9.9}, (0, 9), []),
+        )
+        for name in ("bake_to_mmd_rig", "bake_to_control_rig", "bake_from_control_rig"):
+            for arguments, expected, queries in cases:
+                with self.subTest(action=name, arguments=arguments):
+                    session = self._ready_session()
+                    session._cmds.playbackOptions.side_effect = (
+                        lambda **kwargs: 1.9 if kwargs.get("minTime") else 10.1
+                    )
+                    with patch(
+                        "mmd_tools.core.humanik_frontend.bake_humanik_target_preview",
+                    ) as bake_mmd, patch(
+                        "mmd_tools.core.humanik_frontend.bake_humanik_control_rig",
+                    ) as bake_control, patch(
+                        "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+                    ):
+                        getattr(session, name)(**arguments)
+                    bake = bake_control if name == "bake_to_control_rig" else bake_mmd
+                    offset = 1 if name == "bake_to_control_rig" else 2
+                    self.assertEqual(bake.call_args.args[offset:offset + 2], expected)
+                    self.assertEqual(session._cmds.playbackOptions.call_args_list, queries)
+
+    def test_empty_integer_playback_range_does_not_sample_or_release_ownership(self):
+        for name in ("bake_to_mmd_rig", "bake_to_control_rig", "bake_from_control_rig"):
+            with self.subTest(action=name):
+                session = self._ready_session()
+                preview = session._preview
+                transaction = session._control_rig_transactions["|target"]
+                session._cmds.playbackOptions.side_effect = [5.2, 5.8]
+                with patch(
+                    "mmd_tools.core.humanik_frontend.bake_humanik_target_preview",
+                ) as bake_mmd, patch(
+                    "mmd_tools.core.humanik_frontend.bake_humanik_control_rig",
+                ) as bake_control, patch(
+                    "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+                ) as stop:
+                    with self.assertRaisesRegex(ValueError, "frame range is empty"):
+                        getattr(session, name)()
+                bake_mmd.assert_not_called()
+                bake_control.assert_not_called()
+                stop.assert_not_called()
+                self.assertIs(session._preview, preview)
+                self.assertTrue(transaction.active)
+                self.assertFalse(transaction.baked)
+                session._persist_control_rig_transactions.assert_not_called()
 
 
 class TestHumanIkFrontend(unittest.TestCase):

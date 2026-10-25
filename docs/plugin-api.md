@@ -95,4 +95,12 @@ print(result.succeeded, result.state, result.report, result.error)
 
 拡張子からVMD出力を判定し、指定範囲をBake Timelineで評価します。成功は`result.succeeded`で確認します。検証エラーや未承認の警告がある場合は出力を止め、`result.report`に理由を返します。独自のVMD actionが必要な呼び出し元は、従来どおりコンストラクターの`vmd_action`で指定できます。
 
+## HumanIKの再生範囲をベイクする
+
+`mmd_tools.core.humanik_frontend.HumanIkFrontendSession`でSOURCEとTARGETを設定し、プレビューを開始した後は、`session.bake_to_mmd_rig()`で現在の再生範囲をMMDリグへベイクできます。
+
+`bake_to_control_rig()`と`bake_from_control_rig()`も範囲を省略できます。この2つは、同じセッションでTARGETのControl Rigを作成してから使います。前者は編集用のControl Rigを維持し、後者は編集結果をMMDリグへ戻します。
+
+`start`と`end`は個別に指定できます。たとえば`session.bake_to_mmd_rig(start=0, end=120)`は明示範囲、`session.bake_to_mmd_rig(end=120)`は再生開始から120までを使います。省略した開始は再生開始を切り上げ、終了は再生終了を切り下げた整数フレームです。整数フレームを含まない範囲は`ValueError`で拒否します。
+
 このページの呼び出し方はv0.9.0向けに整備中です。0.xではAPIが変更される場合があります。

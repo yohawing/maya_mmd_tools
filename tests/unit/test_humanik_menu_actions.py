@@ -588,63 +588,31 @@ class TestHumanIkMenuActions(unittest.TestCase):
         self.assertIn(("inspect_target_ownership", "|model_root"), self.session.calls)
         self.assertIn(("enter_target_mode", "|model_root"), self.session.calls)
 
-    @patch.object(actions, "resolve_model_root", return_value="|model_root")
-    def test_bake_uses_integer_playback_range(self, resolve):
-        self.cmds.playbackOptions.side_effect = [1.9, 10.1]
-        result = actions.bake_to_mmd_rig()
-
-        self.assertEqual(result.start, 2)
-        self.assertEqual(result.end, 10)
-        self.assertIn(("bake_to_mmd_rig", 2, 10), self.session.calls)
-
-    def test_bake_runs_immediately_without_a_confirmation_dialog(self):
-        # HUMANIK-FRONTEND-1 Phase B6: Bake to MMD Rig has no configurable
-        # options left to confirm, so it bakes immediately.
-        self.cmds.playbackOptions.side_effect = [1.9, 10.1]
+    def test_bake_actions_forward_optional_endpoints_without_confirmation(self):
         actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("no dialog should be shown for Bake to MMD Rig")
+            AssertionError("no dialog should be shown for Bake")
         )
+        for name in ("bake_to_mmd_rig", "bake_to_control_rig", "bake_from_control_rig"):
+            with self.subTest(action=name):
+                action = getattr(actions, name)
+                action()
+                self.assertIn((name, None, None), self.session.calls)
+                action(start=0, end=10)
+                self.assertIn((name, 0, 10), self.session.calls)
+                action(end=9)
+                self.assertIn((name, None, 9), self.session.calls)
+        self.cmds.playbackOptions.assert_not_called()
 
-        result = actions.bake_to_mmd_rig()
-
-        self.assertEqual(result.start, 2)
-        self.assertEqual(result.end, 10)
-        self.assertIn(("bake_to_mmd_rig", 2, 10), self.session.calls)
-
-    def test_control_rig_bake_uses_integer_playback_range_without_confirmation(self):
-        self.cmds.playbackOptions.side_effect = [1.9, 10.1]
-        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("no dialog should be shown for Bake to Control Rig")
-        )
-
-        result = actions.bake_to_control_rig()
-
-        self.assertEqual(result.start, 2)
-        self.assertEqual(result.end, 10)
-        self.assertIn(("bake_to_control_rig", 2, 10), self.session.calls)
-
-    def test_bake_from_control_rig_uses_integer_playback_range_without_confirmation(self):
-        self.cmds.playbackOptions.side_effect = [1.9, 10.1]
-        actions._confirm_dialog = lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("no dialog should be shown for Bake From Control Rig")
-        )
-
-        result = actions.bake_from_control_rig()
-
-        self.assertEqual(result.start, 2)
-        self.assertEqual(result.end, 10)
-        self.assertIn(("bake_from_control_rig", 2, 10), self.session.calls)
-
-    def test_bake_rejects_empty_integer_playback_range_before_confirmation(self):
-        self.cmds.playbackOptions.side_effect = [5.2, 4.8]
-
-        with patch.object(actions.logger, "error") as log_error:
+    def test_bake_reports_session_range_error(self):
+        with patch.object(
+            self.session, "bake_to_mmd_rig",
+            side_effect=ValueError("Bake frame range is empty after integer conversion: 6..4"),
+        ), patch.object(actions.logger, "error") as log_error:
             self.assertIsNone(actions.bake_to_mmd_rig())
 
         self.assertTrue(any("Bake frame range is empty" in message for message in self._errors))
         self.assertTrue(any("Maya Script Editor" in message for message in self._errors))
         self.assertTrue(log_error.call_args.kwargs["exc_info"])
-        self.assertNotIn(("bake_to_mmd_rig", 6, 4), self.session.calls)
 
     def test_restore_does_not_require_model_resolution(self):
         self.cmds.ls.side_effect = RuntimeError("selection unavailable")
