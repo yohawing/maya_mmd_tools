@@ -328,7 +328,9 @@ def _prepare_maya_profile(
 ) -> Path:
     """Create the isolated Maya profile and seed its plug-in trust allowlist."""
     maya_app_dir = (output_dir / f"maya-app-{maya_version}-{port}").resolve()
-    maya_commandport.seed_isolated_maya_profile(maya_app_dir, maya_version, project_root)
+    maya_commandport.seed_isolated_maya_profile(
+        maya_app_dir, maya_version, project_root, skip_user_setup=True,
+    )
     return maya_app_dir
 
 
