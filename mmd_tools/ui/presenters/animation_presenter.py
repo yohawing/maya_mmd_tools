@@ -106,9 +106,14 @@ class AnimationPresenter:
         }
         self._morph_sliders: dict[str, object] = {}
         self._morph_rows: dict[str, object] = {}
+        self._morph_groups = {}
+        self._morph_row_categories = {}
+        self._morph_order = {}
+        self._morph_pin_ids = {}
+        self._morph_pins = set()
+        self._morph_model_root = None
         self._morph_selection_anchor: str | None = None
         self._morph_selected_names: list[str] = []
-        self._morph_group_headers: list[tuple[object, str, int]] = []
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
         self._network_morph_targets: dict[str, list[str]] = {}
         self._morph_indices: dict[str, int] = {}
@@ -145,6 +150,10 @@ class AnimationPresenter:
     def connect_signals(self):
         if hasattr(self.view, "morph_filter"):
             self.view.morph_filter.textChanged.connect(self._filter_morph_rows)
+        if hasattr(self.view, "morph_scope"):
+            self.view.morph_scope.currentIndexChanged.connect(self._filter_morph_rows)
+        if hasattr(self.view, "morph_sort"):
+            self.view.morph_sort.currentIndexChanged.connect(self._arrange_morph_rows)
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
         self.app_state.model_list_updated.connect(self.on_model_list_updated)
         self.view.model_combo.currentTextChanged.connect(self.on_model_selected)
@@ -314,6 +323,14 @@ class AnimationPresenter:
             self.app_state.current_model_root or None,
             ensure_connections=False,
         )
+        if self._morph_model_root and self._morph_rows:
+            self._read_morph_pins()
+            for name, row in self._morph_rows.items():
+                button = row.pin_button
+                blocked = button.blockSignals(True)
+                button.setChecked(self._morph_pin_ids[name] in self._morph_pins)
+                button.blockSignals(blocked)
+            self._arrange_morph_rows()
 
     def _schedule_visibility_history_sync(self) -> None:
         """Defer readback until Maya has finished applying undo or redo."""
@@ -342,10 +359,10 @@ class AnimationPresenter:
     def retranslate_ui(self):
         """Retranslate presenter-owned dynamic controls without reloading the model."""
 
-        for header, category_key, count in self._morph_group_headers:
-            expanded = header.isChecked()
-            title = self.view.tr(category_key, "animation_toolset")
-            header.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
+        for row in self._morph_rows.values():
+            row.pin_button.setText(self.view.tr("morph_pin_label", "animation_toolset"))
+            row.pin_button.setToolTip(self.view.tr("morph_pin", "animation_toolset"))
+        self._filter_morph_rows()
         self._retranslate_picker_bone_tooltips()
         self._sync_common_action_state()
 
@@ -2126,6 +2143,8 @@ class AnimationPresenter:
     ):
         self._clear_morph_tab()
         morph_infos = self._collect_morph_infos(model_root, morph_metadata or {})
+        self._morph_model_root = model_root
+        self._read_morph_pins()
         categorized = categorize_morphs(morph_infos)
         self._populate_morph_groups(categorized)
 
@@ -2136,7 +2155,11 @@ class AnimationPresenter:
         self._last_morph_refresh_time = None
         self._morph_sliders.clear()
         self._morph_rows.clear()
-        self._morph_group_headers.clear()
+        self._morph_groups.clear()
+        self._morph_row_categories.clear()
+        self._morph_order.clear()
+        self._morph_pin_ids.clear()
+        self._morph_model_root = None
         self._morph_targets.clear()
         self._network_morph_targets.clear()
         self._morph_indices.clear()
@@ -2276,6 +2299,8 @@ class AnimationPresenter:
             return {}
 
     def _populate_morph_groups(self, categorized: CategorizedMorphs):
+        if not any((categorized.eyebrow, categorized.eye, categorized.mouth, categorized.other)):
+            return
         from ..qt_compat import (
             QGridLayout,
             QPushButton,
@@ -2293,6 +2318,7 @@ class AnimationPresenter:
 
         layout = self.view.morph_groups_layout
         categories = [
+            ("morph_pinned", []),
             ("category_brow", categorized.eyebrow),
             ("category_eye", categorized.eye),
             ("category_mouth", categorized.mouth),
@@ -2300,7 +2326,7 @@ class AnimationPresenter:
         ]
 
         for category_key, morphs in categories:
-            if not morphs:
+            if not morphs and category_key != "morph_pinned":
                 continue
             cat_name = self.view.tr(category_key, "animation_toolset")
             group = QWidget()
@@ -2314,7 +2340,6 @@ class AnimationPresenter:
             header = QPushButton(f"▾  {cat_name}    {len(morphs)}")
             header.setCheckable(True)
             header.setChecked(True)
-            self._morph_group_headers.append((header, category_key, len(morphs)))
             header.setStyleSheet(
                 "QPushButton { text-align: left; padding: 5px 7px; background: #454545; "
                 "color: #dedede; border: none; font-weight: 600; } "
@@ -2331,6 +2356,7 @@ class AnimationPresenter:
             content_layout.setColumnMinimumWidth(1, 116)
             content_layout.setColumnMinimumWidth(3, 72)
             content_layout.setColumnStretch(2, 1)
+            self._morph_groups[category_key] = (group, content_layout, header)
 
             for row_index, morph in enumerate(morphs):
                 language = UITranslator.instance().get_language()
@@ -2375,6 +2401,16 @@ class AnimationPresenter:
                     )
                 )
                 row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
+                pin_id = f"index:{morph.index}" if morph.index >= 0 else f"name:{morph.name}"
+                self._morph_pin_ids[morph_name] = pin_id
+                self._morph_order[morph_name] = len(self._morph_order)
+                self._morph_row_categories[morph_name] = category_key
+                row_widgets.pin_button.setText(self.view.tr("morph_pin_label", "animation_toolset"))
+                row_widgets.pin_button.setToolTip(self.view.tr("morph_pin", "animation_toolset"))
+                row_widgets.pin_button.setChecked(pin_id in self._morph_pins)
+                row_widgets.pin_changed.connect(
+                    lambda checked, name=morph_name: self._pin_morph(name, checked)
+                )
                 row_widgets.slider_edit_started.connect(self._begin_morph_edit)
                 row_widgets.slider_edit_finished.connect(self._end_morph_edit)
                 row_widgets.set_value(self._morph_value(morph_name))
@@ -2393,18 +2429,76 @@ class AnimationPresenter:
             def toggle_group(
                 expanded,
                 panel=content,
-                button=header,
-                title_key=category_key,
-                count=len(morphs),
             ):
                 panel.setVisible(expanded)
-                title = self.view.tr(title_key, "animation_toolset")
-                button.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
+                self._filter_morph_rows()
 
             header.toggled.connect(toggle_group)
             insert_pos = max(0, layout.count() - 1)
             layout.insertWidget(insert_pos, group)
 
+        self._arrange_morph_rows()
+
+    def _read_morph_pins(self) -> None:
+        """Read scene-owned UI preferences on reload and undo/redo."""
+        self._morph_pins = set()
+        root = self._morph_model_root
+        try:
+            if self.maya_adapter.attribute_exists("mmd_morph_pins", root):
+                saved = json.loads(self.maya_adapter.get_attr(f"{root}.mmd_morph_pins") or "[]")
+                if isinstance(saved, list):
+                    self._morph_pins = {item for item in saved if isinstance(item, str)}
+        except (ValueError, TypeError, RuntimeError):
+            logger.warning("Could not read pinned morphs for %s", root, exc_info=True)
+
+    def _pin_morph(self, name: str, checked: bool) -> None:
+        """Persist model-local pins before moving the existing editor row."""
+        pins = set(self._morph_pins)
+        pin_id = self._morph_pin_ids[name]
+        if checked:
+            pins.add(pin_id)
+        else:
+            pins.discard(pin_id)
+        root = self._morph_model_root
+        try:
+            self.maya_adapter.undo_info(openChunk=True, chunkName="Pin MMD Morph")
+            try:
+                if not self.maya_adapter.attribute_exists("mmd_morph_pins", root):
+                    self.maya_adapter.add_attr(root, longName="mmd_morph_pins", dataType="string")
+                self.maya_adapter.set_attr(f"{root}.mmd_morph_pins", json.dumps(sorted(pins)), type="string")
+            finally:
+                self.maya_adapter.undo_info(closeChunk=True)
+        except Exception:
+            button = self._morph_rows[name].pin_button
+            blocked = button.blockSignals(True)
+            button.setChecked(pin_id in self._morph_pins)
+            button.blockSignals(blocked)
+            logger.warning("Could not save pinned morphs for %s", root, exc_info=True)
+            return
+        self._morph_pins = pins
+        self._arrange_morph_rows()
+
+    def _arrange_morph_rows(self, *_args) -> None:
+        """Move rows without recreating editors; keep range selection in visual order."""
+        if not self._morph_groups:
+            return
+        sort_widget = getattr(self.view, "morph_sort", None)
+        by_name = sort_widget is not None and sort_widget.currentIndex() == 1
+        names = sorted(self._morph_rows, key=lambda name: (
+            self._morph_rows[name].label.toolTip().casefold() if by_name else self._morph_order[name]
+        ))
+        ordered = {}
+        for category, (_, layout, _) in self._morph_groups.items():
+            members = [name for name in names if (
+                "morph_pinned" if self._morph_pin_ids[name] in self._morph_pins
+                else self._morph_row_categories[name]
+            ) == category]
+            for index, name in enumerate(members):
+                row = self._morph_rows[name]
+                row.parentWidget().layout().removeWidget(row)
+                layout.addWidget(row, index, 0, 1, 4)
+                ordered[name] = row
+        self._morph_rows = ordered
         self._filter_morph_rows()
 
     def _filter_morph_rows(self, *_args) -> None:
@@ -2413,8 +2507,26 @@ class AnimationPresenter:
         if field is None:
             return
         query = field.text().casefold().strip()
-        for row in self._morph_rows.values():
-            row.setHidden(query not in row.label.toolTip().casefold())
+        scope_widget = getattr(self.view, "morph_scope", None)
+        scope = scope_widget.currentIndex() if scope_widget is not None else 0
+        for name, row in self._morph_rows.items():
+            matches = query in row.label.toolTip().casefold()
+            if scope == 1:
+                matches = matches and self._morph_pin_ids[name] in self._morph_pins
+            elif scope == 2:
+                # Freeze membership throughout a numeric/slider edit, including
+                # selected rows changed by the same gesture.
+                matches = matches and (
+                    not row.isHidden() if self._morph_edit_open else self._morph_value(name) != 0.0
+                )
+            elif scope == 3:
+                matches = matches and self._morph_animation_state(row.plugs) != "static"
+            row.setHidden(not matches)
+        for category, (group, layout, header) in self._morph_groups.items():
+            count = sum(not layout.itemAt(i).widget().isHidden() for i in range(layout.count()))
+            group.setVisible(count > 0)
+            title = self.view.tr(category, "animation_toolset")
+            header.setText(f"{'▾' if header.isChecked() else '▸'}  {title}    {count}")
         visible = [name for name in self._morph_selected_names
                    if name in self._morph_rows and not self._morph_rows[name].isHidden()]
         if self._morph_selection_anchor not in visible:
@@ -2597,6 +2709,8 @@ class AnimationPresenter:
                 row.set_value(self._morph_value(morph_name))
             if refresh_animation:
                 row.set_animation_state(self._morph_animation_state(row.plugs))
+        if getattr(self.view, "morph_scope", None) is not None and not self._morph_edit_open:
+            self._filter_morph_rows()
 
     def _morph_animation_state(self, plugs) -> str:
         if isinstance(plugs, str):

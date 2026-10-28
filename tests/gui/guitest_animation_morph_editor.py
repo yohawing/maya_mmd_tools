@@ -94,6 +94,71 @@ class TestAnimationMorphEditor(GuiTestBase):
         canonical_attribute = canonical_by_alias.get(attribute, attribute)
         self.assertEqual(f"{node}.{canonical_attribute}", expected)
 
+    def test_pin_moves_row_and_survives_scene_reload(self):
+        import os
+        import tempfile
+
+        names = list(self.presenter._morph_rows)
+        name = names[-1]
+        row = self.presenter._morph_rows[name]
+        row.pin_button.click()
+        self.assertIs(self.presenter._morph_rows[name], row)
+        self.assertEqual(next(iter(self.presenter._morph_rows)), name)
+        cmds.undo()
+        self.presenter._sync_visibility_after_history()
+        self.assertFalse(row.pin_button.isChecked())
+        self.assertEqual(list(self.presenter._morph_rows), names)
+        cmds.redo()
+        self.presenter._sync_visibility_after_history()
+        self.assertTrue(row.pin_button.isChecked())
+        self.tab.morph_scope.setCurrentIndex(1)
+        self.assertEqual([n for n, r in self.presenter._morph_rows.items() if not r.isHidden()], [name])
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "pins.ma")
+            cmds.file(rename=path)
+            cmds.file(save=True, type="mayaAscii")
+            cmds.file(path, open=True, force=True)
+            self.presenter._reload_morph_tab(self.root, self.presenter._read_morph_metadata(self.root))
+        self.assertTrue(self.presenter._morph_rows[name].pin_button.isChecked())
+        self.presenter._morph_rows[name].pin_button.click()
+        self.tab.morph_scope.setCurrentIndex(0)
+        self.assertEqual(list(self.presenter._morph_rows), names)
+
+    def test_nonzero_filter_keeps_rows_during_edit_and_refreshes_external_changes(self):
+        names = list(self.presenter._morph_rows)
+        self.tab.morph_scope.setCurrentIndex(2)
+        self.assertTrue(self.presenter._morph_rows[names[0]].isHidden())
+        row = self.presenter._morph_rows[names[1]]
+        row.editor.setValue(0.0)
+        self.presenter._filter_morph_rows()
+        self.assertFalse(row.isHidden())
+        row.editor._finish_edit()
+        self.presenter._refresh_morph_rows()
+        self.assertTrue(row.isHidden())
+        cmds.setAttr(f"{self.controller}.inputWeight[0]", 0.5)
+        self.presenter._refresh_morph_rows()
+        self.assertFalse(self.presenter._morph_rows[names[0]].isHidden())
+
+    def test_key_filter_updates_at_same_time_and_sort_preserves_rows(self):
+        names = list(self.presenter._morph_rows)
+        original = dict(self.presenter._morph_rows)
+        self.tab.morph_scope.setCurrentIndex(3)
+        self.assertTrue(all(row.isHidden() for row in original.values()))
+        plug = f"{self.controller}.inputWeight[1]"
+        cmds.setKeyframe(plug, time=1, value=0.1)
+        self.presenter._refresh_morph_rows()
+        self.assertFalse(original[names[1]].isHidden())
+        cmds.cutKey(plug, clear=True)
+        self.presenter._refresh_morph_rows()
+        self.assertTrue(original[names[1]].isHidden())
+        self.tab.morph_scope.setCurrentIndex(0)
+        self.tab.morph_sort.setCurrentIndex(1)
+        expected = sorted(names, key=lambda name: original[name].label.toolTip().casefold())
+        self.assertEqual(list(self.presenter._morph_rows), expected)
+        self.assertTrue(all(self.presenter._morph_rows[n] is row for n, row in original.items()))
+        self.tab.morph_sort.setCurrentIndex(0)
+        self.assertEqual(list(self.presenter._morph_rows), names)
+
     def test_grid_columns_numeric_edit_and_external_refresh(self):
         self.assertEqual(len(self.presenter._morph_rows), 3)
         rows = list(self.presenter._morph_rows.values())

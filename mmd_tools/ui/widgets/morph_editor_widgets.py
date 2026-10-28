@@ -11,6 +11,7 @@ from ..qt_compat import (
     QObject,
     QPainter,
     QPixmap,
+    QPushButton,
     QSvgRenderer,
     Signal,
     Qt,
@@ -135,6 +136,7 @@ class MorphRowWidget(QWidget):
     multi_key_requested = Signal()
     slider_edit_started = Signal()
     slider_edit_finished = Signal()
+    pin_changed = Signal(bool)
 
     _STYLE_SHEET = (
         "QWidget#MorphRow { background: #383838; border: 1px solid transparent; "
@@ -162,6 +164,11 @@ class MorphRowWidget(QWidget):
         layout = QHBoxLayout()
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(7)
+        self.pin_button = QPushButton("Pin")
+        self.pin_button.setCheckable(True)
+        self.pin_button.setFixedWidth(28)
+        self.pin_button.toggled.connect(self.pin_changed.emit)
+        layout.addWidget(self.pin_button)
         layout.addWidget(icon)
         layout.addWidget(label)
         layout.addWidget(slider, 1)
