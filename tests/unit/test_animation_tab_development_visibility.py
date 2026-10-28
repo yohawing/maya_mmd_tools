@@ -103,6 +103,7 @@ def _retranslate_view(data):
         refresh_btn=_TextTarget(),
         morph_scope=Mock(),
         morph_sort=Mock(),
+        morph_display_frame=Mock(),
         picker_tabs=_TabTarget(),
         select_all_btn=_TextTarget(),
         clear_btn=_TextTarget(),

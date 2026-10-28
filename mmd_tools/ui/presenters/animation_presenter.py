@@ -109,8 +109,8 @@ class AnimationPresenter:
         self._morph_groups = {}
         self._morph_row_categories = {}
         self._morph_order = {}
-        self._morph_pin_ids = {}
-        self._morph_pins = set()
+        self._morph_frame_indices = {}
+        self._morph_display_frame_members = {}
         self._morph_model_root = None
         self._morph_selection_anchor: str | None = None
         self._morph_selected_names: list[str] = []
@@ -154,6 +154,8 @@ class AnimationPresenter:
             self.view.morph_scope.currentIndexChanged.connect(self._filter_morph_rows)
         if hasattr(self.view, "morph_sort"):
             self.view.morph_sort.currentIndexChanged.connect(self._arrange_morph_rows)
+        if hasattr(self.view, "morph_display_frame"):
+            self.view.morph_display_frame.currentIndexChanged.connect(self._filter_morph_rows)
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
         self.app_state.model_list_updated.connect(self.on_model_list_updated)
         self.view.model_combo.currentTextChanged.connect(self.on_model_selected)
@@ -323,14 +325,6 @@ class AnimationPresenter:
             self.app_state.current_model_root or None,
             ensure_connections=False,
         )
-        if self._morph_model_root and self._morph_rows:
-            self._read_morph_pins()
-            for name, row in self._morph_rows.items():
-                button = row.pin_button
-                blocked = button.blockSignals(True)
-                button.setChecked(self._morph_pin_ids[name] in self._morph_pins)
-                button.blockSignals(blocked)
-            self._arrange_morph_rows()
 
     def _schedule_visibility_history_sync(self) -> None:
         """Defer readback until Maya has finished applying undo or redo."""
@@ -359,9 +353,9 @@ class AnimationPresenter:
     def retranslate_ui(self):
         """Retranslate presenter-owned dynamic controls without reloading the model."""
 
-        for row in self._morph_rows.values():
-            row.pin_button.setText(self.view.tr("morph_pin_label", "animation_toolset"))
-            row.pin_button.setToolTip(self.view.tr("morph_pin", "animation_toolset"))
+        frame_combo = getattr(self.view, "morph_display_frame", None)
+        if frame_combo is not None:
+            self._populate_morph_display_frames(frame_combo.currentData())
         self._filter_morph_rows()
         self._retranslate_picker_bone_tooltips()
         self._sync_common_action_state()
@@ -2141,12 +2135,18 @@ class AnimationPresenter:
         model_root: str,
         morph_metadata: dict[int, MorphInfo] | None = None,
     ):
+        frame_combo = getattr(self.view, "morph_display_frame", None)
+        selected_frame = (
+            frame_combo.currentData()
+            if frame_combo is not None and self._morph_model_root == model_root else None
+        )
         self._clear_morph_tab()
         morph_infos = self._collect_morph_infos(model_root, morph_metadata or {})
         self._morph_model_root = model_root
-        self._read_morph_pins()
         categorized = categorize_morphs(morph_infos)
         self._populate_morph_groups(categorized)
+        self._populate_morph_display_frames(selected_frame)
+        self._filter_morph_rows()
 
     def _clear_morph_tab(self):
         self._end_morph_edit()
@@ -2158,7 +2158,8 @@ class AnimationPresenter:
         self._morph_groups.clear()
         self._morph_row_categories.clear()
         self._morph_order.clear()
-        self._morph_pin_ids.clear()
+        self._morph_frame_indices.clear()
+        self._populate_morph_display_frames()
         self._morph_model_root = None
         self._morph_targets.clear()
         self._network_morph_targets.clear()
@@ -2318,7 +2319,6 @@ class AnimationPresenter:
 
         layout = self.view.morph_groups_layout
         categories = [
-            ("morph_pinned", []),
             ("category_brow", categorized.eyebrow),
             ("category_eye", categorized.eye),
             ("category_mouth", categorized.mouth),
@@ -2326,7 +2326,7 @@ class AnimationPresenter:
         ]
 
         for category_key, morphs in categories:
-            if not morphs and category_key != "morph_pinned":
+            if not morphs:
                 continue
             cat_name = self.view.tr(category_key, "animation_toolset")
             group = QWidget()
@@ -2401,16 +2401,9 @@ class AnimationPresenter:
                     )
                 )
                 row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
-                pin_id = f"index:{morph.index}" if morph.index >= 0 else f"name:{morph.name}"
-                self._morph_pin_ids[morph_name] = pin_id
+                self._morph_frame_indices[morph_name] = self._morph_indices.get(morph_name, morph.index)
                 self._morph_order[morph_name] = len(self._morph_order)
                 self._morph_row_categories[morph_name] = category_key
-                row_widgets.pin_button.setText(self.view.tr("morph_pin_label", "animation_toolset"))
-                row_widgets.pin_button.setToolTip(self.view.tr("morph_pin", "animation_toolset"))
-                row_widgets.pin_button.setChecked(pin_id in self._morph_pins)
-                row_widgets.pin_changed.connect(
-                    lambda checked, name=morph_name: self._pin_morph(name, checked)
-                )
                 row_widgets.slider_edit_started.connect(self._begin_morph_edit)
                 row_widgets.slider_edit_finished.connect(self._end_morph_edit)
                 row_widgets.set_value(self._morph_value(morph_name))
@@ -2439,44 +2432,33 @@ class AnimationPresenter:
 
         self._arrange_morph_rows()
 
-    def _read_morph_pins(self) -> None:
-        """Read scene-owned UI preferences on reload and undo/redo."""
-        self._morph_pins = set()
-        root = self._morph_model_root
-        try:
-            if self.maya_adapter.attribute_exists("mmd_morph_pins", root):
-                saved = json.loads(self.maya_adapter.get_attr(f"{root}.mmd_morph_pins") or "[]")
-                if isinstance(saved, list):
-                    self._morph_pins = {item for item in saved if isinstance(item, str)}
-        except (ValueError, TypeError, RuntimeError):
-            logger.warning("Could not read pinned morphs for %s", root, exc_info=True)
-
-    def _pin_morph(self, name: str, checked: bool) -> None:
-        """Persist model-local pins before moving the existing editor row."""
-        pins = set(self._morph_pins)
-        pin_id = self._morph_pin_ids[name]
-        if checked:
-            pins.add(pin_id)
-        else:
-            pins.discard(pin_id)
-        root = self._morph_model_root
-        try:
-            self.maya_adapter.undo_info(openChunk=True, chunkName="Pin MMD Morph")
-            try:
-                if not self.maya_adapter.attribute_exists("mmd_morph_pins", root):
-                    self.maya_adapter.add_attr(root, longName="mmd_morph_pins", dataType="string")
-                self.maya_adapter.set_attr(f"{root}.mmd_morph_pins", json.dumps(sorted(pins)), type="string")
-            finally:
-                self.maya_adapter.undo_info(closeChunk=True)
-        except Exception:
-            button = self._morph_rows[name].pin_button
-            blocked = button.blockSignals(True)
-            button.setChecked(pin_id in self._morph_pins)
-            button.blockSignals(blocked)
-            logger.warning("Could not save pinned morphs for %s", root, exc_info=True)
+    def _populate_morph_display_frames(self, selected_frame=None) -> None:
+        """Offer author-defined frames containing visible morph IDs, never bone-only frames."""
+        combo = getattr(self.view, "morph_display_frame", None)
+        if combo is None:
             return
-        self._morph_pins = pins
-        self._arrange_morph_rows()
+        self._morph_display_frame_members.clear()
+        blocked = combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem(self.view.tr("morph_all_frames", "animation_toolset"), None)
+            available = {index for index in self._morph_frame_indices.values() if index >= 0}
+            language = UITranslator.instance().get_language()
+            for index, group in enumerate(self._picker_groups):
+                members = {item.index for item in group.items if item.element_type == 1} & available
+                if not members:
+                    continue
+                label = preferred_pmx_display_name(
+                    group.name, group.name_english,
+                    fallback=lambda: str(index + 1), language=language,
+                )
+                self._morph_display_frame_members[index] = members
+                combo.addItem(label, index)
+            selected = combo.findData(selected_frame)
+            combo.setCurrentIndex(max(0, selected))
+            combo.setEnabled(combo.count() > 1)
+        finally:
+            combo.blockSignals(blocked)
 
     def _arrange_morph_rows(self, *_args) -> None:
         """Move rows without recreating editors; keep range selection in visual order."""
@@ -2489,10 +2471,7 @@ class AnimationPresenter:
         ))
         ordered = {}
         for category, (_, layout, _) in self._morph_groups.items():
-            members = [name for name in names if (
-                "morph_pinned" if self._morph_pin_ids[name] in self._morph_pins
-                else self._morph_row_categories[name]
-            ) == category]
+            members = [name for name in names if self._morph_row_categories[name] == category]
             for index, name in enumerate(members):
                 row = self._morph_rows[name]
                 row.parentWidget().layout().removeWidget(row)
@@ -2509,17 +2488,21 @@ class AnimationPresenter:
         query = field.text().casefold().strip()
         scope_widget = getattr(self.view, "morph_scope", None)
         scope = scope_widget.currentIndex() if scope_widget is not None else 0
+        frame_combo = getattr(self.view, "morph_display_frame", None)
+        frame_members = self._morph_display_frame_members.get(
+            frame_combo.currentData() if frame_combo is not None else None
+        )
         for name, row in self._morph_rows.items():
             matches = query in row.label.toolTip().casefold()
+            if frame_members is not None:
+                matches = matches and self._morph_frame_indices[name] in frame_members
             if scope == 1:
-                matches = matches and self._morph_pin_ids[name] in self._morph_pins
-            elif scope == 2:
                 # Freeze membership throughout a numeric/slider edit, including
                 # selected rows changed by the same gesture.
                 matches = matches and (
                     not row.isHidden() if self._morph_edit_open else self._morph_value(name) != 0.0
                 )
-            elif scope == 3:
+            elif scope == 2:
                 matches = matches and self._morph_animation_state(row.plugs) != "static"
             row.setHidden(not matches)
         for category, (group, layout, header) in self._morph_groups.items():

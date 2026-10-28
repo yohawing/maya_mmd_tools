@@ -53,6 +53,16 @@ class TestAnimationMorphEditor(GuiTestBase):
             json.dumps(metadata, ensure_ascii=False),
             type="string",
         )
+        cmds.addAttr(self.root, longName="mmd_display_frames_json", dataType="string")
+        cmds.setAttr(f"{self.root}.mmd_display_frames_json", json.dumps([
+            {"name": "骨のみ", "name_english": "Bones only", "elements": [{"type": 0, "index": 0}]},
+            {"name": "表情A", "name_english": "Expression A", "elements": [
+                {"type": 1, "index": 0}, {"type": 1, "index": 2}, {"type": 1, "index": 99},
+            ]},
+            {"name": "表情B", "name_english": "Expression B", "elements": [
+                {"type": 0, "index": 0}, {"type": 1, "index": 1}, {"type": 1, "index": 2},
+            ]},
+        ]), type="string")
         self.controller = cmds.createNode("network", name="morphEditorController")
         cmds.addAttr(
             self.controller,
@@ -94,39 +104,41 @@ class TestAnimationMorphEditor(GuiTestBase):
         canonical_attribute = canonical_by_alias.get(attribute, attribute)
         self.assertEqual(f"{node}.{canonical_attribute}", expected)
 
-    def test_pin_moves_row_and_survives_scene_reload(self):
-        import os
-        import tempfile
-
+    def test_display_frame_filter_intersects_scope_and_search(self):
         names = list(self.presenter._morph_rows)
-        name = names[-1]
-        row = self.presenter._morph_rows[name]
-        row.pin_button.click()
-        self.assertIs(self.presenter._morph_rows[name], row)
-        self.assertEqual(next(iter(self.presenter._morph_rows)), name)
-        cmds.undo()
-        self.presenter._sync_visibility_after_history()
-        self.assertFalse(row.pin_button.isChecked())
-        self.assertEqual(list(self.presenter._morph_rows), names)
-        cmds.redo()
-        self.presenter._sync_visibility_after_history()
-        self.assertTrue(row.pin_button.isChecked())
+        combo = self.tab.morph_display_frame
+        self.assertEqual(combo.count(), 3)  # All plus two morph-containing frames.
+        self.assertEqual([combo.itemData(i) for i in range(3)], [None, 1, 2])
+
+        def visible():
+            return {name for name, row in self.presenter._morph_rows.items() if not row.isHidden()}
+
+        combo.setCurrentIndex(1)
+        self.assertEqual(visible(), {names[0], names[2]})
         self.tab.morph_scope.setCurrentIndex(1)
-        self.assertEqual([n for n, r in self.presenter._morph_rows.items() if not r.isHidden()], [name])
-        with tempfile.TemporaryDirectory() as directory:
-            path = os.path.join(directory, "pins.ma")
-            cmds.file(rename=path)
-            cmds.file(save=True, type="mayaAscii")
-            cmds.file(path, open=True, force=True)
-            self.presenter._reload_morph_tab(self.root, self.presenter._read_morph_metadata(self.root))
-        self.assertTrue(self.presenter._morph_rows[name].pin_button.isChecked())
-        self.presenter._morph_rows[name].pin_button.click()
-        self.tab.morph_scope.setCurrentIndex(0)
-        self.assertEqual(list(self.presenter._morph_rows), names)
+        self.assertEqual(visible(), {names[2]})
+        combo.setCurrentIndex(2)
+        self.assertEqual(visible(), {names[1], names[2]})
+        self.tab.morph_filter.setText("no-such-morph")
+        self.assertEqual(visible(), set())
+        self.tab.morph_filter.clear()
+        self.tab.morph_scope.setCurrentIndex(2)
+        cmds.setKeyframe(f"{self.controller}.inputWeight[1]", time=1, value=0.1)
+        self.presenter._refresh_morph_rows()
+        self.assertEqual(visible(), {names[1]})
+        self.presenter._reload_for_model(self.root)
+        self.assertEqual(combo.currentData(), 2)
+        self.assertEqual(visible(), {names[1]})
+
+        other = cmds.createNode("transform", name="noFramesModel")
+        self.presenter._reload_for_model(other)
+        self.assertEqual(combo.count(), 1)
+        self.assertIsNone(combo.currentData())
+        self.assertFalse(combo.isEnabled())
 
     def test_nonzero_filter_keeps_rows_during_edit_and_refreshes_external_changes(self):
         names = list(self.presenter._morph_rows)
-        self.tab.morph_scope.setCurrentIndex(2)
+        self.tab.morph_scope.setCurrentIndex(1)
         self.assertTrue(self.presenter._morph_rows[names[0]].isHidden())
         row = self.presenter._morph_rows[names[1]]
         row.editor.setValue(0.0)
@@ -142,7 +154,7 @@ class TestAnimationMorphEditor(GuiTestBase):
     def test_key_filter_updates_at_same_time_and_sort_preserves_rows(self):
         names = list(self.presenter._morph_rows)
         original = dict(self.presenter._morph_rows)
-        self.tab.morph_scope.setCurrentIndex(3)
+        self.tab.morph_scope.setCurrentIndex(2)
         self.assertTrue(all(row.isHidden() for row in original.values()))
         plug = f"{self.controller}.inputWeight[1]"
         cmds.setKeyframe(plug, time=1, value=0.1)
