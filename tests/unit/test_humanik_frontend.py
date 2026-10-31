@@ -587,6 +587,10 @@ class TestHumanIkFrontend(unittest.TestCase):
 
         self.assertEqual(report["blockers"], [])
         self.assertEqual(report["constraintRows"], [safe_row])
+        self.assertEqual(
+            report["automaticStance"]["ownership"]["disconnect"],
+            [{"node": safe_row["node"], "edges": safe_row["writes"]}],
+        )
 
     def test_target_preflight_trusts_active_control_rig_disconnected_foot_node(self):
         class Cmds:
@@ -770,6 +774,18 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(diagnostics["quality"]["fingerStatus"], "deferred")
         self.assertEqual(diagnostics["preview"], {"active": False, "restoreStateAvailable": False})
         self.assertEqual(diagnostics["assignments"]["required"]["genericLockMinimumAssignmentCount"], 1)
+
+    def test_diagnostics_recognize_feedback_already_isolated_by_active_preview(self):
+        session = _session()
+        row = {"node": "arm_append", "nodeType": "mmdAppend", "classification": "feedback_blocker"}
+        session._ownership_report = {"rows": [row], "counts": {"feedback_blocker": 1}}
+        preview = FakePreview()
+        preview.isolated_feedback_rows = [dict(row)]
+        session._preview = preview
+
+        self.assertEqual(session.diagnostics()["ownership"]["blockers"], [])
+        preview.active = False
+        self.assertEqual(session.diagnostics()["ownership"]["blockers"][0]["node"], "arm_append")
 
     @patch("mmd_tools.core.humanik_frontend.delete_humanik_character")
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition", side_effect=RuntimeError("lock failed"))

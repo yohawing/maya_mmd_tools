@@ -24,7 +24,7 @@ from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     collect_hik_ownership_report,
     is_preisolated_mmd_ccdik_feedback_row,
-    is_supported_mmd_ccdik_feedback_row,
+    is_supported_mmd_feedback_row,
     preisolated_mmd_ccdik_nodes_from_disconnected_edges,
 )
 from mmd_tools.core.humanik_control_rig import (
@@ -1091,7 +1091,7 @@ class HumanIkFrontendSession:
         blockers = [
             row for row in report.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
-            and not is_supported_mmd_ccdik_feedback_row(row, target.assignments)
+            and not is_supported_mmd_feedback_row(row, target.assignments, report.get("rows", ()), self._cmds)
             and not is_preisolated_mmd_ccdik_feedback_row(
                 row, preisolated_feedback_nodes
             )
@@ -1619,10 +1619,16 @@ class HumanIkFrontendSession:
             model_report["assignments"],
             self._cmds,
         )
+        supported_feedback = [
+            row for row in ownership.get("rows", [])
+            if is_supported_mmd_feedback_row(
+                row, model_report["assignments"], ownership.get("rows", ()), self._cmds
+            )
+        ]
         blockers = [
             row for row in ownership.get("rows", [])
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
-            and not is_supported_mmd_ccdik_feedback_row(row, model_report["assignments"])
+            and row not in supported_feedback
             and not is_preisolated_mmd_ccdik_feedback_row(
                 row, preisolated_feedback_nodes
             )
@@ -1635,7 +1641,7 @@ class HumanIkFrontendSession:
                     "edges": list(row.get("writes", [])),
                 }
                 for row in ownership.get("rows", [])
-                if row.get("classification") == "mute_for_hik"
+                if row.get("classification") == "mute_for_hik" or row in supported_feedback
             ],
             "retain": [
                 {
@@ -1684,12 +1690,17 @@ class HumanIkFrontendSession:
             target.assignments if target is not None else (),
             self._cmds,
         )
+        active_preview = self.active_preview
+        isolated_feedback_rows = getattr(active_preview, "isolated_feedback_rows", ())
         blockers = [
             row for row in ownership_rows
             if row.get("classification") in BLOCKING_CLASSIFICATIONS
-            and not is_supported_mmd_ccdik_feedback_row(
+            and row not in isolated_feedback_rows
+            and not is_supported_mmd_feedback_row(
                 row,
                 target.assignments if target is not None else (),
+                ownership_rows,
+                self._cmds,
             )
             and not is_preisolated_mmd_ccdik_feedback_row(
                 row, preisolated_feedback_nodes

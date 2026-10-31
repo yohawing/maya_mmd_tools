@@ -35,12 +35,18 @@ class FakeCmds:
     def disconnectAttr(self, source, destination):
         self.disconnects.append((source, destination))
         self.connections[destination].remove(source)
+        node = source.rsplit(".", 1)[0]
+        if destination in self.downstream.get(node, []):
+            self.downstream[node].remove(destination)
 
     def connectionInfo(self, plug, isExactDestination=False):
         return bool(self.connections.get(plug))
 
     def connectAttr(self, source, destination, force=False):
         self.connections[destination] = [source]
+        node = source.rsplit(".", 1)[0]
+        if node in self.downstream and destination not in self.downstream[node]:
+            self.downstream[node].append(destination)
 
     def isConnected(self, source, destination):
         return source in self.connections.get(destination, [])
@@ -60,7 +66,7 @@ class FakeCmds:
         )
 
     def ls(self, type=None, long=False):
-        return []
+        return [type] if long and type is not None else []
 
     def nodeType(self, node):
         return "joint"
@@ -221,6 +227,72 @@ class TestHumanIkPreview(unittest.TestCase):
                 "owner:target", "Target", "Source", report, {"|model|left_leg"}, cmds, mel
             )
         self.assertEqual(cmds.connections[destination], [f"{node}.outputRotate[0]"])
+
+    def test_arm_ik_feedback_isolated_for_preview_and_restored(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        shoulder = "|model|shoulder"
+        helper, arm = f"{shoulder}|helper", f"{shoulder}|arm"
+        node, destination = "arm_append", f"{arm}.rotate"
+        cmds.connections[destination] = [f"{node}.outputRotate"]
+        cmds.downstream[node] = [destination]
+        cmds.downstream["arm_ik"] = [f"{helper}.rotate", f"{node}.sourceMmdLinkQuaternions"]
+        report = {"rows": [
+            {"node": "arm_ik", "nodeType": "mmdCcdIk", "classification": "keep_post",
+             "readHikJoints": [shoulder], "writeHikJoints": [], "writes": [f"{helper}.rotate"]},
+            {"node": node, "nodeType": "mmdAppend", "classification": "feedback_blocker",
+             "reads": [f"{helper}.rotate"], "writes": [destination]},
+        ]}
+        assignments = [
+            {"joint": shoulder, "hikBone": "LeftShoulder"},
+            {"joint": arm, "hikBone": "LeftArm"},
+        ]
+        with patch(
+            "mmd_tools.core.humanik_preview.classify_humanik_constraints",
+            return_value={"rows": [], "counts": {}},
+        ):
+            preview = begin_humanik_target_preview(
+                "owner:target", "Target", "Source", report, {shoulder, arm}, cmds, mel,
+                assignments=assignments,
+            )
+
+        self.assertEqual(cmds.connections[destination], [])
+        self.assertEqual([row["node"] for row in preview.isolated_feedback_rows], [node])
+        stop_humanik_target_preview(preview, cmds, mel)
+        self.assertEqual(cmds.connections[destination], [f"{node}.outputRotate"])
+
+    def test_arm_ik_new_utility_output_rolls_back_preview(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        shoulder = "|model|shoulder"
+        helper, arm = f"{shoulder}|helper", f"{shoulder}|arm"
+        node, destination = "arm_append", f"{arm}.rotate"
+        cmds.connections[destination] = [f"{node}.outputRotate"]
+        cmds.downstream[node] = [destination]
+        cmds.downstream["arm_ik"] = [f"{helper}.rotate", f"{node}.sourceMmdLinkQuaternions"]
+        report = {"rows": [
+            {"node": "arm_ik", "nodeType": "mmdCcdIk", "classification": "keep_post",
+             "readHikJoints": [shoulder], "writeHikJoints": [], "writes": [f"{helper}.rotate"]},
+            {"node": node, "nodeType": "mmdAppend", "classification": "feedback_blocker",
+             "reads": [f"{helper}.rotate"], "writes": [destination]},
+        ]}
+        assignments = [
+            {"joint": shoulder, "hikBone": "LeftShoulder"},
+            {"joint": arm, "hikBone": "LeftArm"},
+        ]
+
+        def connect(*_args, **_kwargs):
+            mel.source = "Source"
+            cmds.downstream["arm_ik"].append("utility.input")
+
+        with patch(
+            "mmd_tools.core.humanik_preview.classify_humanik_constraints", return_value={"rows": []}
+        ), patch("mmd_tools.core.humanik_preview.connect_humanik_source", side_effect=connect):
+            with self.assertRaisesRegex(RuntimeError, "post-scan found blocker in arm IK"):
+                begin_humanik_target_preview(
+                    "owner:target", "Target", "Source", report, {shoulder, arm}, cmds, mel,
+                    assignments=assignments,
+                )
+        self.assertEqual(mel.source, "")
+        self.assertEqual(cmds.connections[destination], [f"{node}.outputRotate"])
 
     def test_control_rig_preisolated_foot_feedback_is_allowed_without_writer(self):
         for reverse in (False, True):

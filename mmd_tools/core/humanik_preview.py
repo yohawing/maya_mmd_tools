@@ -28,7 +28,7 @@ from mmd_tools.core.humanik_constraints import (
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
     is_preisolated_mmd_ccdik_feedback_row,
-    is_supported_mmd_ccdik_feedback_row,
+    is_supported_mmd_feedback_row,
     split_ownership_rows,
 )
 from mmd_tools.core.humanik_retarget import connect_humanik_source
@@ -209,15 +209,15 @@ def begin_humanik_target_preview(
 
     ``assignments`` is intentionally optional for backward compatibility with
     direct callers.  Without it, every feedback blocker remains fail-closed;
-    the narrowly supported importer-owned foot ``mmdCcdIk`` rows are isolated
-    only when the target binding supplies its assigned HIK slots.
+    the narrowly supported foot IK and arm IK append rows are isolated only
+    when the target binding supplies its assigned HIK slots.
     """
     cmds = cmds_module or maya_cmds()
     blockers, mute_rows, retained_nodes = split_ownership_rows(ownership_report)
     supported_feedback = [
         row
         for row in ownership_report.get("rows", [])
-        if is_supported_mmd_ccdik_feedback_row(row, assignments or ())
+        if is_supported_mmd_feedback_row(row, assignments or (), ownership_report.get("rows", ()), cmds)
     ]
     preisolated_nodes = tuple(str(node) for node in (preisolated_feedback_nodes or ()))
     preisolated_feedback = [
@@ -334,6 +334,16 @@ def begin_humanik_target_preview(
                 "HumanIK TARGET preview post-scan found residual muted HIK writers: "
                 f"{labels}"
             )
+        isolated_arm_nodes = {
+            row["node"] for row in supported_feedback if row.get("nodeType") == "mmdAppend"
+        }
+        if any(
+            not is_supported_mmd_feedback_row(
+                row, assignments or (), ownership_report.get("rows", ()), cmds, isolated_arm_nodes
+            )
+            for row in supported_feedback if row["node"] in isolated_arm_nodes
+        ):
+            raise RuntimeError("HumanIK TARGET preview post-scan found blocker in arm IK output")
         post_rows_by_node = {row["node"]: row for row in post_report["rows"]}
         if any(
             _preisolated_foot_has_unexpected_output(row, cmds, post_rows_by_node)

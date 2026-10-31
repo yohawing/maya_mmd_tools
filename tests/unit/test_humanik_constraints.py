@@ -7,11 +7,79 @@ from mmd_tools.core.humanik_constraints import (
     HumanIkConstraintFacts,
     classify_humanik_constraints,
     collect_hik_ownership_report,
+    is_supported_mmd_feedback_row,
     preisolated_mmd_ccdik_nodes_from_disconnected_edges,
 )
 
 
 class TestHumanIkConstraints(unittest.TestCase):
+    def test_arm_ik_append_feedback_is_supported_only_for_reviewed_graph(self):
+        class Cmds:
+            def __init__(self, output, extra_ik_outputs=()):
+                self.output = output
+                self.ik_outputs = [f"{helper}.rotate", "arm_append.sourceMmdLinkQuaternions", *extra_ik_outputs]
+
+            def listConnections(self, node, **_kwargs):
+                return self.ik_outputs if node == "arm_ik" else self.output
+
+            def ls(self, node, long=False):
+                return [node]
+
+        for side in ("Left", "Right"):
+            with self.subTest(side=side):
+                shoulder = f"|model|{side}Shoulder"
+                helper = f"{shoulder}|arm_helper"
+                arm = f"{shoulder}|arm"
+                assignments = [
+                    {"joint": shoulder, "hikBone": f"{side}Shoulder"},
+                    {"joint": arm, "hikBone": f"{side}Arm"},
+                ]
+                report = classify_humanik_constraints([
+                    HumanIkConstraintFacts(
+                        "arm_ik", "mmdCcdIk", reads=(f"{shoulder}.rotate",),
+                        writes=(f"{helper}.rotate",),
+                    ),
+                    HumanIkConstraintFacts(
+                        "arm_append", "mmdAppend", reads=(f"{helper}.rotate",),
+                        writes=(f"{arm}.rotate",),
+                    ),
+                ], {shoulder, arm})
+                append = next(row for row in report["rows"] if row["node"] == "arm_append")
+                self.assertEqual(append["classification"], "feedback_blocker")
+                self.assertTrue(is_supported_mmd_feedback_row(
+                    append, assignments, report["rows"], Cmds([f"{arm}.rotate"])
+                ))
+                self.assertFalse(is_supported_mmd_feedback_row(
+                    append, assignments, report["rows"], Cmds([f"{arm}.rotate"], ["utility.input"])
+                ))
+
+                invalid_cases = (
+                    (assignments, report["rows"], [f"{arm}.rotate", "utility.input"]),
+                    (assignments, report["rows"], []),
+                    (assignments, [append], [f"{arm}.rotate"]),
+                    ([{"joint": arm, "hikBone": f"{side}Arm"}], report["rows"], [f"{arm}.rotate"]),
+                    ([{"joint": shoulder, "hikBone": "RightShoulder" if side == "Left" else "LeftShoulder"},
+                      {"joint": arm, "hikBone": f"{side}Arm"}], report["rows"], [f"{arm}.rotate"]),
+                )
+                for case_assignments, rows, outputs in invalid_cases:
+                    self.assertFalse(is_supported_mmd_feedback_row(
+                        append, case_assignments, rows, Cmds(outputs)
+                    ))
+
+                solver = next(row for row in report["rows"] if row["node"] == "arm_ik")
+                invalid_graphs = (
+                    ({**append, "reads": [f"{shoulder}|other_helper.rotate"]}, report["rows"]),
+                    ({**append, "reads": [f"|other|{side}Shoulder|arm_helper.rotate"]}, report["rows"]),
+                    ({**append, "reads": [f"{helper}.translate"]}, report["rows"]),
+                    ({**append, "writes": [f"{arm}.rotate", f"{arm}.translate"]}, report["rows"]),
+                    (append, [append, {**solver, "nodeType": "mmdAppend"}]),
+                    (append, [append, {**solver, "writeHikJoints": [arm]}]),
+                )
+                for candidate, rows in invalid_graphs:
+                    self.assertFalse(is_supported_mmd_feedback_row(
+                        candidate, assignments, rows, Cmds([f"{arm}.rotate"])
+                    ))
+
     def test_ownership_report_excludes_other_models_disconnected_manual_nodes(self):
         facts = [
             HumanIkConstraintFacts(

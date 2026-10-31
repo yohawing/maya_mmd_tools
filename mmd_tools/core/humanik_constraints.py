@@ -106,6 +106,102 @@ def is_supported_mmd_ccdik_feedback_row(
     return bool(write_slots) and write_slots.issubset(allowed)
 
 
+def _arm_feedback_shape(row: Mapping[str, Any], slots: Mapping[str, str]):
+    """Return the shoulder, helper input and arm output for a reviewed append."""
+    if row.get("classification") != "feedback_blocker" or row.get("nodeType") != "mmdAppend":
+        return None
+    reads, writes = row.get("reads", ()), row.get("writes", ())
+    if len(reads) != 1 or len(writes) != 1:
+        return None
+    source, destination = str(reads[0]), str(writes[0])
+    if not source.endswith(".rotate") or not destination.endswith(".rotate"):
+        return None
+    helper, target = _joint_from_plug(source), _joint_from_plug(destination)
+    target_slot = slots.get(target, "")
+    if target_slot not in {"LeftArm", "LeftForeArm", "RightArm", "RightForeArm"}:
+        return None
+    side = "Left" if target_slot.startswith("Left") else "Right"
+    shoulders = [joint for joint, slot in slots.items() if slot == f"{side}Shoulder"]
+    if len(shoulders) != 1 or helper in slots:
+        return None
+    shoulder = shoulders[0]
+    if not helper.startswith(shoulder + "|") or not target.startswith(shoulder + "|"):
+        return None
+    if helper.startswith(target + "|") or target.startswith(helper + "|"):
+        return None
+    return shoulder, source, destination
+
+
+def _resolved_output_plug(cmds, plug: str) -> str:
+    if "." not in plug:
+        return ""
+    node, attribute = plug.rsplit(".", 1)
+    names = cmds.ls(node, long=True) or []
+    return f"{names[0]}.{attribute}" if len(names) == 1 else ""
+
+
+def _arm_append_output_matches(row, destination, cmds, isolated_nodes) -> bool:
+    outputs = cmds.listConnections(row["node"], source=False, destination=True, plugs=True) or []
+    if row["node"] in isolated_nodes:
+        return not outputs
+    return len(outputs) == 1 and _resolved_output_plug(cmds, outputs[0]) == destination
+
+
+def is_supported_mmd_feedback_row(
+    row: Dict[str, Any],
+    assignments: Iterable[Any],
+    rows: Iterable[Mapping[str, Any]],
+    cmds_module=None,
+    isolated_arm_nodes: Iterable[str] = (),
+) -> bool:
+    """Recognize reversible foot IK or same-side arm IK append feedback."""
+    assignments = tuple(assignments or ())
+    if is_supported_mmd_ccdik_feedback_row(row, assignments):
+        return True
+    slots = _assignments_by_joint(assignments)
+    shape = _arm_feedback_shape(row, slots)
+    if shape is None:
+        return False
+    shoulder, source, destination = shape
+    cmds = cmds_module or maya_cmds()
+    isolated = set(isolated_arm_nodes)
+    if not _arm_append_output_matches(row, destination, cmds, isolated):
+        return False
+    rows = tuple(rows)
+    by_node = {other["node"]: other for other in rows}
+    for solver in rows:
+        if not (
+            solver.get("nodeType") == "mmdCcdIk"
+            and solver.get("classification") == "keep_post"
+            and shoulder in solver.get("readHikJoints", ())
+            and source in solver.get("writes", ())
+            and not solver.get("writeHikJoints")
+        ):
+            continue
+        solver_writes = set(solver.get("writes", ()))
+        saw_helper = False
+        for output in cmds.listConnections(solver["node"], source=False, destination=True, plugs=True) or []:
+            resolved = _resolved_output_plug(cmds, output)
+            if resolved in solver_writes:
+                saw_helper |= resolved == source
+                continue
+            linked_node, _, attribute = output.rpartition(".")
+            linked = by_node.get(linked_node)
+            linked_shape = _arm_feedback_shape(linked, slots) if linked else None
+            if (
+                attribute != "sourceMmdLinkQuaternions"
+                or linked_shape is None
+                or linked_shape[0] != shoulder
+                or linked_shape[1] not in solver_writes
+                or not _arm_append_output_matches(linked, linked_shape[2], cmds, isolated)
+            ):
+                break
+        else:
+            if saw_helper:
+                return True
+    return False
+
+
 def is_preisolated_mmd_ccdik_feedback_row(
     row: Dict[str, Any],
     isolated_nodes: Iterable[str],
