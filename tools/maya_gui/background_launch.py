@@ -10,7 +10,9 @@ import ctypes
 from ctypes import wintypes
 import json
 import os
+from contextlib import ExitStack
 from pathlib import Path
+import socket
 import subprocess
 import sys
 import time
@@ -103,6 +105,56 @@ class FocusGuard:
             self.record("focus_takeover", hwnd=foreground, restored=restored)
 
 
+class OwnerProcess:
+    """Hold the runner's process handle so PID reuse cannot extend its lifetime."""
+
+    def __init__(self, pid):
+        self.api = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        self.api.OpenProcess.restype = wintypes.HANDLE
+        self.api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        self.api.WaitForSingleObject.restype = wintypes.DWORD
+        self.api.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.api.CloseHandle.restype = wintypes.BOOL
+        self.handle = self.api.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def alive(self):
+        result = self.api.WaitForSingleObject(self.handle, 0)
+        if result == 0xFFFFFFFF:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return result == 258  # WAIT_TIMEOUT
+
+    def close(self):
+        self.api.CloseHandle(self.handle)
+
+
+def stop_owned_process(process, port, record, timeout=30):
+    """Request quit only in this child, then wait or terminate its Popen handle."""
+    if process.poll() is not None:
+        return
+    # A reused/occupied port must never quit another Maya. Check inside Maya,
+    # as well as retaining the original Popen handle for forced termination.
+    payload = (
+        "import os; import maya.cmds as cmds; "
+        f"cmds.quit(force=True) if os.getpid() == {process.pid} else None\n"
+    )
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as sock:
+            sock.sendall(payload.encode("utf-8"))
+        record("quit_requested", pid=process.pid)
+    except OSError as error:
+        record("quit_unavailable", message=str(error))
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        record("forced_termination", pid=process.pid)
+        process.terminate()
+        process.wait(timeout=10)
+    record("exited", returncode=process.returncode)
+
+
 def main(config_path):
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     out = Path(config["output"])
@@ -110,34 +162,53 @@ def main(config_path):
         def record(event, **fields):
             log.write(json.dumps({"event": event, "time": time.time(), **fields}) + "\n")
 
-        process = None
-        try:
-            windows = Windows()
-            foreground = windows.foreground()
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startup.wShowWindow = 4  # SW_SHOWNOACTIVATE, not hidden/minimized.
-            env = os.environ.copy()
-            env.update(config["env"])
-            with (out / "maya_stdout.log").open("w", encoding="utf-8") as stdout, (
-                out / "maya_stderr.log"
-            ).open("w", encoding="utf-8") as stderr:
-                process = subprocess.Popen(config["command"], cwd=config["cwd"], env=env,
-                                           startupinfo=startup, stdout=stdout, stderr=stderr)
-                record("started", pid=process.pid)
-                guard = FocusGuard(windows, process.pid, foreground, record)
-                while process.poll() is None:
-                    guard.tick()
-                    time.sleep(0.05)
+        keep_open = config.get("keep_open", False)
+        with ExitStack() as stack:
+            # Legacy configs must opt into preview mode or supply an owner;
+            # never guess ownership from an existing Maya process or port.
+            owner = None
+            if not keep_open:
+                owner = OwnerProcess(config["owner_pid"])
+                stack.callback(owner.close)
+                if not owner.alive():
+                    return 0
+            return run_child(config, record, owner, keep_open)
+
+
+def run_child(config, record, owner, keep_open):
+    """Supervise one new child; explicitly retained previews outlive the runner."""
+    out = Path(config["output"])
+    process = None
+    try:
+        windows = Windows()
+        foreground = windows.foreground()
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 4  # SW_SHOWNOACTIVATE, not hidden/minimized.
+        env = os.environ.copy()
+        env.update(config["env"])
+        with (out / "maya_stdout.log").open("w", encoding="utf-8") as stdout, (
+            out / "maya_stderr.log"
+        ).open("w", encoding="utf-8") as stderr:
+            process = subprocess.Popen(config["command"], cwd=config["cwd"], env=env,
+                                       startupinfo=startup, stdout=stdout, stderr=stderr)
+            record("started", pid=process.pid)
+            guard = FocusGuard(windows, process.pid, foreground, record)
+            while process.poll() is None:
+                if owner is not None and not owner.alive():
+                    record("owner_exited")
+                    break
+                guard.tick()
+                time.sleep(0.05)
+            if process.returncode is not None:
                 record("exited", returncode=process.returncode)
-                return process.returncode
-        except Exception as error:
-            record("error", message=str(error))
-            # Never leave a launched test running after its guard has failed.
-            if process is not None and process.poll() is None:
-                process.terminate()
-                process.wait(timeout=10)
-            raise
+    except BaseException as error:
+        record("error", message=str(error))
+        raise
+    finally:
+        if process is not None and not keep_open:
+            stop_owned_process(process, config["port"], record)
+    return process.returncode
 
 
 if __name__ == "__main__":

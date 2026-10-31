@@ -561,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if launched:
             proc = maya_commandport.launch_maya(
+                keep_open=args.leave_open,
                 version=args.maya,
                 project_root=root,
                 output_dir=out,

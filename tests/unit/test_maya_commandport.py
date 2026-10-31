@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import tempfile
 import threading
@@ -170,12 +171,30 @@ class TestMayaCommandPort(unittest.TestCase):
             config = json.loads((output / "launch_maya_2025_7788.json").read_text(encoding="utf-8"))
             self.assertEqual(str(root / "isolated-maya-app"), config["env"]["MAYA_APP_DIR"])
             self.assertEqual("VirtualDeviceGLCore", config["env"]["MAYA_VP2_DEVICE_OVERRIDE"])
+            self.assertEqual(os.getpid(), config["owner_pid"])
+            self.assertEqual(7788, config["port"])
+            self.assertFalse(config["keep_open"])
             self.assertEqual([str(executable), "-script", str((output / "commandport_7788.mel").resolve())],
                              config["command"])
             launcher = (output / "launch_maya_2025_7788.vbs").read_text(encoding="utf-16")
             self.assertIn("background_launch.py", launcher)
             self.assertTrue(launcher.endswith(', 0, False\n'))
             self.assertEqual("explorer.exe", run.call_args.args[0][0])
+
+    def test_explicit_preview_is_serialized_as_keep_open(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "maya.exe"
+            executable.touch()
+            with mock.patch.object(maya_commandport, "maya_exe", return_value=executable), \
+                 mock.patch.object(maya_commandport.platform, "system", return_value="Windows"), \
+                 mock.patch.object(maya_commandport.subprocess, "run"):
+                maya_commandport.launch_maya(
+                    version="2024", project_root=root, output_dir=root,
+                    port=7788, launch_mode="explorer", keep_open=True,
+                )
+            config = json.loads((root / "launch_maya_2024_7788.json").read_text(encoding="utf-8"))
+            self.assertTrue(config["keep_open"])
 
     def test_send_python_wraps_code_as_compiled_exec_payload(self):
         received = []

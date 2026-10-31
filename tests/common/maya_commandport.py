@@ -388,6 +388,7 @@ def launch_maya(
     port: int,
     launch_mode: str = "explorer" if platform.system() == "Windows" else "direct",
     env_overrides: Optional[dict[str, str]] = None,
+    keep_open: bool = False,
 ) -> Optional[subprocess.Popen]:
     """Launch Maya GUI with a Python commandPort and isolated preferences.
 
@@ -397,6 +398,9 @@ def launch_maya(
     license checkout. Unless explicitly
     overridden, ``MAYA_APP_DIR`` is kept under the test output directory so an
     automated shutdown cannot rewrite the user's Maya preferences.
+    Explorer-launched test instances are closed when this caller exits, even
+    after interruption. Pass ``keep_open=True`` only for a retained preview;
+    callers must also skip their own explicit quit/cleanup in that mode.
     """
     executable = maya_exe(version)
     if not executable.is_file():
@@ -427,6 +431,7 @@ def launch_maya(
         config_path = (output_dir / f"launch_maya_{version}_{port}.json").resolve()
         mel_path.write_text(command_port_mel + "\n", encoding="utf-8")
         config_path.write_text(json.dumps({
+            "owner_pid": os.getpid(), "port": port, "keep_open": keep_open,
             "command": [str(executable), "-script", str(mel_path)],
             "cwd": str(project_root), "output": str(output_dir.resolve()),
             "env": {name: env[name] for name in
