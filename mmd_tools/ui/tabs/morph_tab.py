@@ -20,6 +20,7 @@ from ..qt_compat import (
     QMenu,
 )
 from ..base_tab import BaseTab
+from ..components.search_label import SearchLabel
 from ...core.name_display import original_pmx_fields_visible
 from ..components.authoring_toolbar import AuthoringToolbar
 from .translation_registry import apply_translation_registry
@@ -135,7 +136,7 @@ class MorphTab(BaseTab):
 
         # 検索
         search_layout = QHBoxLayout()
-        self.search_label = QLabel(self.tr("search", "fields"))
+        self.search_label = SearchLabel(self.tr("search", "fields"))
         search_layout.addWidget(self.search_label)
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("morphSearchEdit")

@@ -149,8 +149,30 @@ class TestAnimationMorphEditor(GuiTestBase):
         self.presenter._on_morph_row_activated(names[0], Qt.ShiftModifier)
         self.assertEqual(set(self.presenter._morph_selected_names), set(names))
 
+    def test_editor_search_labels_remain_icons_after_translation(self):
+        from mmd_tools.ui.tabs.bone_tab import BoneTab
+        from mmd_tools.ui.tabs.material_tab import MaterialTab
+        from mmd_tools.ui.tabs.morph_tab import MorphTab
+
+        for tab_type in (BoneTab, MorphTab, MaterialTab):
+            tab = tab_type()
+            try:
+                tab.search_edit.setText("test query")
+                tab.retranslateUi()
+                self.assertEqual(tab.search_label.text(), "")
+                self.assertFalse(tab.search_label.pixmap().isNull())
+                self.assertEqual(tab.search_label.accessibleName(), tab.tr("search", "fields"))
+                self.assertEqual(tab.search_edit.text(), "test query")
+            finally:
+                tab.close()
+                tab.deleteLater()
+
     def test_search_and_filter_collapse_survive_view_switch(self):
         self.assertTrue(self.tab.morph_filter_panel.isHidden())
+        self.assertEqual(self.tab.morph_filter_toggle.text(), "")
+        self.assertFalse(self.tab.morph_filter_toggle.icon().isNull())
+        self.assertTrue(self.tab.morph_view.itemIcon(0).isNull())
+        empty_icon = self.tab.morph_filter_toggle.icon().cacheKey()
         QTest.mouseClick(self.tab.morph_filter_toggle, Qt.LeftButton)
         self.assertFalse(self.tab.morph_filter_panel.isHidden())
         first = next(iter(self.presenter._morph_rows.values()))
@@ -163,6 +185,10 @@ class TestAnimationMorphEditor(GuiTestBase):
         QTest.mouseClick(self.tab.morph_filter_toggle, Qt.LeftButton)
         self.assertTrue(self.tab.morph_filter_panel.isHidden())
         self.assertEqual(self.tab.morph_filter.text(), query)
+        self.assertIn(query, self.tab.morph_filter_toggle.toolTip())
+        self.assertNotEqual(self.tab.morph_filter_toggle.icon().cacheKey(), empty_icon)
+        self.tab.retranslateUi()
+        self.assertEqual(self.tab.morph_filter_toggle.text(), "")
         self.tab.morph_view.setCurrentIndex(0)
         self.assertEqual(sum(not row.isHidden() for row in self.presenter._morph_rows.values()), 1)
         self.tab.morph_filter.clear()

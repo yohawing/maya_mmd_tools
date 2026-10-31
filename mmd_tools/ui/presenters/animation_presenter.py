@@ -2372,6 +2372,7 @@ class AnimationPresenter:
             group_layout.setContentsMargins(0, 0, 0, 0)
             group_layout.setSpacing(2)
             header = QPushButton(f"▾  {cat_name}    {len(morphs)}")
+            header.setMinimumHeight(28)
             header.setCheckable(True)
             header.setChecked(self._morph_group_expanded.get(category_key, True))
             header.setStyleSheet(
@@ -2383,9 +2384,9 @@ class AnimationPresenter:
 
             content = QWidget()
             content_layout = QGridLayout(content)
-            content_layout.setContentsMargins(8, 4, 6, 5)
-            content_layout.setHorizontalSpacing(7)
-            content_layout.setVerticalSpacing(3)
+            content_layout.setContentsMargins(6, 6, 6, 8)
+            content_layout.setHorizontalSpacing(5)
+            content_layout.setVerticalSpacing(6)
             content_layout.setColumnMinimumWidth(0, 22)
             content_layout.setColumnMinimumWidth(1, 116)
             content_layout.setColumnMinimumWidth(3, 72)

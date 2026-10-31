@@ -19,6 +19,7 @@ from ..qt_compat import (
     QSlider,
 )
 from ..base_tab import BaseTab
+from ..components.search_label import SearchLabel
 from ...core.name_display import original_pmx_fields_visible
 from ..components.authoring_toolbar import AuthoringToolbar
 
@@ -115,7 +116,8 @@ class MaterialTab(BaseTab):
 
         # マテリアル検索
         search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel(self.tr("search", "fields")))
+        self.search_label = SearchLabel(self.tr("search", "fields"))
+        search_layout.addWidget(self.search_label)
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("materialSearchEdit")
         self.search_edit.setPlaceholderText(self.tr("search_material_name", "placeholders"))
@@ -439,6 +441,8 @@ class MaterialTab(BaseTab):
 
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
+        if hasattr(self, "search_label"):
+            self.search_label.setText(self.tr("search", "fields"))
         # GroupBoxes
         if hasattr(self, "material_list_group"):
             self.material_list_group.setTitle(self.tr("material_list", "groups"))

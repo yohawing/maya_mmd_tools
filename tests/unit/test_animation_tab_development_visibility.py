@@ -102,7 +102,7 @@ def _retranslate_view(data):
     view = SimpleNamespace(
         refresh_btn=_TextTarget(),
         morph_view=Mock(),
-        morph_view_label=Mock(),
+        _update_morph_search_icon=Mock(),
         morph_filter=Mock(),
         morph_filter_toggle=Mock(),
         picker_tabs=_TabTarget(),
