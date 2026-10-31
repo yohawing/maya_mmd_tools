@@ -393,6 +393,13 @@ def collect_humanik_constraint_facts(
         for node in sorted(cmds.ls(type=node_type) or []):
             reads = _connected_joint_plugs(cmds, node, incoming=True)
             writes = _connected_joint_plugs(cmds, node, incoming=False)
+            # Physics can replace every IK output while leaving its inputs
+            # connected. Such a node owns no channel. Keep indirect outputs
+            # (e.g. utility nodes) in the report: their ownership is unknown.
+            if not writes and not cmds.listConnections(
+                node, source=False, destination=True, plugs=True
+            ):
+                continue
             facts.append(
                 HumanIkConstraintFacts(
                     node=str(node),

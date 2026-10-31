@@ -7,12 +7,33 @@ from mmd_tools.core.humanik_constraints import (
     HumanIkConstraintFacts,
     classify_humanik_constraints,
     collect_hik_ownership_report,
+    collect_humanik_constraint_facts,
     is_supported_mmd_feedback_row,
     preisolated_mmd_ccdik_nodes_from_disconnected_edges,
 )
 
 
 class TestHumanIkConstraints(unittest.TestCase):
+    def test_outputless_ik_is_ignored_but_indirect_writer_stays_blocked(self):
+        class Cmds:
+            def ls(self, **_kwargs):
+                return ["hair_ik"]
+
+            def listConnections(self, *_args, **_kwargs):
+                return outputs
+
+        for outputs in ([], ["utility.input"]):
+            with self.subTest(outputs=outputs), patch(
+                "mmd_tools.core.humanik_constraints._connected_joint_plugs",
+                side_effect=[{"|head.rotate"}, set()],
+            ):
+                facts = collect_humanik_constraint_facts(Cmds(), node_types=("mmdCcdIk",))
+                report = classify_humanik_constraints(facts, {"|head"})
+                if outputs:
+                    self.assertEqual(report["rows"][0]["classification"], "manual")
+                else:
+                    self.assertEqual(report["rows"], [])
+
     def test_arm_ik_append_feedback_is_supported_only_for_reviewed_graph(self):
         class Cmds:
             def __init__(self, output, extra_ik_outputs=()):
