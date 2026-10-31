@@ -151,6 +151,49 @@ class HumanIkTargetPreview:
         )
 
 
+def _has_unresolved_indirect_output(row: Dict[str, Any], cmds) -> bool:
+    """Fail closed on manual writers whose downstream ownership is unknown."""
+    return bool(
+        row["classification"] == "manual"
+        and cmds.listConnections(row["node"], source=False, destination=True, plugs=True)
+    )
+
+
+def _preisolated_foot_has_unexpected_output(row: Dict[str, Any], cmds, rows_by_node) -> bool:
+    """Allow only the retained foot-IK quaternion path to outside joints."""
+    node = row["node"]
+    pairs = cmds.listConnections(
+        node, source=False, destination=True, plugs=True, connections=True
+    ) or []
+    if len(pairs) % 2:
+        return True
+    for first, second in zip(pairs[::2], pairs[1::2]):
+        if str(first).startswith(f"{node}."):
+            source, destination = first, second
+        elif str(second).startswith(f"{node}."):
+            source, destination = second, first
+        else:
+            return True
+        if source != f"{node}.outputMmdLinkQuaternions" or "." not in destination:
+            return True
+        append_node, attribute = destination.rsplit(".", 1)
+        append_row = rows_by_node.get(append_node, {})
+        if (
+            attribute != "sourceMmdLinkQuaternions"
+            or append_row.get("nodeType") != "mmdAppend"
+            or append_row.get("classification") != "keep_post"
+        ):
+            return True
+        for plug in cmds.listConnections(append_node, source=False, destination=True, plugs=True) or []:
+            if "." not in plug:
+                return True
+            joint, attr = plug.rsplit(".", 1)
+            long_names = cmds.ls(joint, long=True) or [joint]
+            if not any(f"{name}.{attr}" in append_row.get("writes", ()) for name in long_names):
+                return True
+    return False
+
+
 def begin_humanik_target_preview(
     ownership_id: str,
     target_character: str,
@@ -198,6 +241,26 @@ def begin_humanik_target_preview(
         {row["node"] for row in [*supported_feedback, *preisolated_feedback]}
     )
     hik_joint_set = {str(joint) for joint in hik_joints}
+    pre_report = classify_humanik_constraints(
+        collect_humanik_constraint_facts(cmds_module=cmds),
+        hik_joint_set,
+    )
+    # The active Control Rig already isolated these foot writers. Their only
+    # accepted remaining output is the known append path to non-HIK joints.
+    verified_preisolated_nodes = {row["node"] for row in preisolated_feedback}
+    pre_rows_by_node = {row["node"]: row for row in pre_report["rows"]}
+    indirect_blockers = [
+        row for row in pre_report["rows"]
+        if (
+            _preisolated_foot_has_unexpected_output(row, cmds, pre_rows_by_node)
+            if row["node"] in verified_preisolated_nodes
+            else _has_unresolved_indirect_output(row, cmds)
+        )
+    ]
+    if indirect_blockers:
+        labels = ", ".join(row["node"] for row in indirect_blockers)
+        raise RuntimeError(f"HumanIK TARGET preview pre-scan found blocker: {labels}")
+
     # HIK also drives previously unconnected TRS channels. Keep their values,
     # not just the destinations of writers that we temporarily disconnect.
     destinations = set(destinations)
@@ -271,11 +334,25 @@ def begin_humanik_target_preview(
                 "HumanIK TARGET preview post-scan found residual muted HIK writers: "
                 f"{labels}"
             )
+        post_rows_by_node = {row["node"]: row for row in post_report["rows"]}
+        if any(
+            _preisolated_foot_has_unexpected_output(row, cmds, post_rows_by_node)
+            for row in post_report["rows"] if row["node"] in verified_preisolated_nodes
+        ):
+            raise RuntimeError("HumanIK TARGET preview post-scan found blocker")
         post_blockers = [
             row for row in post_report["rows"]
             if row["node"] not in muted_nodes
             and row["node"] not in feedback_nodes
             and row["classification"] in BLOCKING_CLASSIFICATIONS
+            # Unknown outgoing connections may reach this target through a
+            # utility node, so only an output-free manual node is unrelated.
+            and (
+                row["classification"] != "manual"
+                or row.get("readHikJoints")
+                or row.get("writeHikJoints")
+                or _has_unresolved_indirect_output(row, cmds)
+            )
         ]
         if post_blockers:
             raise RuntimeError("HumanIK TARGET preview post-scan found blocker")
