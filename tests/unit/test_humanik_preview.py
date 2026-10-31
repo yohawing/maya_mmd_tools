@@ -30,6 +30,9 @@ class FakeCmds:
         self.disconnects.append((source, destination))
         self.connections[destination].remove(source)
 
+    def connectionInfo(self, plug, isExactDestination=False):
+        return bool(self.connections.get(plug))
+
     def connectAttr(self, source, destination, force=False):
         self.connections[destination] = [source]
 
@@ -240,6 +243,9 @@ class TestHumanIkPreview(unittest.TestCase):
 
     def test_begin_mutes_writer_then_stop_restores_neutral(self):
         cmds, mel = FakeCmds(), FakeMel()
+        cmds.values["|hips.rotateY"] = 12.0
+        cmds.values["|hips.scaleZ"] = 1.5
+        cmds.connections["|hips.translate"] = ["rest.outputTranslate"]
         report = {
             "rows": [
                 {
@@ -268,11 +274,18 @@ class TestHumanIkPreview(unittest.TestCase):
         self.assertEqual(cmds.connections["|hips.rotateX"], [])
         self.assertEqual(mel.source, "Source")
         self.assertEqual(preview.retained_nodes, ["twist"])
+        captured = {row.plug for row in preview.restore_state.plugs}
+        self.assertIn("|hips.rotateY", captured)
+        self.assertNotIn("|hips.translateX", captured)
+        cmds.values["|hips.rotateY"] = 45.0
+        cmds.values["|hips.scaleZ"] = 2.0
         stop_humanik_target_preview(preview, cmds, mel)
         stop_humanik_target_preview(preview, cmds, mel)
         self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
         self.assertEqual(mel.source, "")
         self.assertFalse(preview.active)
+        self.assertEqual(cmds.values["|hips.rotateY"], 12.0)
+        self.assertEqual(cmds.values["|hips.scaleZ"], 1.5)
 
     def test_begin_reisolates_reviewed_edge_reconnected_by_source_connection(self):
         cmds = FakeCmds()
@@ -329,9 +342,11 @@ class TestHumanIkPreview(unittest.TestCase):
                 "owner:target", "Target", "Source", report, {"|hips", "|left_foot"}, cmds, mel
             )
 
-        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+        # The previously free foot channel is now in the restore scope. A new
+        # foreign writer must block rollback before reconnecting any MMD edge.
+        self.assertEqual(cmds.connections["|hips.rotateX"], [])
         self.assertEqual(cmds.connections["|left_foot.rotateX"], ["third_party.outputRotateX"])
-        self.assertEqual(mel.source, "")
+        self.assertEqual(mel.source, "Source")
         self.assertEqual(cmds.values["propNode.LeftElbowKillPitch"], 0)
 
     def test_blocker_stops_before_mutation(self):

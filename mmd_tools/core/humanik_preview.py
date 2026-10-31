@@ -37,7 +37,7 @@ from mmd_tools.core.humanik_transaction import (
     capture_humanik_restore_state,
     apply_humanik_restore_state,
 )
-from mmd_tools.core.humanik_utils import maya_cmds
+from mmd_tools.core.humanik_utils import incoming_sources, maya_cmds
 
 
 # Re-exported here for backward compatibility: several callers (control_rig,
@@ -198,10 +198,22 @@ def begin_humanik_target_preview(
         {row["node"] for row in [*supported_feedback, *preisolated_feedback]}
     )
     hik_joint_set = {str(joint) for joint in hik_joints}
+    # HIK also drives previously unconnected TRS channels. Keep their values,
+    # not just the destinations of writers that we temporarily disconnect.
+    destinations = set(destinations)
+    for joint in hik_joint_set:
+        for attribute in ("translate", "rotate", "scale"):
+            parent = f"{joint}.{attribute}"
+            if parent in destinations or cmds.connectionInfo(parent, isExactDestination=True):
+                continue
+            for axis in "XYZ":
+                plug = parent + axis
+                if not incoming_sources(cmds, plug):
+                    destinations.add(plug)
     restore_state = capture_humanik_restore_state(
         ownership_id,
         target_character,
-        destinations,
+        sorted(destinations),
         muted_nodes,
         cmds_module=cmds,
         mel_module=mel_module,
