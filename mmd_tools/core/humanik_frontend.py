@@ -58,6 +58,7 @@ from mmd_tools.core.humanik_retarget import (
 )
 from mmd_tools.core.humanik_stance import HumanIkStanceTransaction, canonical_stance_targets
 from mmd_tools.core.humanik_transaction import (
+    HumanIkRestoreState,
     load_humanik_restore_state,
     persist_humanik_restore_state,
 )
@@ -342,6 +343,29 @@ def _preisolated_feedback_nodes(
     )
 
 
+def _same_snapshot_node(first: Any, second: Any, first_name: str, second_name: str) -> bool:
+    """Match node identity by UUID, with name fallback for legacy snapshots."""
+    if first.node_uuid and second.node_uuid:
+        return first.node_uuid == second.node_uuid
+    return first_name == second_name
+
+
+def _restore_plugs_overlap(first: Any, second: Any) -> bool:
+    """Detect exact or compound/child overlap between two restore plugs."""
+    first_node, first_attr = first.plug.rsplit(".", 1)
+    second_node, second_attr = second.plug.rsplit(".", 1)
+    if not _same_snapshot_node(first, second, first_node, second_node):
+        return False
+    if first_attr == second_attr:
+        return True
+    parents = {"translate", "rotate", "scale"}
+    return (
+        first_attr in parents and second_attr in {first_attr + axis for axis in "XYZ"}
+    ) or (
+        second_attr in parents and first_attr in {second_attr + axis for axis in "XYZ"}
+    )
+
+
 @dataclass
 class HumanIkFrontendBinding:
     """Characterized HumanIK binding retained by a frontend session."""
@@ -443,7 +467,7 @@ class HumanIkFrontendSession:
         self._load_persisted_control_rig_transactions()
 
     def _load_persisted_control_rig_transactions(self) -> None:
-        """Rebuild active Control Rig transactions from scene metadata.
+        """Rebuild active rigs and pending preview restores from scene metadata.
 
         The scene payload is advisory and validated twice: first by the
         restore_state schema loader, then by proving that the recorded character is
@@ -488,22 +512,37 @@ class HumanIkFrontendSession:
                         normalized_preview["restore_state"] = preview_restore
                     normalized_row["preview"] = normalized_preview
                 transaction = HumanIkControlRigTransaction.from_scene_dict(normalized_row)
+                pending_preview = transaction.preview is not None and transaction.preview.active
+                if not transaction.active and not pending_preview:
+                    continue
                 if not transaction.active:
+                    preview_state = HumanIkRestoreState.from_dict(
+                        transaction.preview.restore_state.to_dict(), require_authority=True
+                    )
+                    if preview_state.character_uuid != character_uuid:
+                        raise ValueError("HumanIK pending preview character UUID mismatch")
+                if not transaction.active and self._preview is not None:
+                    logger.warning("HumanIK persisted pending preview rejected: another preview is already active")
                     continue
             except Exception as exc:  # noqa: BLE001 - stale/foreign metadata is rejected
                 logger.warning("HumanIK persisted transaction rejected: %s", exc)
                 continue
             self._control_rig_transactions[model_root] = transaction
-            if transaction.baked:
-                self._control_rig_baked_roots.add(model_root)
-            register_control_rig_transaction(character, transaction)
+            if transaction.active:
+                if transaction.baked:
+                    self._control_rig_baked_roots.add(model_root)
+                register_control_rig_transaction(character, transaction)
+            else:
+                self._preview = transaction.preview
+                self._target_model_root = model_root
 
     def _persist_control_rig_transactions(self, records=None) -> None:
-        """Best-effort scene persistence for active Control Rig transactions."""
+        """Persist active rigs and previews still awaiting restoration."""
         if records is None:
             records = []
             for model_root, transaction in self._control_rig_transactions.items():
-                if not getattr(transaction, "active", False):
+                preview = getattr(transaction, "preview", None)
+                if not getattr(transaction, "active", False) and not (preview and preview.active):
                     continue
                 to_scene_dict = getattr(transaction, "to_scene_dict", None)
                 if to_scene_dict is None:
@@ -1204,8 +1243,12 @@ class HumanIkFrontendSession:
         if preview is None or self._target_model_root is None:
             raise RuntimeError("HumanIK target preview is not active")
         target_root = self._target_model_root
-        target = self._bindings[target_root]
         transaction = self._control_rig_transactions.get(target_root)
+        if transaction is not None and not transaction.active and getattr(transaction, "preview", None) is preview:
+            raise RuntimeError("HumanIK target preview is pending restore")
+        target = self._bindings.get(target_root)
+        if target is None:
+            raise RuntimeError(f"HumanIK target model binding is missing: {target_root}")
         start, end = self._resolve_bake_frame_range(start, end)
         try:
             result = bake_humanik_target_preview(
@@ -1226,6 +1269,13 @@ class HumanIkFrontendSession:
                 self._persist_control_rig_transactions()
             raise
         if transaction is not None:
+            # A successful bake owns its newly keyed destinations. Do not
+            # reset previously free channels when this Control Rig is removed.
+            baked_destinations = set(result.routes.values()) | set(result.ik_controller_routes.values())
+            transaction.restore_state.plugs = [
+                item for item in transaction.restore_state.plugs
+                if item.sources or item.plug not in baked_destinations
+            ]
             transaction.preview = None
         self._preview = None
         self._target_model_root = None
@@ -1360,7 +1410,8 @@ class HumanIkFrontendSession:
         first_error = None
         for model_root, transaction in list(self._control_rig_transactions.items()):
             if not transaction.active:
-                self._control_rig_transactions.pop(model_root, None)
+                if preview is None or not preview.active or getattr(transaction, "preview", None) is not preview:
+                    self._control_rig_transactions.pop(model_root, None)
                 continue
             try:
                 stop_humanik_control_rig(transaction, cmds_module=self._cmds, mel_module=self._mel)
@@ -1370,7 +1421,36 @@ class HumanIkFrontendSession:
                 if not transaction.active:
                     self._control_rig_transactions.pop(model_root, None)
                 continue
-            self._control_rig_transactions.pop(model_root, None)
+            if (
+                preview is not None and preview.active
+                and model_root == self._target_model_root
+                and getattr(preview, "target_character", None) == transaction.character
+            ):
+                # Control Rig was created before preview, but must be deleted
+                # first. Do not let the later preview restore re-enable that rig
+                # or overwrite state the earlier transaction just restored.
+                control_state = transaction.restore_state
+                preview_state = preview.restore_state
+                preview_state.input_source = control_state.input_source
+                preview_state.input_type = control_state.input_type
+                preview_state.lock_state = control_state.lock_state
+                preview_state.plugs = [
+                    item for item in preview_state.plugs
+                    if not any(_restore_plugs_overlap(item, original) for original in control_state.plugs)
+                ]
+                preview_state.nodes = [
+                    item for item in preview_state.nodes
+                    if not any(
+                        _same_snapshot_node(item, original, item.node, original.node)
+                        for original in control_state.nodes
+                    )
+                ]
+                # Keep the inactive transaction until preview restoration
+                # succeeds so a saved scene can retry after an interruption.
+                transaction.preview = preview
+                self._persist_control_rig_transactions()
+            else:
+                self._control_rig_transactions.pop(model_root, None)
             self._control_rig_baked_roots.discard(model_root)
             binding = self._bindings.get(model_root)
             if binding is not None:
@@ -1408,9 +1488,18 @@ class HumanIkFrontendSession:
                     first_error = exc
             finally:
                 if preview is not None and not preview.active:
+                    transaction = self._control_rig_transactions.get(self._target_model_root)
+                    if (
+                        transaction is not None and not transaction.active
+                        and getattr(transaction, "preview", None) is preview
+                    ):
+                        self._control_rig_transactions.pop(self._target_model_root, None)
                     self._preview = None
                     self._target_model_root = None
                     self._ownership_report = None
+        if preview is not None and preview.active and first_error is not None:
+            self._persist_control_rig_transactions()
+            raise first_error
         failed_stance_roots = set()
         for model_root, stance in list(self._pending_stances.items()):
             try:
@@ -1939,6 +2028,8 @@ class HumanIkFrontendSession:
                 if target_binding is not None
                 else scene_pair["target"]
                 if scene_pair is not None
+                else {"modelRoot": self._target_model_root, "character": self.active_preview.target_character}
+                if self.active_preview is not None and self._target_model_root is not None
                 else None
             ),
             "previewActive": preview_active,
@@ -2094,10 +2185,18 @@ class HumanIkFrontendSession:
         return _action_allowed()
 
     def _describe_bake_to_mmd_rig_action(self) -> Dict[str, Any]:
-        """Mirror ``bake_to_mmd_rig``'s guard: an active preview is required."""
-        if self.active_preview is None or self._target_model_root is None:
+        """Mirror ``bake_to_mmd_rig``'s preview and binding guards."""
+        preview = self.active_preview
+        if preview is None or self._target_model_root is None:
             return _action_blocked(
                 REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"
+            )
+        transaction = self._control_rig_transactions.get(self._target_model_root)
+        if transaction is not None and not transaction.active and getattr(transaction, "preview", None) is preview:
+            return _action_blocked(REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is pending restore")
+        if self._target_model_root not in self._bindings:
+            return _action_blocked(
+                REASON_NOT_CHARACTERIZED, f"HumanIK target model binding is missing: {self._target_model_root}"
             )
         return _action_allowed()
 

@@ -20,6 +20,7 @@ from mmd_tools.core.humanik_transaction import HumanIkRestoreState
 class FakeCmds:
     def __init__(self, extra_nodes=None):
         self.connections = {"|hips.rotateX": ["ik.outputRotateX"]}
+        self.downstream = {}
         self.values = {"|hips.rotateX": 0.0}
         self.disconnects = []
         self.deleted = []
@@ -33,14 +34,25 @@ class FakeCmds:
     def listConnections(self, plug, source=True, destination=False, plugs=True, connections=False):
         if connections:
             return []
+        if destination and not source:
+            return list(self.downstream.get(plug, []))
         return list(self.connections.get(plug, []))
 
     def disconnectAttr(self, source, destination):
         self.disconnects.append((source, destination))
         self.connections[destination].remove(source)
+        node = source.rsplit(".", 1)[0]
+        if destination in self.downstream.get(node, []):
+            self.downstream[node].remove(destination)
+
+    def connectionInfo(self, plug, isExactDestination=False):
+        return bool(self.connections.get(plug))
 
     def connectAttr(self, source, destination, force=False):
         self.connections[destination] = [source]
+        node = source.rsplit(".", 1)[0]
+        if node in self.downstream and destination not in self.downstream[node]:
+            self.downstream[node].append(destination)
 
     def isConnected(self, source, destination):
         return source in self.connections.get(destination, [])
@@ -56,6 +68,8 @@ class FakeCmds:
 
     def ls(self, type=None, long=False):
         if long:
+            if type is not None:
+                return [type]
             return sorted(self.existing_nodes)
         return []
 
@@ -197,6 +211,67 @@ def _patch_facts():
 
 
 class TestBeginHumanIkControlRig(unittest.TestCase):
+    def test_arm_ik_feedback_control_rig_restores_or_rolls_back(self):
+        for inject_utility in (False, True):
+            with self.subTest(inject_utility=inject_utility):
+                shoulder = "|model|shoulder"
+                helper, arm = f"{shoulder}|helper", f"{shoulder}|arm"
+                node, destination = "arm_append", f"{arm}.rotate"
+                cmds, mel = FakeCmds(extra_nodes={shoulder, arm, node}), FakeMel()
+                cmds.connections[destination] = [f"{node}.outputRotate"]
+                cmds.downstream[node] = [destination]
+                cmds.downstream["arm_ik"] = [f"{helper}.rotate", f"{node}.sourceMmdLinkQuaternions"]
+                report = {"rows": [
+                    {"node": "arm_ik", "nodeType": "mmdCcdIk", "classification": "keep_post",
+                     "readHikJoints": [shoulder], "writeHikJoints": [], "writes": [f"{helper}.rotate"]},
+                    {"node": node, "nodeType": "mmdAppend", "classification": "feedback_blocker",
+                     "reads": [f"{helper}.rotate"], "writes": [destination]},
+                ]}
+                assignments = [
+                    {"joint": shoulder, "hikBone": "LeftShoulder"},
+                    {"joint": arm, "hikBone": "LeftArm"},
+                ]
+
+                def create(*_args, **_kwargs):
+                    if inject_utility:
+                        cmds.downstream["arm_ik"].append("utility.input")
+
+                with _patch_classify(report, {"rows": []}), patch(
+                    "mmd_tools.core.humanik_control_rig.create_humanik_control_rig", side_effect=create
+                ):
+                    if inject_utility:
+                        with self.assertRaisesRegex(RuntimeError, "post-scan found blocker in arm IK"):
+                            begin_humanik_control_rig(
+                                "owner:rig", "Character", {shoulder, arm}, cmds, mel, assignments=assignments
+                            )
+                    else:
+                        transaction = begin_humanik_control_rig(
+                            "owner:rig", "Character", {shoulder, arm}, cmds, mel, assignments=assignments
+                        )
+                        self.assertEqual(cmds.connections[destination], [])
+                        stop_humanik_control_rig(transaction, cmds, mel)
+                self.assertEqual(cmds.connections[destination], [f"{node}.outputRotate"])
+
+    def test_control_rig_restores_previously_unconnected_joint_values(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        cmds.values["|hips.rotateY"] = 17.0
+        cmds.values["|hips.translateZ"] = 2.5
+
+        def create(*_args, **_kwargs):
+            mel.has_control_rig = True
+            cmds.values["|hips.rotateY"] = 90.0
+            cmds.values["|hips.translateZ"] = 10.0
+
+        with _patch_classify(MUTE_REPORT, CLEAN_POST_REPORT), patch(
+            "mmd_tools.core.humanik_control_rig.create_humanik_control_rig", side_effect=create
+        ):
+            transaction = begin_humanik_control_rig("owner:rig", "Character", {"|hips"}, cmds, mel)
+
+        stop_humanik_control_rig(transaction, cmds, mel)
+        self.assertEqual(cmds.values["|hips.rotateY"], 17.0)
+        self.assertEqual(cmds.values["|hips.translateZ"], 2.5)
+        self.assertEqual(cmds.connections["|hips.rotateX"], ["ik.outputRotateX"])
+
     def test_blocker_rejects_before_any_mutation(self):
         cmds, mel = FakeCmds(), FakeMel()
         report = {"rows": [{"node": "physics", "classification": "physics_blocker", "writes": []}]}

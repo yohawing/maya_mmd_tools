@@ -410,6 +410,21 @@ def _ensure_string_attr(cmds, node: str, attr: str) -> None:
     cmds.addAttr(node, longName=attr, dataType="string")
 
 
+def include_unconnected_hik_trs(cmds, hik_joints: Iterable[str], destinations: Iterable[str]) -> List[str]:
+    """Include free HIK channels whose values can change when HIK takes control."""
+    result = set(destinations)
+    for joint in hik_joints:
+        for attribute in ("translate", "rotate", "scale"):
+            parent = f"{joint}.{attribute}"
+            if parent in result or cmds.connectionInfo(parent, isExactDestination=True):
+                continue
+            for axis in "XYZ":
+                plug = parent + axis
+                if not incoming_sources(cmds, plug):
+                    result.add(plug)
+    return sorted(result)
+
+
 def capture_humanik_restore_state(
     ownership_id: str,
     character: str,
