@@ -93,24 +93,31 @@ class AnimationTab(BaseTab):
         self.morph_page = QWidget()
         morph_outer = QVBoxLayout(self.morph_page)
         morph_outer.setContentsMargins(0, 0, 0, 0)
+        morph_view_layout = QHBoxLayout()
+        self.morph_view_label = QLabel()
+        self.morph_view = QComboBox()
+        self.morph_view.addItems(["Normal", "Display frames"])
+        morph_view_layout.addWidget(self.morph_view_label)
+        morph_view_layout.addWidget(self.morph_view, 1)
+        morph_outer.addLayout(morph_view_layout)
+        self.morph_filter_toggle = QPushButton()
+        self.morph_filter_toggle.setCheckable(True)
+        self.morph_filter_toggle.setStyleSheet("QPushButton { text-align: left; padding: 3px 6px; }")
+        morph_outer.addWidget(self.morph_filter_toggle)
+        self.morph_filter_panel = QWidget()
+        filter_layout = QVBoxLayout(self.morph_filter_panel)
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        morph_outer.addWidget(self.morph_filter_panel)
+        self.morph_filter_panel.hide()
+        self.morph_filter_toggle.toggled.connect(self.morph_filter_panel.setVisible)
+        self.morph_filter_toggle.toggled.connect(
+            lambda expanded: self.morph_filter_toggle.setText(
+                f"{'▾' if expanded else '▸'}  {self.tr('morph_filters', 'animation_toolset')}"
+            )
+        )
         self.morph_filter = QLineEdit()
         self.morph_filter.setPlaceholderText("Filter morphs")
-        morph_outer.addWidget(self.morph_filter)
-        morph_options = QHBoxLayout()
-        self.morph_scope = QComboBox()
-        for key in ("morph_all", "morph_nonzero", "morph_keyed"):
-            self.morph_scope.addItem(self.tr(key, "animation_toolset"))
-        self.morph_sort = QComboBox()
-        for key in ("morph_original_order", "morph_name_order"):
-            self.morph_sort.addItem(self.tr(key, "animation_toolset"))
-        morph_options.addWidget(self.morph_scope, 1)
-        morph_options.addWidget(self.morph_sort, 1)
-        morph_outer.addLayout(morph_options)
-        self.morph_display_frame = QComboBox()
-        self.morph_display_frame.addItem(self.tr("morph_all_frames", "animation_toolset"), None)
-        self.morph_display_frame.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.morph_display_frame.setMinimumContentsLength(12)
-        morph_outer.addWidget(self.morph_display_frame)
+        filter_layout.addWidget(self.morph_filter)
         morph_scroll = QScrollArea()
         morph_scroll.setObjectName("MorphPickerScroll")
         morph_scroll.setWidgetResizable(True)
@@ -251,13 +258,14 @@ class AnimationTab(BaseTab):
             return self.tr(key, "animation_toolset")
 
         self.refresh_btn.setText(tr("refresh"))
-        for index, key in enumerate(("morph_all", "morph_nonzero", "morph_keyed")):
-            self.morph_scope.setItemText(index, tr(key))
-        for index, key in enumerate(("morph_original_order", "morph_name_order")):
-            self.morph_sort.setItemText(index, tr(key))
-        self.morph_display_frame.setItemText(0, tr("morph_all_frames"))
-        self.morph_display_frame.setToolTip(tr("morph_display_frame"))
-        self.morph_display_frame.setAccessibleName(tr("morph_display_frame"))
+        self.morph_filter_toggle.setText(
+            f"{'▾' if self.morph_filter_toggle.isChecked() else '▸'}  {tr('morph_filters')}"
+        )
+        self.morph_view_label.setText(tr("morph_view"))
+        self.morph_view.setAccessibleName(tr("morph_view"))
+        for index, key in enumerate(("morph_view_normal", "morph_view_frames")):
+            self.morph_view.setItemText(index, tr(key))
+        self.morph_filter.setPlaceholderText(tr("morph_search"))
         for index, key in enumerate(("body", "finger", "morph", "display")):
             self.picker_tabs.setTabText(index, tr(key))
         self.select_all_btn.setText(tr("select_all"))

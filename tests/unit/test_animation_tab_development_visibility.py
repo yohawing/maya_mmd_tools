@@ -101,9 +101,10 @@ def _retranslate_view(data):
     """Build the smallest view double needed by ``AnimationTab.retranslateUi``."""
     view = SimpleNamespace(
         refresh_btn=_TextTarget(),
-        morph_scope=Mock(),
-        morph_sort=Mock(),
-        morph_display_frame=Mock(),
+        morph_view=Mock(),
+        morph_view_label=Mock(),
+        morph_filter=Mock(),
+        morph_filter_toggle=Mock(),
         picker_tabs=_TabTarget(),
         select_all_btn=_TextTarget(),
         clear_btn=_TextTarget(),
