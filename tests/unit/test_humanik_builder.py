@@ -354,6 +354,8 @@ class TestHumanIkBuilder(unittest.TestCase):
         ensure_humanik_mel_loaded(mel)
 
         self.assertNotIn("source hikGlobalUtils.mel", mel.commands)
+        self.assertIn('if (!`pluginInfo -query -loaded "mayaCharacterization"`) loadPlugin "mayaCharacterization";', mel.commands)
+        self.assertIn('if (!`pluginInfo -query -loaded "mayaHIK"`) loadPlugin "mayaHIK";', mel.commands)
 
     def test_lock_humanik_definition_verifies_state(self):
         mel = FakeMel()
