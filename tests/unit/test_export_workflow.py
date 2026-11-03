@@ -250,14 +250,16 @@ class ExportWorkflowTests(unittest.TestCase):
             self.assertIs(self._service(vmd_action=action).vmd_action, action)
         factory.assert_not_called()
 
-    def test_default_vmd_action_constructs_without_importing_maya(self):
+    def test_default_vmd_action_constructs_without_maya_available(self):
         completed = subprocess.run(
             [sys.executable, "-c", (
                 "import sys; "
+                "sys.modules['maya'] = None; "
                 "from mmd_tools.services import ExportWorkflowService; "
                 "service = ExportWorkflowService(vpd_action=object()); "
                 "assert callable(service.vmd_action.execute_one_shot); "
-                "assert not any(n == 'maya' or n.startswith('maya.') for n in sys.modules)"
+                "assert sys.modules['maya'] is None; "
+                "assert not any(n.startswith('maya.') for n in sys.modules)"
             )],
             cwd=Path(__file__).resolve().parents[2],
             capture_output=True, text=True, check=False,
