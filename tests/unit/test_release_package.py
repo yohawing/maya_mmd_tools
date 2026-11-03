@@ -112,12 +112,15 @@ class ReleasePackageTest(unittest.TestCase):
         self.assertNotIn("shutil.make_archive", workflow)
 
     def test_builds_real_zip_with_minimal_docs_and_exclusions(self):
+        self._write("plug-ins/2024/Release/mmd_tools_cpp.bundle", b"stale macOS plugin")
+        self._write("mmd_tools/native/macos/libmmd_runtime_ffi.dylib", b"stale macOS runtime")
         result = self._build()
         archive_path = result["archive"]
         self.assertTrue(archive_path.is_file())
         with zipfile.ZipFile(archive_path) as archive:
             names = set(archive.namelist())
         self.assertTrue(all(name == "maya_mmd_tools" or name.startswith("maya_mmd_tools/") for name in names))
+        self.assertFalse(any(".bundle" in name or name.endswith(".dylib") for name in names))
         self.assertIn("maya_mmd_tools/README.md", names)
         self.assertIn("maya_mmd_tools/docs/README_ja.md", names)
         self.assertIn("maya_mmd_tools/resources/icons/icon.txt", names)
@@ -153,12 +156,12 @@ class ReleasePackageTest(unittest.TestCase):
 
     def test_missing_release_plugin_version_marker_fails_validation(self):
         manifest = package.load_manifest(self.manifest_path)
-        missing = self.root / manifest["platforms"]["macos"]["plugin"].format(maya_version="2024")
+        missing = self.root / manifest["platforms"]["windows"]["plugin"].format(maya_version="2024")
         missing.write_bytes(b"toolchain 3.11.3\x00")
         with self.assertRaisesRegex(package.PackageValidationError, "embedded version marker missing/unobservable"):
             self._build()
         report = json.loads((self.root / "build/reports/release_package.json").read_text(encoding="utf-8"))
-        marker = report["checks"]["platform_artifacts"]["macos"]["maya"]["2024"]["static_version_marker"]
+        marker = report["checks"]["platform_artifacts"]["windows"]["maya"]["2024"]["static_version_marker"]
         self.assertEqual(marker["status"], "missing")
         self.assertEqual(marker["observed_versions"], [])
 

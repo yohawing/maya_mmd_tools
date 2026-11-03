@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.3] - Unreleased
+## [0.8.4] - 2026-11-03
+
+### Added
+- Added model discovery and skeleton inspection through SceneModelService for external plugins.
+- Added PMX display-frame filtering and a display-frame view to Animator Toolset.
+
+### Changed
+- Simplified selected-model resolution, VMD export actions, and HumanIK bake calls using the playback range by default.
+- Added search icons to editors and compacted Animator Toolset controls.
+- Distributed Windows binaries for Maya 2024-2027 only; macOS rebuilds remain deferred.
+
+### Fixed
+- Restored HumanIK target inputs and Control Rig state when switching or detaching targets.
+- Validated unresolved HumanIK writers before preview, ignored disconnected writers, and loaded required plugins before reusing MEL procedures.
+- Supported the reviewed arm-IK feedback path in HumanIK.
+- Preserved blended material rendering when morph alpha returns to one.
+- Validated mixed bone animation routes per channel group during VMD curve fitting.
+
+### Known Limitations
+- Control Rig Bake Timeline can still reject motion that exceeds the existing curve-fitting tolerance.
+- External-plugin connection and bake API work remains incomplete.
+- macOS binaries are excluded from this Windows release.
+
+## [0.8.3] - 2026-10-24
 
 ### Added
 - Added physics bone controllers to Control Rig Manager for posing and animating secondary bones. Creating these controllers requires an existing Control Rig.
