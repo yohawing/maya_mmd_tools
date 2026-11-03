@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.4] - 2026-11-03
+## [0.8.4] - 2026-11-04
 
 ### Added
 - Added model discovery and skeleton inspection through SceneModelService for external plugins.
@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Validated mixed bone animation routes per channel group during VMD curve fitting.
 
 ### Known Limitations
+- The full release gate is not passing: three Bake/Rig parity tests fail on Maya 2024-2027 (knee position and deformed-mesh/oracle comparisons). Other release gates passed; this mismatch remains unresolved.
 - Control Rig Bake Timeline can still reject motion that exceeds the existing curve-fitting tolerance.
 - External-plugin connection and bake API work remains incomplete.
 - macOS binaries are excluded from this Windows release.
