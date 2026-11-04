@@ -218,6 +218,7 @@ class MmdIkChain:
         tolerance: float = 1e-5,
         max_iterations_cap: int = 0,
         parent_world_matrix: Optional[List[float]] = None,
+        initial_effector_world_position: Optional[List[float]] = None,
     ) -> Optional[Tuple[List[float], MmdRuntimeFfiIkSolveStats]]:
         """
         IK を解く。
@@ -229,6 +230,7 @@ class MmdIkChain:
             tolerance: 収束閾値
             max_iterations_cap: 0 = 無制限
             parent_world_matrix: 16 floats (column-major) or None
+            initial_effector_world_position: Optional first-step MMD world xyz.
 
         Returns:
             (link_count * 4 の solved rotations xyzw, stats) or None
@@ -249,7 +251,17 @@ class MmdIkChain:
             c_parent = (c_float * 16)(*parent_world_matrix)
 
         try:
-            ok = self._lib.mmd_runtime_ik_chain_solve(
+            solve = self._lib.mmd_runtime_ik_chain_solve
+            extra = ()
+            if initial_effector_world_position is not None:
+                if len(initial_effector_world_position) != 3:
+                    return None
+                solve = getattr(self._lib, "mmd_runtime_ik_chain_solve_with_initial_effector", None)
+                if solve is None:
+                    logger.error("The loaded runtime does not support initial-effector IK inputs")
+                    return None
+                extra = ((c_float * 3)(*initial_effector_world_position),)
+            ok = solve(
                 self._handle,
                 c_parent,
                 c_pos,
@@ -260,6 +272,7 @@ class MmdIkChain:
                 c_out,
                 out_len,
                 ctypes.byref(stats),
+                *extra,
             )
             if not ok:
                 return None

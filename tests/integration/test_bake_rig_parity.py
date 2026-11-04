@@ -13,7 +13,9 @@ PMX LOCAL_AXIS の jointOrient は Bake/Rig の両モードで同一に設定さ
 """
 
 import math
+import json
 import os
+import tempfile
 import unittest
 
 import maya.cmds as cmds
@@ -605,6 +607,54 @@ class TestRigModeAcceptance(MayaTestBase):
         failures = _format_transform_failures("Rig vs Oracle known rotation gap", [], rot_outliers)
         if failures:
             self.fail("\n".join(failures))
+
+    def test_initial_effector_precheck_precedes_current_fk_passthrough(self):
+        """The first CCD step uses the authored seed even when current FK matches."""
+        node = cmds.createNode("mmdCcdIk")
+        definition = {
+            "bones": [
+                {"parent_slot": -1, "rest_position": [0, 0, 0]},
+                {"parent_slot": 0, "rest_position": [1, 0, 0]},
+            ],
+            "controllerBoneSlot": -1, "targetBoneSlot": 1,
+            "links": [{"bone_slot": 0, "has_angle_limit": False}],
+            # Avoid the runtime's angle-dependent minimum iteration count.
+            "iterationCount": 1, "limitAngle": 13.0,
+        }
+        cmds.setAttr(node + ".chainJson", json.dumps(definition), type="string")
+        cmds.setAttr(node + ".goal", 1, 0, 0, type="double3")
+        self.assertAlmostEqual(cmds.getAttr(node + ".outputRotate[0].outputRotateElementZ"), 0.0)
+        curve = cmds.createNode("animCurveTA")
+        cmds.setKeyframe(curve, time=0, value=90.0)
+        cmds.connectAttr(curve + ".output", node + ".preIkRotate[0].preIkRotateElementZ")
+        self.assertAlmostEqual(cmds.getAttr(node + ".outputRotate[0].outputRotateElementZ"), -90.0, places=3)
+        cmds.keyframe(curve, edit=True, valueChange=0.0)
+        self.assertAlmostEqual(cmds.getAttr(node + ".outputRotate[0].outputRotateElementZ"), 0.0, places=3)
+
+    def test_pre_ik_connections_survive_scene_reload_and_reverse_seek(self):
+        """Saved authored-input connections remain live, without evaluation history."""
+        _import_model_with_options(PMX_FILE, VMD_FILE, True, True, bake_mode=False)
+        nodes = cmds.ls(type="mmdCcdIk") or []
+        connections = [
+            (node, slot)
+            for node in nodes
+            for slot in (cmds.getAttr(node + ".preIkRotate", multiIndices=True) or [])
+            if cmds.connectionInfo(f"{node}.preIkRotate[{slot}]", isDestination=True)
+        ]
+        self.assertGreater(len(connections), 0)
+        oracle = _capture_runtime_oracle_world_transforms(PMX_FILE, VMD_FILE, FRAMES)
+        with tempfile.TemporaryDirectory(prefix="mmd_seed_") as directory:
+            path = os.path.join(directory, "rig.ma")
+            cmds.file(rename=path)
+            cmds.file(save=True, type="mayaAscii", force=True)
+            cmds.file(new=True, force=True)
+            cmds.file(path, open=True, force=True)
+            for node, slot in connections:
+                self.assertTrue(cmds.connectionInfo(f"{node}.preIkRotate[{slot}]", isDestination=True))
+            actual = _capture_bone_world_transforms_by_index(list(reversed(FRAMES)))
+            _, positions, _ = _collect_transform_outliers(actual, oracle, FRAMES)
+            self.assertFalse(positions, _format_transform_failures("Reload/reverse seek", positions, []))
+            cmds.file(new=True, force=True)
 
     def test_sparse_keys_not_fully_baked(self):
         """Rig mode は sparse key（VMD フレーム位置のみ）で、全フレームベイクではない"""

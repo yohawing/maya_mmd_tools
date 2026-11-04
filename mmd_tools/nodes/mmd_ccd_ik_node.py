@@ -282,12 +282,29 @@ class MmdCcdIkNode(om.MPxNode):
             for value in (goal_x, goal_y, goal_z)
         )
 
+        # Connected overrides carry earlier chains' authored rotations, before
+        # their IK solve. Other slots retain the current input pose.
+        initial_effector = None
+        pre_rotates = list(maya_rotate_eulers)
+        pre_plug = fn_dep.findPlug("preIkRotate", False)
+        has_pre_ik = False
+        for slot in pre_plug.getExistingArrayAttributeIndices():
+            if not 0 <= slot < self._bone_count:
+                continue
+            elem = pre_plug.elementByLogicalIndex(slot)
+            if elem.isDestination or any(elem.child(i).isDestination for i in range(3)):
+                pre_rotates[slot] = om.MEulerRotation(*[elem.child(i).asDouble() for i in range(3)])
+                has_pre_ik = True
+        if has_pre_ik:
+            pre_positions, pre_rotations = self._solver_pose_from_maya_inputs(maya_translates, pre_rotates)
+            initial_effector = list(self._fk_world_position(self._target_slot, pre_positions, pre_rotations))
+
         # Pass-through gate: FK input pose が target を既に goal 上に置いている
         # なら solve しない（VMD bake 済み final pose の二重 solve 防止）。
         # ズレていれば solve する — 腰などチェーン祖先の移動は target だけを
         # 動かすので solve が走り、全ての親は target と goal を一緒に動かす
         # ので pass-through のまま。
-        if self._fk_target_matches_goal(positions, rotations, goal_x, goal_y, goal_z):
+        if initial_effector is None and self._fk_target_matches_goal(positions, rotations, goal_x, goal_y, goal_z):
             self._copy_input_rotate_to_output(data, plug)
             return
 
@@ -295,6 +312,7 @@ class MmdCcdIkNode(om.MPxNode):
             positions=positions,
             rotations=rotations,
             goal=[goal_x, goal_y, goal_z],
+            initial_effector_world_position=initial_effector,
         )
         if result is None:
             data.setClean(plug)
@@ -704,6 +722,16 @@ def initialize():
     cAttr.array = True
     MmdCcdIkNode.addAttribute(MmdCcdIkNode.aInputRotate)
 
+    _irx = uAttr.create("preIkRotateElementX", "pierx", om.MFnUnitAttribute.kAngle, 0.0)
+    _iry = uAttr.create("preIkRotateElementY", "piery", om.MFnUnitAttribute.kAngle, 0.0)
+    _irz = uAttr.create("preIkRotateElementZ", "pierz", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdCcdIkNode.aPreIkRotate = cAttr.create("preIkRotate", "pir")
+    cAttr.addChild(_irx)
+    cAttr.addChild(_iry)
+    cAttr.addChild(_irz)
+    cAttr.array = True
+    MmdCcdIkNode.addAttribute(MmdCcdIkNode.aPreIkRotate)
+
     _itx = nAttr.create("inputTranslateElementX", "ietx", om.MFnNumericData.kDouble, 0.0)
     _ity = nAttr.create("inputTranslateElementY", "iety", om.MFnNumericData.kDouble, 0.0)
     _itz = nAttr.create("inputTranslateElementZ", "ietz", om.MFnNumericData.kDouble, 0.0)
@@ -740,6 +768,7 @@ def initialize():
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aGoal, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aGoalWorldMatrix, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aInputRotate, MmdCcdIkNode.aOutputRotate)
+    MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aPreIkRotate, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aInputTranslate, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aEnabled, MmdCcdIkNode.aOutputRotate)
 

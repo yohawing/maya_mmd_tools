@@ -148,7 +148,7 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
         source = (
             Path(__file__).resolve().parents[2] / "cpp" / "src" / "MmdCcdIkNode.cpp"
         ).read_text(encoding="utf-8")
-        resolver = source.split("IkChainCreateV2Fn resolveIkChainCreateV2()", 1)[1].split(
+        resolver = source.split("Function resolveRuntimeSymbol(const char* name)", 1)[1].split(
             "struct CcdIkChainConfig", 1
         )[0]
 

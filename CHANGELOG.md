@@ -24,9 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Supported the reviewed arm-IK feedback path in HumanIK.
 - Preserved blended material rendering when morph alpha returns to one.
 - Validated mixed bone animation routes per channel group during VMD curve fitting.
+- Matched Rig knee and toe IK evaluation to Bake by preserving PMX angle-limit axes and the pre-IK effector position.
 
 ### Known Limitations
-- The full release gate is not passing: three Bake/Rig parity tests fail on Maya 2024-2027 (knee position and deformed-mesh/oracle comparisons). Other release gates passed; this mismatch remains unresolved.
 - Control Rig Bake Timeline can still reject motion that exceeds the existing curve-fitting tolerance.
 - External-plugin connection and bake API work remains incomplete.
 - macOS binaries are excluded from this Windows release.
