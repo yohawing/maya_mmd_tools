@@ -1427,19 +1427,23 @@ def bake_mmd_control_rig(
 
 @contextmanager
 def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=None):
-    """Stage only validated arm writers as ordinary animation for EDIT exit.
+    """Stage validated arm and eye writers as animation for EDIT exit.
 
     The inner exit transaction owns MMD-side rollback. This outer context
     restores the live arm edges if staging or that transaction fails. Helpers
     remain present; successful sample curves become curve representations.
     """
     active = [side for side, arm in metadata.get("armIk", {}).items() if arm.get("active")]
-    if not active:
+    eye_active = bool(metadata.get("eyeIk", {}).get("active"))
+    if not active and not eye_active:
         yield ()
         return
     from mmd_tools.core.mmd_control_rig_arm_ik import resolve_arm_plug, validate_arm_ik
 
     arms = [validate_arm_ik(cmds, metadata, side) for side in active]
+    if eye_active:
+        from mmd_tools.core.mmd_control_rig_eye_ik import validate_eye_ik
+        arms.append(validate_eye_ik(cmds, metadata))
     controls = {row["control"]: row for row in rows}
     inputs = []
     times = set()
@@ -1451,6 +1455,8 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
                 times.update(cmds.keyframe(plug, query=True, timeChange=True) or [])
     for arm in arms:
         for key in ("targetUuid", "poleUuid"):
+            if key not in arm:
+                continue
             node = cmds.ls(arm[key], long=True) or []
             times.update(cmds.keyframe(node[0], query=True, timeChange=True) or [])
         for item in arm["inputs"]:
