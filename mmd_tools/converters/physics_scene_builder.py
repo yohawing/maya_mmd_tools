@@ -254,6 +254,9 @@ def _find_or_create_world_node() -> str:
             name=f"{PHYSICS_WORLD_NODE}Shape",
             parent=transform,
         )
+        # PMX/native physics uses -98 in the same effective length units.
+        # Set only new worlds; existing scenes retain their authored gravity.
+        cmds.setAttr(f"{shape}.gravityY", -98.0)
         cmds.setAttr(f"{shape}.hiddenInOutliner", True)
     return transform
 
