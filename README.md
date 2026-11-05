@@ -53,7 +53,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 ### Required
 
 - **Maya**: 2024-2027
-- **OS**: Windows 11 (v0.8.4 ZIP). macOS builds are temporarily deferred and excluded from this release.
+- **OS**: Windows 11
 - **Python**: 3.10 or later (bundled with Maya 2024+)
 
 ## Installation
