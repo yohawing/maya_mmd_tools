@@ -126,7 +126,8 @@ using IkChainCreateV2Fn = mmd_runtime_ik_chain_t* (*)(
 // chain の所有権は MmdCcdIkNode::ChainCache に移され、solve ごとには解放しない。
 mmd_runtime_ik_chain_t* createNativeIkChain(const CcdIkChainConfig& cfg);
 
-IkChainCreateV2Fn resolveIkChainCreateV2()
+template <typename Function>
+Function resolveRuntimeSymbol(const char* name)
 {
 #ifdef _WIN32
     // ``mmd_runtime_ik_chain_create`` is imported into this plugin through
@@ -141,8 +142,8 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     for (const char* runtimeDllName : kRuntimeDllNames) {
         HMODULE runtimeModule = GetModuleHandleA(runtimeDllName);
         if (runtimeModule) {
-            auto fn = reinterpret_cast<IkChainCreateV2Fn>(
-                GetProcAddress(runtimeModule, "mmd_runtime_ik_chain_create_v2"));
+            auto fn = reinterpret_cast<Function>(
+                GetProcAddress(runtimeModule, name));
             if (fn) {
                 return fn;
             }
@@ -159,8 +160,8 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
         !ownerModule) {
         return nullptr;
     }
-    return reinterpret_cast<IkChainCreateV2Fn>(
-        GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+    return reinterpret_cast<Function>(
+        GetProcAddress(ownerModule, name));
 #else
     // ``mmd_runtime_ik_chain_create`` may be imported by this plugin while
     // another loaded image exports a symbol with the same name.  Resolve the
@@ -179,8 +180,8 @@ IkChainCreateV2Fn resolveIkChainCreateV2()
     if (!ownerModule) {
         return nullptr;
     }
-    auto fn = reinterpret_cast<IkChainCreateV2Fn>(
-        dlsym(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+    auto fn = reinterpret_cast<Function>(
+        dlsym(ownerModule, name));
     dlclose(ownerModule);
     return fn;
 #endif
@@ -208,7 +209,7 @@ struct CcdIkChainConfig {
 
 mmd_runtime_ik_chain_t* createNativeIkChain(const CcdIkChainConfig& cfg)
 {
-    const IkChainCreateV2Fn createV2 = cfg.hasLocalAxes ? resolveIkChainCreateV2() : nullptr;
+    const IkChainCreateV2Fn createV2 = cfg.hasLocalAxes ? resolveRuntimeSymbol<IkChainCreateV2Fn>("mmd_runtime_ik_chain_create_v2") : nullptr;
     return createV2
         ? createV2(
               cfg.bones.data(),
@@ -913,64 +914,15 @@ std::array<float, 3> readGoalPositionMmd(
     };
 }
 
-bool solveChainJsonIk(
+// Shared bind-space conversion for solved and authored pre-IK input poses.
+void solverPoseFromMayaInputs(
     const CcdIkChainConfig& cfg,
-    mmd_runtime_ik_chain_t* chain,
-    const MObject& node,
-    MDataBlock& data,
-    bool solveEnabled,
-    bool useGoalWorldMatrix,
-    bool goalHasInputConnection,
-    bool& outSolved,
-    std::vector<std::array<double, 3>>& outEulerRadians,
-    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
+    const std::vector<std::array<double, 3>>& mayaTranslates,
+    const std::vector<MEulerRotation>& mayaRotateEulers,
+    std::vector<float>& positions,
+    std::vector<float>& rotations)
 {
-    if (!chain) {
-        // A valid cached configuration owns a native chain.  If that handle
-        // is unavailable, keep this request on the chain path and fail closed
-        // rather than allowing compute() to run the unrelated legacy solver.
-        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
-        std::vector<float> neutralRotations(cfg.bones.size() * 4, 0.0f);
-        for (size_t boneIndex = 0; boneIndex < cfg.bones.size(); ++boneIndex) {
-            neutralRotations[boneIndex * 4 + 3] = 1.0f;
-        }
-        copyMmdLinkQuaternionsToOutput(cfg, neutralRotations, outMmdLinkQuaternions);
-        outSolved = false;
-        return true;
-    }
-
     const size_t boneCount = cfg.bones.size();
-    std::vector<float> positions(boneCount * 3, 0.0f);
-    std::vector<float> rotations(boneCount * 4, 0.0f);
-    std::vector<std::array<double, 3>> mayaTranslates(boneCount);
-    std::vector<MEulerRotation> mayaRotateEulers(boneCount);
-
-    MStatus status;
-    MArrayDataHandle translateArray = data.inputArrayValue(MmdCcdIkNode::aInputTranslateArray, &status);
-    MArrayDataHandle rotateArray = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
-
-    for (size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
-        std::array<double, 3> translate = cfg.mayaRestTranslates[boneIndex];
-        readInputTranslateElement(
-            translateArray,
-            static_cast<unsigned int>(boneIndex),
-            MmdCcdIkNode::aInputTranslateArrayX,
-            MmdCcdIkNode::aInputTranslateArrayY,
-            MmdCcdIkNode::aInputTranslateArrayZ,
-            translate);
-        mayaTranslates[boneIndex] = translate;
-
-        std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-        readInputRotateElement(
-            rotateArray,
-            static_cast<unsigned int>(boneIndex),
-            MmdCcdIkNode::aInputRotateArrayX,
-            MmdCcdIkNode::aInputRotateArrayY,
-            MmdCcdIkNode::aInputRotateArrayZ,
-            eulerRadians);
-        mayaRotateEulers[boneIndex] = MEulerRotation(eulerRadians[0], eulerRadians[1], eulerRadians[2]);
-    }
-
     if (cfg.hasBindMatrices) {
         std::vector<MMatrix> mayaWorlds(boneCount);
         std::vector<MMatrix> mmdWorlds(boneCount);
@@ -1037,6 +989,68 @@ bool solveChainJsonIk(
         }
     }
 
+}
+
+bool solveChainJsonIk(
+    const CcdIkChainConfig& cfg,
+    mmd_runtime_ik_chain_t* chain,
+    const MObject& node,
+    MDataBlock& data,
+    bool solveEnabled,
+    bool useGoalWorldMatrix,
+    bool goalHasInputConnection,
+    bool& outSolved,
+    std::vector<std::array<double, 3>>& outEulerRadians,
+    std::vector<std::array<double, 4>>& outMmdLinkQuaternions)
+{
+    if (!chain) {
+        // A valid cached configuration owns a native chain.  If that handle
+        // is unavailable, keep this request on the chain path and fail closed
+        // rather than allowing compute() to run the unrelated legacy solver.
+        copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
+        std::vector<float> neutralRotations(cfg.bones.size() * 4, 0.0f);
+        for (size_t boneIndex = 0; boneIndex < cfg.bones.size(); ++boneIndex) {
+            neutralRotations[boneIndex * 4 + 3] = 1.0f;
+        }
+        copyMmdLinkQuaternionsToOutput(cfg, neutralRotations, outMmdLinkQuaternions);
+        outSolved = false;
+        return true;
+    }
+
+    const size_t boneCount = cfg.bones.size();
+    std::vector<float> positions(boneCount * 3, 0.0f);
+    std::vector<float> rotations(boneCount * 4, 0.0f);
+    std::vector<std::array<double, 3>> mayaTranslates(boneCount);
+    std::vector<MEulerRotation> mayaRotateEulers(boneCount);
+
+    MStatus status;
+    MArrayDataHandle translateArray = data.inputArrayValue(MmdCcdIkNode::aInputTranslateArray, &status);
+    MArrayDataHandle rotateArray = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
+
+    for (size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
+        std::array<double, 3> translate = cfg.mayaRestTranslates[boneIndex];
+        readInputTranslateElement(
+            translateArray,
+            static_cast<unsigned int>(boneIndex),
+            MmdCcdIkNode::aInputTranslateArrayX,
+            MmdCcdIkNode::aInputTranslateArrayY,
+            MmdCcdIkNode::aInputTranslateArrayZ,
+            translate);
+        mayaTranslates[boneIndex] = translate;
+
+        std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
+        readInputRotateElement(
+            rotateArray,
+            static_cast<unsigned int>(boneIndex),
+            MmdCcdIkNode::aInputRotateArrayX,
+            MmdCcdIkNode::aInputRotateArrayY,
+            MmdCcdIkNode::aInputRotateArrayZ,
+            eulerRadians);
+        mayaRotateEulers[boneIndex] = MEulerRotation(eulerRadians[0], eulerRadians[1], eulerRadians[2]);
+    }
+
+    solverPoseFromMayaInputs(cfg, mayaTranslates, mayaRotateEulers, positions, rotations);
+
     for (float& position : positions) {
         position = canonicalizeRuntimePosition(position);
     }
@@ -1058,12 +1072,33 @@ bool solveChainJsonIk(
         component = canonicalizeRuntimePosition(component);
     }
 
+    std::array<float, 3> initialEffector{};
+    bool hasPreIk = false;
+    auto preRotates = mayaRotateEulers;
+    MPlug preArray(node, MmdCcdIkNode::aPreIkRotateArray);
+    for (unsigned int i = 0; i < preArray.numElements(); ++i) {
+        MPlug element = preArray.elementByPhysicalIndex(i);
+        const unsigned int slot = element.logicalIndex();
+        if (slot >= boneCount) continue;
+        if (element.isDestination() || element.child(0).isDestination() ||
+            element.child(1).isDestination() || element.child(2).isDestination()) {
+            preRotates[slot] = MEulerRotation(element.child(0).asMAngle().asRadians(),
+                element.child(1).asMAngle().asRadians(), element.child(2).asMAngle().asRadians());
+            hasPreIk = true;
+        }
+    }
+    if (hasPreIk) {
+        std::vector<float> prePositions(boneCount * 3), preRotations(boneCount * 4);
+        solverPoseFromMayaInputs(cfg, mayaTranslates, preRotates, prePositions, preRotations);
+        initialEffector = computeFkWorldPosition(cfg, prePositions, preRotations, cfg.targetBoneSlot);
+    }
+
     // Pass-through gate: FK input pose が target を既に goal 上に置いている
     // なら solve しない（VMD bake 済み final pose の二重 solve 防止）。
     // ズレていれば solve する — 腰などチェーン祖先の移動は target だけを
     // 動かすので solve が走り、全ての親は target と goal を一緒に動かす
     // ので pass-through のまま。
-    if (static_cast<size_t>(cfg.targetBoneSlot) < boneCount) {
+    if (!hasPreIk && static_cast<size_t>(cfg.targetBoneSlot) < boneCount) {
         const std::array<float, 3> fkTarget = computeFkWorldPosition(
             cfg, positions, rotations, static_cast<int32_t>(cfg.targetBoneSlot));
         if (std::abs(fkTarget[0] - goal[0]) <= kGoalMatchEpsilon &&
@@ -1078,17 +1113,15 @@ bool solveChainJsonIk(
     float goalPosition[3] = {goal[0], goal[1], goal[2]};
     std::vector<float> outQuats(cfg.links.size() * 4, 0.0f);
     mmd_runtime_ffi_ik_solve_stats_t stats{};
-    bool ok = mmd_runtime_ik_chain_solve(
-        chain,
-        nullptr,
-        positions.data(),
-        rotations.data(),
-        goalPosition,
-        1.0e-5f,
-        0u,
-        outQuats.data(),
-        outQuats.size(),
-        &stats);
+    using SeededSolveFn = decltype(&mmd_runtime_ik_chain_solve_with_initial_effector);
+    const auto seededSolve = hasPreIk
+        ? resolveRuntimeSymbol<SeededSolveFn>("mmd_runtime_ik_chain_solve_with_initial_effector")
+        : nullptr;
+    const bool ok = hasPreIk
+        ? (seededSolve && seededSolve(chain, nullptr, positions.data(), rotations.data(),
+              goalPosition, 1.0e-5f, 0u, outQuats.data(), outQuats.size(), &stats, initialEffector.data()))
+        : mmd_runtime_ik_chain_solve(chain, nullptr, positions.data(), rotations.data(),
+              goalPosition, 1.0e-5f, 0u, outQuats.data(), outQuats.size(), &stats);
     if (!ok) {
         // A valid chain that cannot solve is still handled by the native
         // path.  Preserve the input pose and expose solved=false; never fall
@@ -1254,6 +1287,10 @@ MObject MmdCcdIkNode::aInputRotateArrayX;
 MObject MmdCcdIkNode::aInputRotateArrayY;
 MObject MmdCcdIkNode::aInputRotateArrayZ;
 
+MObject MmdCcdIkNode::aPreIkRotateArray;
+MObject MmdCcdIkNode::aPreIkRotateArrayX;
+MObject MmdCcdIkNode::aPreIkRotateArrayY;
+MObject MmdCcdIkNode::aPreIkRotateArrayZ;
 MObject MmdCcdIkNode::aInputTranslateArray;
 MObject MmdCcdIkNode::aInputTranslateArrayX;
 MObject MmdCcdIkNode::aInputTranslateArrayY;
@@ -1578,6 +1615,11 @@ MStatus MmdCcdIkNode::initialize() {
         aInputRotateArrayX, aInputRotateArrayY, aInputRotateArrayZ, "ier");
     addAttribute(aInputRotateArray);
 
+    aPreIkRotateArray = createAngle3ArrayAttribute(
+        "preIkRotate", "pir",
+        aPreIkRotateArrayX, aPreIkRotateArrayY, aPreIkRotateArrayZ, "pier");
+    addAttribute(aPreIkRotateArray);
+
     aInputTranslateArray = createDouble3ArrayAttribute(
         "inputTranslate", "it_ik",
         aInputTranslateArrayX, aInputTranslateArrayY, aInputTranslateArrayZ, "iet");
@@ -1737,6 +1779,7 @@ MStatus MmdCcdIkNode::initialize() {
     attributeAffects(aGoalZ, aOutputMmdLinkQuaternions);
     attributeAffects(aGoalWorldMatrix, aOutputMmdLinkQuaternions);
     attributeAffects(aInputRotateArray, aOutputMmdLinkQuaternions);
+    attributeAffects(aPreIkRotateArray, aOutputMmdLinkQuaternions);
     attributeAffects(aInputTranslateArray, aOutputMmdLinkQuaternions);
 
     attributeAffects(aChainJson, aOutputRotateX);
@@ -1769,11 +1812,17 @@ MStatus MmdCcdIkNode::initialize() {
     attributeAffects(aGoalWorldMatrix, aOutputLinkAngles);
     attributeAffects(aGoalWorldMatrix, aOutputLinkRotates);
     attributeAffects(aInputRotateArray, aOutputRotateX);
+    attributeAffects(aPreIkRotateArray, aOutputRotateX);
     attributeAffects(aInputRotateArray, aOutputRotateY);
+    attributeAffects(aPreIkRotateArray, aOutputRotateY);
     attributeAffects(aInputRotateArray, aOutputRotateZ);
+    attributeAffects(aPreIkRotateArray, aOutputRotateZ);
     attributeAffects(aInputRotateArray, aSolved);
+    attributeAffects(aPreIkRotateArray, aSolved);
     attributeAffects(aInputRotateArray, aOutputLinkAngles);
+    attributeAffects(aPreIkRotateArray, aOutputLinkAngles);
     attributeAffects(aInputRotateArray, aOutputLinkRotates);
+    attributeAffects(aPreIkRotateArray, aOutputLinkRotates);
     attributeAffects(aInputTranslateArray, aOutputRotateX);
     attributeAffects(aInputTranslateArray, aOutputRotateY);
     attributeAffects(aInputTranslateArray, aOutputRotateZ);

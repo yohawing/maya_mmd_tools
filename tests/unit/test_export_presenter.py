@@ -205,6 +205,15 @@ class _WarningDialog:
 
 
 class ExportPresenterTests(unittest.TestCase):
+    def test_default_presenter_uses_service_default_action(self):
+        app_state = _AppState()
+        app_state.scene_model_service = object()
+        workflow = _Workflow()
+        with patch.object(export_presenter, "ExportWorkflowService", return_value=workflow) as factory:
+            presenter = ExportPresenter(_View(), app_state)
+        self.assertIs(presenter.workflow_service, workflow)
+        factory.assert_called_once_with(scene_service=app_state.scene_model_service)
+
     def test_only_export_signal_is_bound_and_runs_one_workflow_call(self):
         view = _View()
         app_state = _AppState()

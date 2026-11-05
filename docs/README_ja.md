@@ -55,9 +55,9 @@ MayaでMikuMikuDance (MMD) のPMD/PMX/VMDを読み込み、編集、書き出し
 
 ### 必須要件
 
-- **Maya**: 2024以降
-- **OS**: Windows 11 / macOS 15.6
-- **Python**: 3.10以降（Maya 2024以降に同梱）
+- **Maya**: 2024〜2027
+- **OS**: Windows 11
+- **Python**: 3.10以降（Maya 2024〜2027に同梱）
 
 ## インストール
 

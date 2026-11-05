@@ -556,6 +556,24 @@ def setup_rig_primitive_signatures(lib: CDLL) -> None:
                 POINTER(MmdRuntimeFfiIkSolveStats),
             ],
         )
+        set_sig(
+            lib,
+            "mmd_runtime_ik_chain_solve_with_initial_effector",
+            c_bool,
+            [
+                c_void_p,
+                POINTER(c_float),
+                POINTER(c_float),
+                POINTER(c_float),
+                POINTER(c_float),
+                c_float,
+                c_uint32,
+                POINTER(c_float),
+                c_size_t,
+                POINTER(MmdRuntimeFfiIkSolveStats),
+                POINTER(c_float),
+            ],
+        )
         set_sig(lib, "mmd_runtime_append_solver_create", c_void_p, [POINTER(MmdRuntimeFfiAppendConfig)])
         set_sig(lib, "mmd_runtime_append_solver_free", None, [c_void_p])
         set_sig(

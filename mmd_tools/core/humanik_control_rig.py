@@ -20,7 +20,7 @@ from mmd_tools.core.humanik_builder import create_humanik_control_rig, ensure_hu
 from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     collect_hik_ownership_report,
-    is_supported_mmd_ccdik_feedback_row,
+    is_supported_mmd_feedback_row,
     split_ownership_rows,
 )
 from mmd_tools.core.humanik_preview import (
@@ -39,6 +39,7 @@ from mmd_tools.core.humanik_transaction import (
     capture_humanik_restore_state,
     deserialize_humanik_restore_state,
     apply_humanik_restore_state,
+    include_unconnected_hik_trs,
     _node_uuid,
 )
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
@@ -352,7 +353,7 @@ def begin_humanik_control_rig(
     supported_feedback = [
         row
         for row in ownership_report.get("rows", [])
-        if is_supported_mmd_ccdik_feedback_row(row, assignments or ())
+        if is_supported_mmd_feedback_row(row, assignments or (), ownership_report.get("rows", ()), cmds)
     ]
     blockers = [row for row in blockers if row not in supported_feedback]
     if blockers:
@@ -360,7 +361,9 @@ def begin_humanik_control_rig(
         raise RuntimeError(f"HumanIK Control Rig creation blocked: {labels}")
 
     isolated_rows = [*mute_rows, *supported_feedback]
-    destinations = sorted({plug for row in isolated_rows for plug in row.get("writes", [])})
+    destinations = include_unconnected_hik_trs(
+        cmds, hik_joint_set, {plug for row in isolated_rows for plug in row.get("writes", [])}
+    )
     muted_nodes = sorted({row["node"] for row in mute_rows})
     feedback_nodes = sorted({row["node"] for row in supported_feedback})
 
@@ -404,6 +407,16 @@ def begin_humanik_control_rig(
                 "HumanIK Control Rig post-scan found residual muted HIK writers: "
                 f"{labels}"
             )
+        isolated_arm_nodes = {
+            row["node"] for row in supported_feedback if row.get("nodeType") == "mmdAppend"
+        }
+        if any(
+            not is_supported_mmd_feedback_row(
+                row, assignments or (), ownership_report.get("rows", ()), cmds, isolated_arm_nodes
+            )
+            for row in supported_feedback if row["node"] in isolated_arm_nodes
+        ):
+            raise RuntimeError("HumanIK Control Rig post-scan found blocker in arm IK output")
         post_blockers = [
             row for row in post_report["rows"]
             if row["node"] not in muted_nodes

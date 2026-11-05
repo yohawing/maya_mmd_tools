@@ -52,8 +52,8 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 
 ### Required
 
-- **Maya**: 2024 or later
-- **OS**: Windows 11 / macOS 15.6
+- **Maya**: 2024-2027
+- **OS**: Windows 11
 - **Python**: 3.10 or later (bundled with Maya 2024+)
 
 ## Installation

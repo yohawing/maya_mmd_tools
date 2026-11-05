@@ -15,6 +15,7 @@ exactly like ``input_source``/``lock_state`` are restored via the restore_state.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from mmd_tools.core.humanik_builder import (
@@ -28,7 +29,7 @@ from mmd_tools.core.humanik_constraints import (
     classify_humanik_constraints,
     collect_humanik_constraint_facts,
     is_preisolated_mmd_ccdik_feedback_row,
-    is_supported_mmd_ccdik_feedback_row,
+    is_supported_mmd_feedback_row,
     split_ownership_rows,
 )
 from mmd_tools.core.humanik_retarget import connect_humanik_source
@@ -36,6 +37,7 @@ from mmd_tools.core.humanik_transaction import (
     HumanIkRestoreState,
     capture_humanik_restore_state,
     apply_humanik_restore_state,
+    include_unconnected_hik_trs,
 )
 from mmd_tools.core.humanik_utils import maya_cmds
 
@@ -151,6 +153,74 @@ class HumanIkTargetPreview:
         )
 
 
+def _has_unresolved_indirect_output(row: Dict[str, Any], cmds, hik_joints) -> bool:
+    """Reject manual writers only when their outputs can affect this target."""
+    if row["classification"] != "manual":
+        return False
+    pending = [row["node"]]
+    visited = set()
+    while pending:
+        node = pending.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        outputs = cmds.listConnections(node, source=False, destination=True, plugs=True) or []
+        if outputs and (row.get("readHikJoints") or row.get("writeHikJoints")):
+            return True
+        for plug in outputs:
+            destination = plug.split(".", 1)[0]
+            names = cmds.ls(destination, long=True) or []
+            if hik_joints.intersection(names):
+                return True
+            pending.append(destination)
+    return False
+
+
+def _preisolated_foot_has_unexpected_output(row: Dict[str, Any], cmds, rows_by_node, isolated_nodes) -> bool:
+    """Allow authored-input forwarding and the retained foot-IK append path."""
+    node = row["node"]
+    pairs = cmds.listConnections(
+        node, source=False, destination=True, plugs=True, connections=True
+    ) or []
+    if len(pairs) % 2:
+        return True
+    for first, second in zip(pairs[::2], pairs[1::2]):
+        if str(first).startswith(f"{node}."):
+            source, destination = first, second
+        elif str(second).startswith(f"{node}."):
+            source, destination = second, first
+        else:
+            return True
+        destination_node, _, destination_attr = destination.rpartition(".")
+        # These are authored inputs, not solved outputs. Both endpoints must
+        # belong to foot writers already isolated by this Control Rig owner.
+        if (
+            re.fullmatch(r"inputRotate\[\d+\]", source[len(node) + 1:])
+            and re.fullmatch(r"preIkRotate\[\d+\]", destination_attr)
+            and destination_node in isolated_nodes
+            and not rows_by_node.get(destination_node, {}).get("writes")
+        ):
+            continue
+        if source != f"{node}.outputMmdLinkQuaternions" or "." not in destination:
+            return True
+        append_node, attribute = destination.rsplit(".", 1)
+        append_row = rows_by_node.get(append_node, {})
+        if (
+            attribute != "sourceMmdLinkQuaternions"
+            or append_row.get("nodeType") != "mmdAppend"
+            or append_row.get("classification") != "keep_post"
+        ):
+            return True
+        for plug in cmds.listConnections(append_node, source=False, destination=True, plugs=True) or []:
+            if "." not in plug:
+                return True
+            joint, attr = plug.rsplit(".", 1)
+            long_names = cmds.ls(joint, long=True) or [joint]
+            if not any(f"{name}.{attr}" in append_row.get("writes", ()) for name in long_names):
+                return True
+    return False
+
+
 def begin_humanik_target_preview(
     ownership_id: str,
     target_character: str,
@@ -166,15 +236,15 @@ def begin_humanik_target_preview(
 
     ``assignments`` is intentionally optional for backward compatibility with
     direct callers.  Without it, every feedback blocker remains fail-closed;
-    the narrowly supported importer-owned foot ``mmdCcdIk`` rows are isolated
-    only when the target binding supplies its assigned HIK slots.
+    the narrowly supported foot IK and arm IK append rows are isolated only
+    when the target binding supplies its assigned HIK slots.
     """
     cmds = cmds_module or maya_cmds()
     blockers, mute_rows, retained_nodes = split_ownership_rows(ownership_report)
     supported_feedback = [
         row
         for row in ownership_report.get("rows", [])
-        if is_supported_mmd_ccdik_feedback_row(row, assignments or ())
+        if is_supported_mmd_feedback_row(row, assignments or (), ownership_report.get("rows", ()), cmds)
     ]
     preisolated_nodes = tuple(str(node) for node in (preisolated_feedback_nodes or ()))
     preisolated_feedback = [
@@ -198,6 +268,31 @@ def begin_humanik_target_preview(
         {row["node"] for row in [*supported_feedback, *preisolated_feedback]}
     )
     hik_joint_set = {str(joint) for joint in hik_joints}
+    pre_report = classify_humanik_constraints(
+        collect_humanik_constraint_facts(cmds_module=cmds),
+        hik_joint_set,
+    )
+    # The active Control Rig already isolated these foot writers. Their only
+    # accepted remaining output is the known append path to non-HIK joints.
+    # Output-free toe nodes are omitted from collected facts, but remain in
+    # the transaction's UUID-validated isolation records.
+    verified_preisolated_nodes = set(preisolated_nodes)
+    pre_rows_by_node = {row["node"]: row for row in pre_report["rows"]}
+    indirect_blockers = [
+        row for row in pre_report["rows"]
+        if (
+            _preisolated_foot_has_unexpected_output(row, cmds, pre_rows_by_node, verified_preisolated_nodes)
+            if row["node"] in verified_preisolated_nodes
+            else _has_unresolved_indirect_output(row, cmds, hik_joint_set)
+        )
+    ]
+    if indirect_blockers:
+        labels = ", ".join(row["node"] for row in indirect_blockers)
+        raise RuntimeError(f"HumanIK TARGET preview pre-scan found blocker: {labels}")
+
+    # HIK also drives previously unconnected TRS channels. Keep their values,
+    # not just the destinations of writers that we temporarily disconnect.
+    destinations = include_unconnected_hik_trs(cmds, hik_joint_set, destinations)
     restore_state = capture_humanik_restore_state(
         ownership_id,
         target_character,
@@ -259,11 +354,34 @@ def begin_humanik_target_preview(
                 "HumanIK TARGET preview post-scan found residual muted HIK writers: "
                 f"{labels}"
             )
+        isolated_arm_nodes = {
+            row["node"] for row in supported_feedback if row.get("nodeType") == "mmdAppend"
+        }
+        if any(
+            not is_supported_mmd_feedback_row(
+                row, assignments or (), ownership_report.get("rows", ()), cmds, isolated_arm_nodes
+            )
+            for row in supported_feedback if row["node"] in isolated_arm_nodes
+        ):
+            raise RuntimeError("HumanIK TARGET preview post-scan found blocker in arm IK output")
+        post_rows_by_node = {row["node"]: row for row in post_report["rows"]}
+        if any(
+            _preisolated_foot_has_unexpected_output(row, cmds, post_rows_by_node, verified_preisolated_nodes)
+            for row in post_report["rows"] if row["node"] in verified_preisolated_nodes
+        ):
+            raise RuntimeError("HumanIK TARGET preview post-scan found blocker")
         post_blockers = [
             row for row in post_report["rows"]
             if row["node"] not in muted_nodes
             and row["node"] not in feedback_nodes
             and row["classification"] in BLOCKING_CLASSIFICATIONS
+            # Ignore manual writers whose downstream graph is unrelated to this target.
+            and (
+                row["classification"] != "manual"
+                or row.get("readHikJoints")
+                or row.get("writeHikJoints")
+                or _has_unresolved_indirect_output(row, cmds, hik_joint_set)
+            )
         ]
         if post_blockers:
             raise RuntimeError("HumanIK TARGET preview post-scan found blocker")

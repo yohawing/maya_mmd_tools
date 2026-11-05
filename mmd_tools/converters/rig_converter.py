@@ -1169,7 +1169,6 @@ class RigConverter:
             abs_positions.append(abs_pos)
             flags = 0
             fixed_axis = bone_data.get("fixedAxis")
-            local_axis = bone_data.get("localAxis")
             fa = [0, 0, 0]
             if fixed_axis is not None:
                 flags = 0x1  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS (1 << 0)
@@ -1191,7 +1190,7 @@ class RigConverter:
                 "no_orient_bind_world_matrix": None,
                 "flags": flags,
                 "fixed_axis": fa,
-                "local_axis": local_axis,
+                "local_axis": None,  # PMX manipulation axes do not define IK limits.
                 "joint_orient_deg": jo_deg,
             })
 
@@ -1457,6 +1456,20 @@ class RigConverter:
             all_chain_links.append((_ctrl, _lk_set))
 
         nodes: List[str] = []
+        authored_link_inputs: Dict[int, Tuple[Tuple[int, bool], str]] = {}
+
+        def evaluation_group(index):
+            bone = manifest.bones[index]
+            layer = int(bone.get("deformLayer", 0))
+            parent = int(bone.get("parentIndex", -1))
+            visited = {index}
+            while 0 <= parent < len(manifest.bones) and parent not in visited:
+                visited.add(parent)
+                ancestor = manifest.bones[parent]
+                layer = max(layer, int(ancestor.get("deformLayer", 0)))
+                parent = int(ancestor.get("parentIndex", -1))
+            return layer, bool(bone.get("transformAfterPhysics", False))
+
         for chain_def in manifest.ik_chains:
             controller_idx = chain_def.get("controllerBoneIndex", -1)
             target_idx = chain_def.get("targetBoneIndex", -1)
@@ -1544,6 +1557,16 @@ class RigConverter:
                     chain_bones=slot_to_pmx.values(),
                     rotation_grant_edges=rotation_grant_edges,
                 )
+                # A later chain starts from the layer's pre-IK effector position.
+                # Wire input-to-input, never a solved rotation or a DAG world matrix.
+                group = evaluation_group(controller_idx)
+                if cmds.attributeQuery("preIkRotate", node=node, exists=True):
+                    for slot, pmx_index in slot_to_pmx.items():
+                        source = authored_link_inputs.get(pmx_index)
+                        if source and source[0] == group and pmx_index not in {lk["boneIndex"] for lk in links}:
+                            cmds.connectAttr(source[1], f"{node}.preIkRotate[{slot}]")
+                for slot in link_slots:
+                    authored_link_inputs[slot_to_pmx[slot]] = (group, f"{node}.inputRotate[{slot}]")
                 self._connect_ik_output_rotates(node, link_slots, slot_to_pmx, maya_joints)
 
                 if not cmds.attributeQuery("mmd_ik_native_node", node=node, exists=True):

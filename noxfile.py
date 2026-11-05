@@ -933,6 +933,18 @@ def secondary_controls_e2e(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def public_api_smoke(session: nox.Session) -> None:
+    """Verify public model/skeleton reads in an isolated Maya GUI."""
+    _run_python_module(
+        session,
+        module="tools.maya_gui.public_api_smoke",
+        posargs=session.posargs,
+        python_executable=sys.executable,
+        environment=dict(os.environ),
+    )
+
+
+@nox.session(venv_backend="none")
 def mmd_control_rig_gui_e2e(session: nox.Session) -> None:
     """Run GUI control-rig E2E followed by the mandatory mesh oracle gate.
 

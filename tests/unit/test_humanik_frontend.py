@@ -1,10 +1,12 @@
 """Unit tests for the UI-neutral HumanIK frontend session."""
 
 import unittest
-from unittest.mock import patch
+from copy import deepcopy
+from unittest.mock import Mock, call, patch
 
 from mmd_tools.core.humanik_bake import HumanIkBakeResult
 from mmd_tools.core.humanik_builder import HumanIkCharacterCreationError
+from mmd_tools.core.humanik_control_rig import HumanIkControlRigTransaction
 from mmd_tools.core.humanik_frontend import (
     EXPECTED_BODY_ASSIGNMENT_COUNT,
     EXPECTED_FINGER_ASSIGNMENT_COUNT,
@@ -16,7 +18,8 @@ from mmd_tools.core.humanik_frontend import (
     _split_body_assignments,
     filter_humanik_body_assignments,
 )
-from mmd_tools.core.humanik_transaction import HumanIkRestoreState
+from mmd_tools.core.humanik_transaction import HumanIkNodeSnapshot, HumanIkPlugSnapshot, HumanIkRestoreState
+from mmd_tools.core.humanik_preview import HumanIkTargetPreview
 from mmd_tools.core.humanik_resolver import (
     HumanIkBoneAssignment,
     HumanIkResolveResult,
@@ -82,6 +85,7 @@ class FakeControlRigTransaction:
         self.active = True
         self.ownership_id = ownership_id
         self.character = character
+        self.restore_state = HumanIkRestoreState(ownership_id, character, True, "", 0, [], [])
         self.baked = False
 
 
@@ -147,6 +151,73 @@ class FakeExistingHikMel:
 
 def _session():
     return HumanIkFrontendSession(stance_transaction_factory=FakeStance)
+
+
+class TestHumanIkBakeFrameRange(unittest.TestCase):
+    def _ready_session(self):
+        session = _session()
+        session._cmds = Mock()
+        session._bindings["|target"] = HumanIkFrontendBinding(
+            model_root="|target", character="Character_target", result=_result(),
+        )
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        session._control_rig_transactions["|target"] = FakeControlRigTransaction(
+            character="Character_target",
+        )
+        session._persist_control_rig_transactions = Mock()
+        return session
+
+    def test_bake_methods_resolve_only_omitted_endpoints(self):
+        cases = (
+            ({}, (2, 10), [call(query=True, minTime=True), call(query=True, maxTime=True)]),
+            ({"start": 0}, (0, 10), [call(query=True, maxTime=True)]),
+            ({"end": 9}, (2, 9), [call(query=True, minTime=True)]),
+            ({"start": 0.9, "end": 9.9}, (0, 9), []),
+        )
+        for name in ("bake_to_mmd_rig", "bake_to_control_rig", "bake_from_control_rig"):
+            for arguments, expected, queries in cases:
+                with self.subTest(action=name, arguments=arguments):
+                    session = self._ready_session()
+                    session._cmds.playbackOptions.side_effect = (
+                        lambda **kwargs: 1.9 if kwargs.get("minTime") else 10.1
+                    )
+                    with patch(
+                        "mmd_tools.core.humanik_frontend.bake_humanik_target_preview",
+                    ) as bake_mmd, patch(
+                        "mmd_tools.core.humanik_frontend.bake_humanik_control_rig",
+                    ) as bake_control, patch(
+                        "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+                    ):
+                        getattr(session, name)(**arguments)
+                    bake = bake_control if name == "bake_to_control_rig" else bake_mmd
+                    offset = 1 if name == "bake_to_control_rig" else 2
+                    self.assertEqual(bake.call_args.args[offset:offset + 2], expected)
+                    self.assertEqual(session._cmds.playbackOptions.call_args_list, queries)
+
+    def test_empty_integer_playback_range_does_not_sample_or_release_ownership(self):
+        for name in ("bake_to_mmd_rig", "bake_to_control_rig", "bake_from_control_rig"):
+            with self.subTest(action=name):
+                session = self._ready_session()
+                preview = session._preview
+                transaction = session._control_rig_transactions["|target"]
+                session._cmds.playbackOptions.side_effect = [5.2, 5.8]
+                with patch(
+                    "mmd_tools.core.humanik_frontend.bake_humanik_target_preview",
+                ) as bake_mmd, patch(
+                    "mmd_tools.core.humanik_frontend.bake_humanik_control_rig",
+                ) as bake_control, patch(
+                    "mmd_tools.core.humanik_frontend.stop_humanik_control_rig",
+                ) as stop:
+                    with self.assertRaisesRegex(ValueError, "frame range is empty"):
+                        getattr(session, name)()
+                bake_mmd.assert_not_called()
+                bake_control.assert_not_called()
+                stop.assert_not_called()
+                self.assertIs(session._preview, preview)
+                self.assertTrue(transaction.active)
+                self.assertFalse(transaction.baked)
+                session._persist_control_rig_transactions.assert_not_called()
 
 
 class TestHumanIkFrontend(unittest.TestCase):
@@ -520,6 +591,10 @@ class TestHumanIkFrontend(unittest.TestCase):
 
         self.assertEqual(report["blockers"], [])
         self.assertEqual(report["constraintRows"], [safe_row])
+        self.assertEqual(
+            report["automaticStance"]["ownership"]["disconnect"],
+            [{"node": safe_row["node"], "edges": safe_row["writes"]}],
+        )
 
     def test_target_preflight_trusts_active_control_rig_disconnected_foot_node(self):
         class Cmds:
@@ -703,6 +778,18 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertEqual(diagnostics["quality"]["fingerStatus"], "deferred")
         self.assertEqual(diagnostics["preview"], {"active": False, "restoreStateAvailable": False})
         self.assertEqual(diagnostics["assignments"]["required"]["genericLockMinimumAssignmentCount"], 1)
+
+    def test_diagnostics_recognize_feedback_already_isolated_by_active_preview(self):
+        session = _session()
+        row = {"node": "arm_append", "nodeType": "mmdAppend", "classification": "feedback_blocker"}
+        session._ownership_report = {"rows": [row], "counts": {"feedback_blocker": 1}}
+        preview = FakePreview()
+        preview.isolated_feedback_rows = [dict(row)]
+        session._preview = preview
+
+        self.assertEqual(session.diagnostics()["ownership"]["blockers"], [])
+        preview.active = False
+        self.assertEqual(session.diagnostics()["ownership"]["blockers"][0]["node"], "arm_append")
 
     @patch("mmd_tools.core.humanik_frontend.delete_humanik_character")
     @patch("mmd_tools.core.humanik_frontend.lock_humanik_definition", side_effect=RuntimeError("lock failed"))
@@ -916,6 +1003,163 @@ class TestHumanIkFrontend(unittest.TestCase):
             self.assertTrue(session.restore_mmd_rig(delete_baked_control_rig=True))
 
         self.assertEqual(events, ["control_rig", "preview"])
+
+    def test_restore_preview_uses_pre_control_rig_input_and_keeps_unrelated_plugs(self):
+        session = _session()
+        preview = FakePreview()
+        preview.target_character = "Character_target"
+        preview.restore_state = HumanIkRestoreState(
+            "preview", "Character_target", True, "", 1,
+            [HumanIkPlugSnapshot("|renamed_joint.rotateX", [], 42.0, "double", "joint-uuid"),
+             HumanIkPlugSnapshot("|other.scaleY", [], 2.0, "double")],
+            [HumanIkNodeSnapshot("renamed_ik", {"enabled": 1}, "ik-uuid"),
+             HumanIkNodeSnapshot("other_node", {"enabled": 1})],
+        )
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.restore_state = HumanIkRestoreState(
+            "control", "Character_target", True, "", 0,
+            [HumanIkPlugSnapshot("|joint.rotate", ["mmd.output"], (0, 0, 0), "double3", "joint-uuid")],
+            [HumanIkNodeSnapshot("ik", {"enabled": 0}, "ik-uuid")],
+        )
+        session._preview = preview
+        session._target_model_root = "|target"
+        session._control_rig_transactions["|target"] = transaction
+        seen = []
+
+        def stop_control(stopped, **_kwargs):
+            stopped.active = False
+
+        def stop_preview(stopped, **_kwargs):
+            seen.append((stopped.restore_state.input_type,
+                         [item.plug for item in stopped.restore_state.plugs],
+                         [item.node for item in stopped.restore_state.nodes]))
+            stopped.active = False
+
+        with patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig", side_effect=stop_control), patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_target_preview", side_effect=stop_preview
+        ):
+            self.assertTrue(session.restore_mmd_rig())
+
+        self.assertEqual(seen, [(0, ["|other.scaleY"], ["other_node"])])
+
+    def test_restore_keeps_rebased_preview_for_retry_if_another_control_rig_fails(self):
+        session = _session()
+        preview = FakePreview()
+        preview.target_character = "Character_target"
+        preview.restore_state = HumanIkRestoreState("preview", "Character_target", True, "", 1, [], [])
+        target = FakeControlRigTransaction(character="Character_target")
+        other = FakeControlRigTransaction(character="Character_other")
+        session._preview = preview
+        session._target_model_root = "|target"
+        session._control_rig_transactions = {"|target": target, "|other": other}
+        events = []
+
+        def stop_control(stopped, **_kwargs):
+            if stopped is other:
+                self.assertIn("pending-persisted", events)
+                raise RuntimeError("other rig failed")
+            stopped.active = False
+
+        with patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig", side_effect=stop_control), patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_target_preview"
+        ) as stop_preview, patch.object(
+            session, "_persist_control_rig_transactions", side_effect=lambda: events.append("pending-persisted")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "other rig failed"):
+                session.restore_mmd_rig()
+            stop_preview.assert_not_called()
+        self.assertTrue(preview.active)
+        self.assertEqual(preview.restore_state.input_type, 0)
+        self.assertIs(session._control_rig_transactions["|target"], target)
+        self.assertFalse(target.active)
+        self.assertIn("|other", session._control_rig_transactions)
+        self.assertFalse(session._describe_bake_to_mmd_rig_action()["allowed"])
+        with self.assertRaisesRegex(RuntimeError, "pending restore"):
+            session.bake_to_mmd_rig(0, 1)
+
+    def test_bake_without_target_binding_is_blocked_with_clear_error(self):
+        session = _session()
+        session._preview = FakePreview()
+        session._target_model_root = "|target"
+        self.assertFalse(session._describe_bake_to_mmd_rig_action()["allowed"])
+        with self.assertRaisesRegex(RuntimeError, "target model binding is missing"):
+            session.bake_to_mmd_rig(0, 1)
+
+    @patch("mmd_tools.core.humanik_frontend._find_mmd_model_root_for_character", return_value="|target")
+    @patch("mmd_tools.core.humanik_frontend.persist_humanik_restore_state")
+    @patch("mmd_tools.core.humanik_frontend.load_humanik_restore_state", return_value=[])
+    def test_failed_preview_restore_survives_scene_reload_after_control_rig_stop(self, load, persist, _find):
+        class Cmds:
+            def ls(self, value, long=False, uuid=False):
+                mapping = {"model-uuid": "|target", "character-uuid": "Character_target"}
+                if uuid:
+                    return [key for key, node in mapping.items() if node == value]
+                return [mapping.get(value, value)]
+
+        cmds = Cmds()
+        session = HumanIkFrontendSession(cmds_module=cmds)
+        control_state = HumanIkRestoreState(
+            "owner:control", "Character_target", True, "", 0, [], [], "character-uuid"
+        )
+        preview_state = HumanIkRestoreState(
+            "owner:preview", "Character_target", True, "", 1,
+            [HumanIkPlugSnapshot("|target|hips.rotateX", [], 0.0, "double", "joint-uuid")],
+            [], "character-uuid",
+        )
+        preview = HumanIkTargetPreview(
+            "owner:preview", "Character_target", "Character_source", preview_state, [], [], {}, []
+        )
+        transaction = HumanIkControlRigTransaction(
+            "owner:control", "Character_target", control_state, [], [], [], preview=preview
+        )
+        session._preview = preview
+        session._target_model_root = "|target"
+        session._control_rig_transactions["|target"] = transaction
+
+        def stop_control(stopped, **_kwargs):
+            stopped.active = False
+
+        with patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig", side_effect=stop_control), patch(
+            "mmd_tools.core.humanik_frontend.stop_humanik_target_preview", side_effect=RuntimeError("restore failed")
+        ), patch.object(session, "_recover_orphaned_control_rigs"):
+            with self.assertRaisesRegex(RuntimeError, "restore failed"):
+                session.restore_mmd_rig()
+
+        records = persist.call_args.args[0]
+        self.assertEqual(len(records), 1)
+        self.assertFalse(records[0]["active"])
+        self.assertEqual(records[0]["preview"]["restore_state"]["input_type"], 0)
+        invalid_character = deepcopy(records)
+        invalid_character[0]["preview"]["restore_state"]["character_uuid"] = "other-character-uuid"
+        invalid_plug = deepcopy(records)
+        invalid_plug[0]["preview"]["restore_state"]["plugs"][0]["node_uuid"] = None
+        for invalid_records in (invalid_character, invalid_plug):
+            load.return_value = invalid_records
+            rejected = HumanIkFrontendSession(cmds_module=cmds)
+            self.assertIsNone(rejected.active_preview)
+            self.assertNotIn("|target", rejected._control_rig_transactions)
+        load.return_value = records
+        restored_session = HumanIkFrontendSession(cmds_module=cmds)
+        self.assertIsNotNone(restored_session.active_preview)
+        self.assertEqual(restored_session._target_model_root, "|target")
+        frontend_state = restored_session.describe_frontend_state()
+        self.assertEqual(frontend_state["target"], {"modelRoot": "|target", "character": "Character_target"})
+        self.assertFalse(frontend_state["actions"]["bake_to_mmd_rig"]["allowed"])
+        self.assertTrue(frontend_state["actions"]["restore_mmd_rig"]["allowed"])
+        with self.assertRaisesRegex(RuntimeError, "pending restore"):
+            restored_session.bake_to_mmd_rig(0, 1)
+
+        def stop_preview(stopped, **_kwargs):
+            stopped.active = False
+
+        with patch("mmd_tools.core.humanik_frontend.stop_humanik_target_preview", side_effect=stop_preview), patch.object(
+            restored_session, "_recover_orphaned_control_rigs",
+            return_value={"recovered": [], "skipped": [], "failed": []},
+        ):
+            self.assertTrue(restored_session.restore_mmd_rig())
+        self.assertIsNone(restored_session.active_preview)
+        self.assertNotIn("|target", restored_session._control_rig_transactions)
+        self.assertEqual(persist.call_args.args[0], [])
 
     @patch("mmd_tools.core.humanik_frontend.stop_humanik_control_rig")
     def test_restore_default_preserves_baked_control_rig(self, stop_control):
@@ -1176,6 +1420,30 @@ class TestHumanIkFrontend(unittest.TestCase):
         self.assertIsNone(session.active_preview)
         self.assertNotIn("|target", session._control_rig_transactions)
         self.assertFalse(binding.control_rig_created)
+
+    def test_bake_to_mmd_preserves_new_animation_when_control_rig_is_later_removed(self):
+        session = _session()
+        session._bindings["|target"] = HumanIkFrontendBinding(
+            model_root="|target", character="Character_target", result=_result()
+        )
+        session._target_model_root = "|target"
+        session._preview = FakePreview()
+        transaction = FakeControlRigTransaction(character="Character_target")
+        transaction.restore_state.plugs = [
+            HumanIkPlugSnapshot("|target|hips.rotateX", [], 0.0, "double"),
+            HumanIkPlugSnapshot("|target|hips.scaleX", [], 1.0, "double"),
+            HumanIkPlugSnapshot("|target|hips.rotate", ["mmd.output"], (0, 0, 0), "double3"),
+        ]
+        session._control_rig_transactions["|target"] = transaction
+        result = HumanIkBakeResult(0, 1, 2, {"source": "|target|hips.rotateX"}, 0.0, [])
+
+        with patch("mmd_tools.core.humanik_frontend.bake_humanik_target_preview", return_value=result):
+            session.bake_to_mmd_rig(0, 1)
+
+        self.assertEqual(
+            [item.plug for item in transaction.restore_state.plugs],
+            ["|target|hips.scaleX", "|target|hips.rotate"],
+        )
 
     def test_bake_from_teardown_failure_retains_retryable_control_rig_state(self):
         session = _session()

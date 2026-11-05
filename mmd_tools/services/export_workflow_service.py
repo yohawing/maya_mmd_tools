@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..actions.export_model_action import ExportModelAction, ExportModelRequest
 from ..actions.export_vpd_action import ExportVpdAction, ExportVpdRequest
+from ..adapters.maya_vmd_prepare_backend import create_maya_bake_timeline_vmd_action
 from ..validation.export_validator import (
     ExportValidationAcknowledgementRequired,
     ExportValidationIssue,
@@ -224,7 +225,11 @@ class _PhaseTracker:
 
 
 class ExportWorkflowService:
-    """Run one scene preflight and one format-specific export action."""
+    """Run scene preflight and one format-specific export action.
+
+    ``vmd_action=None`` selects the production Bake Timeline action, whose
+    Maya backend initializes during export. An explicit action is preserved.
+    """
 
     def __init__(
         self,
@@ -236,7 +241,9 @@ class ExportWorkflowService:
         vpd_action: Any = None,
     ):
         self.model_action = model_action or ExportModelAction()
-        self.vmd_action = vmd_action
+        self.vmd_action = (
+            create_maya_bake_timeline_vmd_action() if vmd_action is None else vmd_action
+        )
         self.vpd_action = vpd_action or ExportVpdAction()
         self.scene_preflight = scene_preflight or ScenePreflight(scene_service=scene_service)
 

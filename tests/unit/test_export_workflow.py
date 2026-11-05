@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -224,6 +226,46 @@ class _VpdAction(ExportVpdAction):
 
 
 class ExportWorkflowTests(unittest.TestCase):
+    def test_default_vmd_action_completes_existing_one_shot_workflow(self):
+        boundary = _VmdBoundary()
+        action = BakeTimelineVmdExportAction(boundary)
+        with mock.patch(
+            "mmd_tools.services.export_workflow_service.create_maya_bake_timeline_vmd_action",
+            return_value=action,
+        ), tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "motion.vmd"
+            result = self._service().execute(self._vmd_request(target))
+            self.assertTrue(result.succeeded, result.error)
+            self.assertEqual(boundary.collect_calls, 1)
+            self.assertGreaterEqual(boundary.close_calls, 1)
+            self.assertTrue(target.is_file())
+            self.assertEqual(list(target.parent.glob(".motion.*.vmd")), [])
+
+    def test_explicit_falsey_vmd_action_is_preserved(self):
+        action = mock.MagicMock()
+        action.__bool__.return_value = False
+        with mock.patch(
+            "mmd_tools.services.export_workflow_service.create_maya_bake_timeline_vmd_action",
+        ) as factory:
+            self.assertIs(self._service(vmd_action=action).vmd_action, action)
+        factory.assert_not_called()
+
+    def test_default_vmd_action_constructs_without_maya_available(self):
+        completed = subprocess.run(
+            [sys.executable, "-c", (
+                "import sys; "
+                "sys.modules['maya'] = None; "
+                "from mmd_tools.services import ExportWorkflowService; "
+                "service = ExportWorkflowService(vpd_action=object()); "
+                "assert callable(service.vmd_action.execute_one_shot); "
+                "assert sys.modules['maya'] is None; "
+                "assert not any(n.startswith('maya.') for n in sys.modules)"
+            )],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def _service(
         self, *, model_action=None, vmd_action=None, vpd_action=None, scene_preflight=None
     ):

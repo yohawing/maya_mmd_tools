@@ -328,7 +328,9 @@ def _prepare_maya_profile(
 ) -> Path:
     """Create the isolated Maya profile and seed its plug-in trust allowlist."""
     maya_app_dir = (output_dir / f"maya-app-{maya_version}-{port}").resolve()
-    maya_commandport.seed_isolated_maya_profile(maya_app_dir, maya_version, project_root)
+    maya_commandport.seed_isolated_maya_profile(
+        maya_app_dir, maya_version, project_root, skip_user_setup=True,
+    )
     return maya_app_dir
 
 
@@ -1367,6 +1369,7 @@ def main() -> int:
             LOGGER.info("Maya executable: %s", maya_commandport.maya_exe(args.maya))
             maya_app_dir = _prepare_maya_profile(output_dir, args.maya, args.port, project_root)
             proc = maya_commandport.launch_maya(
+                keep_open=args.keep_maya,
                 version=args.maya,
                 project_root=project_root,
                 output_dir=output_dir,

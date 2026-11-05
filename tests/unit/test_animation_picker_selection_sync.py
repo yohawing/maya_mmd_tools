@@ -20,6 +20,7 @@ class _Picker:
 
 def _presenter(*, model_root=None, cmds=None):
     presenter = AnimationPresenter.__new__(AnimationPresenter)
+    presenter._morph_instances = []
     presenter.app_state = SimpleNamespace(current_model_root=model_root)
     presenter.maya_adapter = SimpleNamespace(_cmds=cmds) if cmds is not None else SimpleNamespace()
     presenter._bone_name_to_joint = {"頭": "|ns:model|Skeleton|head_jnt", "左親指0": "|ns:model|Skeleton|thumb_jnt"}

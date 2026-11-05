@@ -51,6 +51,18 @@ class TestRigPrimitiveAvailability(unittest.TestCase):
         result = is_rig_primitive_available()
         self.assertIsInstance(result, bool)
 
+    def test_legacy_runtime_keeps_unseeded_solve_and_rejects_seed(self):
+        legacy = MagicMock(return_value=True)
+        lib = SimpleNamespace(mmd_runtime_ik_chain_solve=legacy, mmd_runtime_ik_chain_free=lambda *_: None)
+        chain = MmdIkChain(lib, 1, 1, 1)
+        try:
+            args = ([0.0] * 3, [0.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0])
+            self.assertIsNotNone(chain.solve(*args))
+            self.assertIsNone(chain.solve(*args, initial_effector_world_position=[0.0, 1.0, 0.0]))
+            legacy.assert_called_once()
+        finally:
+            chain.free()
+
     def test_safe_fallback_when_unavailable(self):
         spec = MmdRigSpec.from_pmx_bytes(b"not-a-pmx")
         self.assertIsNone(spec)
@@ -287,6 +299,29 @@ class TestIkChain(unittest.TestCase):
         self.assertEqual(chain.link_count, 1)
 
         chain.free()
+
+    def test_initial_effector_seed_controls_first_precheck_and_rejects_bad_input(self):
+        bones = [
+            {"parent_slot": -1, "rest_position": [0.0, 0.0, 0.0]},
+            {"parent_slot": 0, "rest_position": [1.0, 0.0, 0.0]},
+        ]
+        chain = MmdIkChain.create(bones, 1, [{"bone_slot": 0, "has_angle_limit": False}], 4, 2.0)
+        self.assertIsNotNone(chain)
+        try:
+            positions = [0.0] * 6
+            rotations = [0.0, 0.0, 0.0, 1.0] * 2
+            goal = [0.0, 1.0, 0.0]
+            legacy = chain.solve(positions, rotations, goal)
+            seeded = chain.solve(positions, rotations, goal, initial_effector_world_position=goal)
+            self.assertIsNotNone(legacy)
+            self.assertIsNotNone(seeded)
+            self.assertGreater(abs(legacy[0][2]), 0.5)
+            self.assertEqual(seeded[0], [0.0, 0.0, 0.0, 1.0])
+            for bad in ([0.0, 1.0], [float("nan"), 0.0, 0.0], [float("inf"), 0.0, 0.0]):
+                with self.subTest(seed=bad):
+                    self.assertIsNone(chain.solve(positions, rotations, goal, initial_effector_world_position=bad))
+        finally:
+            chain.free()
 
     def test_solve_identity(self):
         bones = [

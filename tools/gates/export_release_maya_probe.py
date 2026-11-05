@@ -3283,9 +3283,6 @@ def _compare_vmd_bake_timeline_model_track_oracles(
 def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str, Any]:
     """Roundtrip a VMD through a Maya scene and compare fresh-import poses."""
     from mmd_tools.core.vmd_data import VmdData
-    from mmd_tools.adapters.maya_vmd_prepare_backend import (
-        create_maya_bake_timeline_vmd_action,
-    )
     from mmd_tools.services.export_workflow_service import (
         ExportWorkflowRequest,
         ExportWorkflowService,
@@ -3296,9 +3293,7 @@ def _run_vmd_case(source_pmx: Path, source_vmd: Path, out_dir: Path) -> dict[str
     source_oracle = _capture_scene_oracle(source_root, ORACLE_FRAMES)
     output = out_dir / "motion.vmd"
     report_dir = out_dir / "report"
-    workflow = ExportWorkflowService(
-        vmd_action=create_maya_bake_timeline_vmd_action()
-    )
+    workflow = ExportWorkflowService()
     request = ExportWorkflowRequest(
         str(output),
         {

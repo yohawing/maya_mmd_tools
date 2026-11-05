@@ -1849,6 +1849,27 @@ class GuiTestRunnerTests(unittest.TestCase):
         self.assertFalse(maya_app_dir.exists())
         process.kill.assert_not_called()
 
+    def test_launch_profile_matches_inherited_startup_policy(self):
+        for value in ("0", "1"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temp_dir:
+                observed_prefs = []
+
+                def inspect_profile(**kwargs):
+                    profile = Path(kwargs["env_overrides"]["MAYA_APP_DIR"])
+                    observed_prefs.append((profile / "2024" / "prefs" / "userPrefs.mel").read_text(encoding="utf-8"))
+                    raise RuntimeError("stop before real launch")
+
+                with mock.patch.dict(run_gui_tests.os.environ, {"MAYA_SKIP_USERSETUP_PY": value}), \
+                     mock.patch.object(run_gui_tests.maya_commandport, "maya_exe", return_value=Path("maya.exe")), \
+                     mock.patch.object(run_gui_tests.maya_commandport, "ensure_port_available"), \
+                     mock.patch.object(run_gui_tests.maya_commandport, "launch_maya", side_effect=inspect_profile) as launch, \
+                     mock.patch.object(sys, "argv", ["run_gui_tests.py", "--log_path", str(Path(temp_dir) / "gui.log")]):
+                    self.assertEqual(1, run_gui_tests.main())
+                launch.assert_called_once()
+                self.assertEqual(1, len(observed_prefs))
+                self.assertEqual('"SafeModeExecUserSetupScript" 0' in observed_prefs[0], value == "1")
+                self.assertNotIn("SafeModeUserSetupHashOption", observed_prefs[0])
+
 
 def load_tests(loader, tests, pattern):
     """Keep helper TestCases out of this module's own unittest discovery."""

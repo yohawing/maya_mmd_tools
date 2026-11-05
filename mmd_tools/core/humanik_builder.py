@@ -179,12 +179,14 @@ def create_humanik_definition(
 
 
 def ensure_humanik_mel_loaded(mel_module=None) -> None:
-    """Source Maya HumanIK MEL scripts when standalone has not loaded them."""
+    """Ensure HumanIK plug-ins and MEL procedures are available."""
     mel = mel_module or maya_mel()
-    if _has_hik_procs(mel):
-        return
+    # GUI startup may source the MEL wrappers before their plug-in commands
+    # are available. Existing procedures alone do not prove HIK is ready.
     for command in _HIK_LOAD_PLUGIN_COMMANDS:
         mel.eval(command)
+    if _has_hik_procs(mel):
+        return
     for script in _HIK_MEL_SCRIPTS:
         mel.eval(f"source {script}")
     if not _has_hik_procs(mel):

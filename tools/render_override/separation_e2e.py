@@ -21,6 +21,48 @@ from tools.render_override.render_override_visual_gate import read_png_rgb, writ
 MARKER = "MMD RENDER SEPARATION FINISHED"
 
 
+def check_initial_transparency(cmds, out, split, panel):
+    """Keep initially faded materials blended when their evaluated alpha is one."""
+    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.io.mmd_importer import import_mmd_file
+
+    results = []
+    for alphas, expected in (((0.0, 0.5), "Transparent"), ((0.9995, 1.0), "Opaque")):
+        cmds.file(new=True, force=True)
+        fixture = PmxData().parse_file(str(ROOT / "tests/data/test_morph_model.pmx"))
+        for material, alpha in zip(fixture.materials, alphas):
+            material.diffuse = (*material.diffuse[:3], alpha)
+        model = out / f"initial_transparency_{expected}.pmx"
+        fixture.write_file(str(model))
+        root = import_mmd_file(str(model), options={
+            "use_cpp_fast_load": True, "use_cpp_vp2_ownership": True,
+            "import_morphs": False, "import_physics": False,
+            "separate_meshes_by_material": split,
+        })
+        assert root
+        proxies = cmds.listRelatives(root, ad=True, type="mmdRenderShape", fullPath=True)
+        # Supply evaluated values at the same DG boundary as material morphs.
+        updated_indices = []
+        for proxy in proxies:
+            for index in cmds.getAttr(proxy + ".materialAlpha", multiIndices=True) or []:
+                plug = f"{proxy}.materialAlpha[{index}]"
+                source = cmds.connectionInfo(plug, sourceFromDestination=True)
+                if source:
+                    cmds.disconnectAttr(source, plug)
+                cmds.setAttr(plug, 1.0)
+                updated_indices.append(index)
+        assert sorted(updated_indices) == [0, 1], updated_indices
+        cmds.select(clear=True)
+        yield
+        capture_view(cmds, out / f"initial_transparency_{expected}.png", panel, 640, 480)
+        witness = json.loads(cmds.mmdOrderedRenderWitness())
+        entries = [item for item in witness["pmxOrder"] if not item["outline"]]
+        assert not witness["error"] and len(entries) == 2, witness
+        assert all(item["pass"] == expected for item in entries), entries
+        results.append({"initialAlpha": alphas, "evaluatedAlpha": 1.0, "entries": entries})
+    return results
+
+
 def run_probe(output, plugin, split=False, textured=False):
     # Each user operation returns to Maya's event loop before the next capture.
     # A monolithic commandPort call suppresses deferred DG/VP2 notifications.
@@ -364,6 +406,7 @@ def _probe_steps(output, plugin, split=False, textured=False):
         report["cameraPerformance"] = check_camera_updates(cmds, current_proxy, render, capture=capture)
         from tools.smoke.maya_fast_import_authoring import _viewport
         report["authoringViewport"] = _viewport(cmds, root, out)
+        report["initialTransparency"] = yield from check_initial_transparency(cmds, out, split, render)
         report["status"] = "pass"
     except Exception:
         report["error"] = traceback.format_exc()

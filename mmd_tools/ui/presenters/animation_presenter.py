@@ -106,9 +106,14 @@ class AnimationPresenter:
         }
         self._morph_sliders: dict[str, object] = {}
         self._morph_rows: dict[str, object] = {}
+        self._morph_groups = {}
+        self._morph_instances = []
+        self._morph_group_expanded = {}
+        self._morph_categorized = None
+        self._morph_model_root = None
         self._morph_selection_anchor: str | None = None
+        self._morph_selection_anchor_row = None
         self._morph_selected_names: list[str] = []
-        self._morph_group_headers: list[tuple[object, str, int]] = []
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
         self._network_morph_targets: dict[str, list[str]] = {}
         self._morph_indices: dict[str, int] = {}
@@ -145,6 +150,8 @@ class AnimationPresenter:
     def connect_signals(self):
         if hasattr(self.view, "morph_filter"):
             self.view.morph_filter.textChanged.connect(self._filter_morph_rows)
+        if hasattr(self.view, "morph_view"):
+            self.view.morph_view.currentIndexChanged.connect(self._rebuild_morph_view)
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
         self.app_state.model_list_updated.connect(self.on_model_list_updated)
         self.view.model_combo.currentTextChanged.connect(self.on_model_selected)
@@ -342,10 +349,7 @@ class AnimationPresenter:
     def retranslate_ui(self):
         """Retranslate presenter-owned dynamic controls without reloading the model."""
 
-        for header, category_key, count in self._morph_group_headers:
-            expanded = header.isChecked()
-            title = self.view.tr(category_key, "animation_toolset")
-            header.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
+        self._rebuild_morph_view()
         self._retranslate_picker_bone_tooltips()
         self._sync_common_action_state()
 
@@ -700,7 +704,7 @@ class AnimationPresenter:
         selected = set(names)
         self._morph_selected_names = [name for name in rows if name in selected]
         multi = len(self._morph_selected_names) > 1
-        for name, row in tuple(rows.items()):
+        for name, row in self._morph_instances:
             set_selected = getattr(row, "set_selected", None)
             if callable(set_selected):
                 set_selected(name in selected)
@@ -2124,28 +2128,89 @@ class AnimationPresenter:
         model_root: str,
         morph_metadata: dict[int, MorphInfo] | None = None,
     ):
+        if self._morph_model_root != model_root:
+            self._morph_group_expanded.clear()
         self._clear_morph_tab()
         morph_infos = self._collect_morph_infos(model_root, morph_metadata or {})
-        categorized = categorize_morphs(morph_infos)
-        self._populate_morph_groups(categorized)
+        self._morph_model_root = model_root
+        self._morph_categorized = categorize_morphs(morph_infos)
+        self._populate_morph_groups(self._morph_categorized)
 
-    def _clear_morph_tab(self):
+    def _clear_morph_widgets(self):
+        """Dispose rows while preserving their model targets and view preferences."""
         self._end_morph_edit()
         self._morph_selection_anchor = None
+        self._morph_selection_anchor_row = None
         self._set_morph_row_selection([])
         self._last_morph_refresh_time = None
         self._morph_sliders.clear()
         self._morph_rows.clear()
-        self._morph_group_headers.clear()
-        self._morph_targets.clear()
-        self._network_morph_targets.clear()
-        self._morph_indices.clear()
+        self._morph_instances.clear()
+        self._morph_groups.clear()
         layout = self.view.morph_groups_layout
         while layout.count() > 1:
             child = layout.takeAt(0)
             widget = child.widget()
             if widget:
+                widget.hide()
                 widget.deleteLater()
+
+    def _clear_morph_tab(self):
+        self._clear_morph_widgets()
+        self._morph_categorized = None
+        self._morph_model_root = None
+        self._morph_targets.clear()
+        self._network_morph_targets.clear()
+        self._morph_indices.clear()
+
+    def _rebuild_morph_view(self, *_args):
+        """Switch grouping without changing weights or resolving model targets again."""
+        selected = list(self._morph_selected_names)
+        anchor = self._morph_selection_anchor
+        self._clear_morph_widgets()
+        if self._morph_categorized is not None:
+            self._populate_morph_groups(self._morph_categorized)
+        if selected:
+            visible = [name for name in selected
+                       if name in self._morph_rows and not self._morph_rows[name].isHidden()]
+            self._set_morph_row_selection(visible)
+            if anchor in visible:
+                self._morph_selection_anchor = anchor
+                self._morph_selection_anchor_row = self._morph_rows[anchor]
+
+    def _morph_group_specs(self, categorized):
+        """Return category groups or ordered frame groups, including unassigned morphs."""
+        categories = [
+            ("category_brow", categorized.eyebrow),
+            ("category_eye", categorized.eye),
+            ("category_mouth", categorized.mouth),
+            ("category_other", categorized.other),
+        ]
+        view = getattr(self.view, "morph_view", None)
+        if view is None or view.currentIndex() != 1:
+            return [(key, self.view.tr(key, "animation_toolset"), morphs)
+                    for key, morphs in categories if morphs]
+        morphs = [morph for _, members in categories for morph in members]
+        by_index = {self._morph_indices.get(m.name, m.index): m for m in morphs
+                    if self._morph_indices.get(m.name, m.index) >= 0}
+        assigned = set()
+        groups = []
+        language = UITranslator.instance().get_language()
+        for index, frame in enumerate(self._picker_groups):
+            indices = list(dict.fromkeys(item.index for item in frame.items
+                                        if item.element_type == 1 and item.index in by_index))
+            if not indices:
+                continue
+            title = preferred_pmx_display_name(
+                frame.name, frame.name_english,
+                fallback=lambda: str(index + 1), language=language,
+            )
+            groups.append((f"frame_{index}", title, [by_index[i] for i in indices]))
+            assigned.update(by_index[i].name for i in indices)
+        unassigned = [m for m in morphs if m.name not in assigned]
+        if unassigned:
+            groups.append(("unassigned", self.view.tr("morph_unassigned", "animation_toolset"), unassigned))
+        return groups
 
     def _collect_morph_infos(
         self,
@@ -2276,6 +2341,8 @@ class AnimationPresenter:
             return {}
 
     def _populate_morph_groups(self, categorized: CategorizedMorphs):
+        if not any((categorized.eyebrow, categorized.eye, categorized.mouth, categorized.other)):
+            return
         from ..qt_compat import (
             QGridLayout,
             QPushButton,
@@ -2292,17 +2359,7 @@ class AnimationPresenter:
         )
 
         layout = self.view.morph_groups_layout
-        categories = [
-            ("category_brow", categorized.eyebrow),
-            ("category_eye", categorized.eye),
-            ("category_mouth", categorized.mouth),
-            ("category_other", categorized.other),
-        ]
-
-        for category_key, morphs in categories:
-            if not morphs:
-                continue
-            cat_name = self.view.tr(category_key, "animation_toolset")
+        for category_key, cat_name, morphs in self._morph_group_specs(categorized):
             group = QWidget()
             group.setObjectName("MorphPickerGroup")
             group.setStyleSheet(
@@ -2312,9 +2369,9 @@ class AnimationPresenter:
             group_layout.setContentsMargins(0, 0, 0, 0)
             group_layout.setSpacing(2)
             header = QPushButton(f"▾  {cat_name}    {len(morphs)}")
+            header.setMinimumHeight(28)
             header.setCheckable(True)
-            header.setChecked(True)
-            self._morph_group_headers.append((header, category_key, len(morphs)))
+            header.setChecked(self._morph_group_expanded.get(category_key, True))
             header.setStyleSheet(
                 "QPushButton { text-align: left; padding: 5px 7px; background: #454545; "
                 "color: #dedede; border: none; font-weight: 600; } "
@@ -2324,13 +2381,14 @@ class AnimationPresenter:
 
             content = QWidget()
             content_layout = QGridLayout(content)
-            content_layout.setContentsMargins(8, 4, 6, 5)
-            content_layout.setHorizontalSpacing(7)
-            content_layout.setVerticalSpacing(3)
+            content_layout.setContentsMargins(6, 6, 6, 8)
+            content_layout.setHorizontalSpacing(5)
+            content_layout.setVerticalSpacing(6)
             content_layout.setColumnMinimumWidth(0, 22)
             content_layout.setColumnMinimumWidth(1, 116)
             content_layout.setColumnMinimumWidth(3, 72)
             content_layout.setColumnStretch(2, 1)
+            self._morph_groups[category_key] = (group, content_layout, header, cat_name)
 
             for row_index, morph in enumerate(morphs):
                 language = UITranslator.instance().get_language()
@@ -2380,26 +2438,26 @@ class AnimationPresenter:
                 row_widgets.set_value(self._morph_value(morph_name))
                 row_widgets.set_animation_state(self._morph_animation_state(plugs))
                 row_widgets.activated.connect(
-                    lambda modifiers, name=morph_name: self._on_morph_row_activated(name, modifiers)
+                    lambda modifiers, name=morph_name, row=row_widgets: self._on_morph_row_activated(name, modifiers, row)
                 )
                 row_widgets.multi_key_requested.connect(self._key_selected_morphs)
                 self._morph_sliders[morph_name] = slider
-                self._morph_rows[morph_name] = row_widgets
+                self._morph_rows.setdefault(morph_name, row_widgets)
+                self._morph_instances.append((morph_name, row_widgets))
                 content_layout.addWidget(row_widgets, row_index, 0, 1, 4)
 
             group.setLayout(group_layout)
             group_layout.addWidget(content)
+            content.setVisible(header.isChecked())
 
             def toggle_group(
                 expanded,
                 panel=content,
-                button=header,
-                title_key=category_key,
-                count=len(morphs),
+                key=category_key,
             ):
+                self._morph_group_expanded[key] = expanded
                 panel.setVisible(expanded)
-                title = self.view.tr(title_key, "animation_toolset")
-                button.setText(f"{'▾' if expanded else '▸'}  {title}    {count}")
+                self._filter_morph_rows()
 
             header.toggled.connect(toggle_group)
             insert_pos = max(0, layout.count() - 1)
@@ -2413,8 +2471,12 @@ class AnimationPresenter:
         if field is None:
             return
         query = field.text().casefold().strip()
-        for row in self._morph_rows.values():
+        for name, row in self._morph_instances:
             row.setHidden(query not in row.label.toolTip().casefold())
+        for group, layout, header, title in self._morph_groups.values():
+            count = sum(not layout.itemAt(i).widget().isHidden() for i in range(layout.count()))
+            group.setVisible(count > 0)
+            header.setText(f"{'▾' if header.isChecked() else '▸'}  {title}    {count}")
         visible = [name for name in self._morph_selected_names
                    if name in self._morph_rows and not self._morph_rows[name].isHidden()]
         if self._morph_selection_anchor not in visible:
@@ -2424,7 +2486,7 @@ class AnimationPresenter:
         else:
             self._sync_picker_to_actual_selection()
 
-    def _on_morph_row_activated(self, morph_name: str, modifiers=None) -> None:
+    def _on_morph_row_activated(self, morph_name: str, modifiers=None, source_row=None) -> None:
         """Select a row, toggle with Ctrl, or extend a range with Shift."""
 
         from ..qt_compat import Qt
@@ -2433,19 +2495,28 @@ class AnimationPresenter:
         if not plugs:
             self._sync_picker_to_actual_selection()
             return
-        names = [name for name, row in self._morph_rows.items()
-                 if not getattr(row, "isHidden", lambda: False)() and row.plugs]
+        instances = self._morph_instances
+        visible = [(name, row) for name, row in instances
+                   if not getattr(row, "isHidden", lambda: False)() and row.plugs]
+        names = [name for name, _ in visible]
         selected = [name for name in self._morph_selected_names if name in names]
+        if source_row is None:
+            source_row = self._morph_rows.get(morph_name)
+        anchor_row = getattr(self, "_morph_selection_anchor_row", None)
         if modifiers is not None and modifiers & Qt.ShiftModifier and self._morph_selection_anchor in names:
-            start = names.index(self._morph_selection_anchor)
-            end = names.index(morph_name)
+            start = next((i for i, (_, row) in enumerate(visible) if row is anchor_row),
+                         names.index(self._morph_selection_anchor))
+            end = next((i for i, (_, row) in enumerate(visible) if row is source_row),
+                       names.index(morph_name))
             selected = list(dict.fromkeys(selected + names[min(start, end):max(start, end) + 1]))
         elif modifiers is not None and modifiers & Qt.ControlModifier:
             selected = [name for name in selected if name != morph_name] if morph_name in selected else selected + [morph_name]
             self._morph_selection_anchor = morph_name
+            self._morph_selection_anchor_row = source_row
         else:
             selected = [morph_name]
             self._morph_selection_anchor = morph_name
+            self._morph_selection_anchor_row = source_row
         if len(selected) > 1:
             self._set_morph_row_selection(selected)
             return
@@ -2494,8 +2565,9 @@ class AnimationPresenter:
             value = max(0.0, min(1.0, float(weight)))
             for name in targets:
                 self._set_morph_weight(name, value)
-                row = self._morph_rows.get(name)
-                if row is not None:
+                for row_name, row in self._morph_instances:
+                    if row_name != name:
+                        continue
                     set_value = getattr(row, "set_value", None)
                     if callable(set_value):
                         set_value(value)
@@ -2592,7 +2664,7 @@ class AnimationPresenter:
             current_time = None
         refresh_animation = current_time != self._last_morph_refresh_time
         self._last_morph_refresh_time = current_time
-        for morph_name, row in tuple(self._morph_rows.items()):
+        for morph_name, row in self._morph_instances:
             if not row.editor.is_editing:
                 row.set_value(self._morph_value(morph_name))
             if refresh_animation:

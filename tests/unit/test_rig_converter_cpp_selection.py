@@ -148,7 +148,7 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
         source = (
             Path(__file__).resolve().parents[2] / "cpp" / "src" / "MmdCcdIkNode.cpp"
         ).read_text(encoding="utf-8")
-        resolver = source.split("IkChainCreateV2Fn resolveIkChainCreateV2()", 1)[1].split(
+        resolver = source.split("Function resolveRuntimeSymbol(const char* name)", 1)[1].split(
             "struct CcdIkChainConfig", 1
         )[0]
 
@@ -171,7 +171,7 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
         self.assertIn("RTLD_NOLOAD", posix_resolver)
         self.assertNotIn("RTLD_DEFAULT", posix_resolver)
 
-    def test_ik_chain_json_preserves_local_axis_on_remapped_slot(self):
+    def test_ik_chain_json_keeps_pmx_limits_independent_of_local_axis(self):
         converter = RigConverter()
         local_axis = {"x": [0.0, 0.0, 1.0], "z": [0.0, 1.0, 0.0]}
         manifest = SimpleNamespace(
@@ -189,7 +189,7 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
 
         bones = json.loads(payload)["bones"]
         self.assertIsNone(bones[0]["local_axis"])
-        self.assertEqual(bones[1]["local_axis"], local_axis)
+        self.assertIsNone(bones[1]["local_axis"])
 
     def test_append_node_type_always_returns_unified_name(self):
         converter = RigConverter()

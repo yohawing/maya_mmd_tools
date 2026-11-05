@@ -198,7 +198,6 @@ def build_ik_mini_chain(
         abs_positions.append(abs_pos)
         flags = 0
         fixed_axis = bone_data.get("fixedAxis")
-        local_axis = bone_data.get("localAxis")
         if fixed_axis is not None:
             from mmd_tools.core.native.mmd_anim_runtime import MMD_RUNTIME_RIG_BONE_FIXED_AXIS
             flags |= MMD_RUNTIME_RIG_BONE_FIXED_AXIS
@@ -208,7 +207,7 @@ def build_ik_mini_chain(
             "rest_position": None,
             "flags": flags,
             "fixed_axis": fixed_axis or [0, 0, 0],
-            "local_axis": local_axis,
+            "local_axis": None,  # PMX manipulation axes do not define IK limits.
         })
 
     for slot, bone in enumerate(bones_for_chain):

@@ -8,7 +8,6 @@ action behavior can be tested without opening a Maya HumanIK panel.
 from __future__ import annotations
 
 import json
-import math
 from typing import Any, Callable, Mapping, Optional
 
 from mmd_tools.core.humanik_frontend import (
@@ -812,16 +811,7 @@ def _create_control_rig(model_root: Optional[str] = None):
 
 def _bake_to_mmd_rig(start=None, end=None):
     """Bake the active target preview; no confirmation (Phase B6, no configurable options)."""
-    cmds = _cmds_module or _maya_cmds()
     session = get_humanik_session()
-    if start is None:
-        start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
-    if end is None:
-        end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
-    start = int(start)
-    end = int(end)
-    if end < start:
-        raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
     result = session.bake_to_mmd_rig(start, end)
     result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     _display_info("HumanIK bake complete: " + json.dumps(result_dict, sort_keys=True))
@@ -829,17 +819,8 @@ def _bake_to_mmd_rig(start=None, end=None):
 
 
 def _bake_to_control_rig(start=None, end=None):
-    """Bake the active target Control Rig over an explicit frame range."""
-    cmds = _cmds_module or _maya_cmds()
+    """Bake the active target Control Rig over an optional frame range."""
     session = get_humanik_session()
-    if start is None:
-        start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
-    if end is None:
-        end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
-    start = int(start)
-    end = int(end)
-    if end < start:
-        raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
     result = session.bake_to_control_rig(start, end)
     result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     _display_info("HumanIK Control Rig bake complete: " + json.dumps(result_dict, sort_keys=True))
@@ -848,16 +829,7 @@ def _bake_to_control_rig(start=None, end=None):
 
 def _bake_from_control_rig(start=None, end=None):
     """Bake edited Control Rig output using the fail-safe MMD authoring path."""
-    cmds = _cmds_module or _maya_cmds()
     session = get_humanik_session()
-    if start is None:
-        start = math.ceil(float(cmds.playbackOptions(query=True, minTime=True)))
-    if end is None:
-        end = math.floor(float(cmds.playbackOptions(query=True, maxTime=True)))
-    start = int(start)
-    end = int(end)
-    if end < start:
-        raise ValueError(f"Bake frame range is empty after integer conversion: {start}..{end}")
     result = session.bake_from_control_rig(start, end)
     result_dict = result.to_dict() if hasattr(result, "to_dict") else dict(result)
     _display_info("HumanIK Bake From Control Rig complete: " + json.dumps(result_dict, sort_keys=True))

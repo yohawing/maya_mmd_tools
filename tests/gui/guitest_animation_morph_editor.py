@@ -53,6 +53,16 @@ class TestAnimationMorphEditor(GuiTestBase):
             json.dumps(metadata, ensure_ascii=False),
             type="string",
         )
+        cmds.addAttr(self.root, longName="mmd_display_frames_json", dataType="string")
+        cmds.setAttr(f"{self.root}.mmd_display_frames_json", json.dumps([
+            {"name": "骨のみ", "name_english": "Bones only", "elements": [{"type": 0, "index": 0}]},
+            {"name": "表情A", "name_english": "Expression A", "elements": [
+                {"type": 1, "index": 0}, {"type": 1, "index": 2}, {"type": 1, "index": 99},
+            ]},
+            {"name": "表情B", "name_english": "Expression B", "elements": [
+                {"type": 0, "index": 0}, {"type": 1, "index": 1}, {"type": 1, "index": 2},
+            ]},
+        ]), type="string")
         self.controller = cmds.createNode("network", name="morphEditorController")
         cmds.addAttr(
             self.controller,
@@ -93,6 +103,114 @@ class TestAnimationMorphEditor(GuiTestBase):
         canonical_by_alias = dict(zip(aliases[0::2], aliases[1::2]))
         canonical_attribute = canonical_by_alias.get(attribute, attribute)
         self.assertEqual(f"{node}.{canonical_attribute}", expected)
+
+    def test_frame_view_order_duplicates_and_editing(self):
+        names = list(self.presenter._morph_rows)
+        # Author-defined order deliberately differs from normal order.
+        frames = json.loads(cmds.getAttr(f"{self.root}.mmd_display_frames_json"))
+        frames[1]["elements"] = [{"type": 1, "index": 2}, {"type": 1, "index": 0}]
+        cmds.setAttr(f"{self.root}.mmd_display_frames_json", json.dumps(frames), type="string")
+        self.presenter._reload_for_model(self.root)
+        self.tab.morph_view.setCurrentIndex(1)
+        self.assertEqual(list(self.presenter._morph_groups), ["frame_1", "frame_2"])
+        self.assertEqual([name for name, _ in self.presenter._morph_instances],
+                         [names[2], names[0], names[1], names[2]])
+        copies = [row for name, row in self.presenter._morph_instances if name == names[2]]
+        self.presenter._on_morph_row_activated(names[2])
+        copies[1].editor.setValue(0.625)
+        copies[1].editor._finish_edit()
+        self.assertAlmostEqual(cmds.getAttr(f"{self.controller}.inputWeight[2]"), 0.625)
+        self.assertEqual([row.editor.value() for row in copies], [0.625, 0.625])
+        cmds.undo()
+        self.presenter._refresh_morph_rows()
+        self.assertEqual([row.editor.value() for row in copies], [0.2, 0.2])
+        self.presenter._morph_groups["frame_1"][2].setChecked(False)
+        self.tab.morph_view.setCurrentIndex(0)
+        self.assertEqual(list(self.presenter._morph_rows), names)
+        self.tab.morph_view.setCurrentIndex(1)
+        self.assertFalse(self.presenter._morph_groups["frame_1"][2].isChecked())
+
+    def test_shift_selection_uses_clicked_frame_occurrence(self):
+        names = list(self.presenter._morph_rows)
+        self.tab.morph_view.setCurrentIndex(1)
+        instances = self.presenter._morph_instances
+        # Frame A = smile/material, frame B = bone/material.
+        bone, material = instances[2][1], instances[3][1]
+        QTest.mouseClick(bone.label, Qt.LeftButton)
+        QTest.mouseClick(material.label, Qt.LeftButton, Qt.ShiftModifier)
+        self.assertEqual(set(self.presenter._morph_selected_names), {names[1], names[2]})
+        self.assertFalse(instances[0][1].is_selected)
+        self.assertTrue(instances[1][1].is_selected and material.is_selected)
+        self.tab.morph_view.setCurrentIndex(0)
+        self.assertEqual(set(self.presenter._morph_selected_names), {names[1], names[2]})
+        self.assertEqual(self.presenter._morph_selection_anchor, names[1])
+        self.presenter.retranslate_ui()
+        self.assertEqual(set(self.presenter._morph_selected_names), {names[1], names[2]})
+        self.presenter._on_morph_row_activated(names[0], Qt.ShiftModifier)
+        self.assertEqual(set(self.presenter._morph_selected_names), set(names))
+
+    def test_editor_search_labels_remain_icons_after_translation(self):
+        from mmd_tools.ui.tabs.bone_tab import BoneTab
+        from mmd_tools.ui.tabs.material_tab import MaterialTab
+        from mmd_tools.ui.tabs.morph_tab import MorphTab
+
+        for tab_type in (BoneTab, MorphTab, MaterialTab):
+            tab = tab_type()
+            try:
+                tab.search_edit.setText("test query")
+                tab.retranslateUi()
+                self.assertEqual(tab.search_label.text(), "")
+                self.assertFalse(tab.search_label.pixmap().isNull())
+                self.assertEqual(tab.search_label.accessibleName(), tab.tr("search", "fields"))
+                self.assertEqual(tab.search_edit.text(), "test query")
+            finally:
+                tab.close()
+                tab.deleteLater()
+
+    def test_search_and_filter_collapse_survive_view_switch(self):
+        self.assertTrue(self.tab.morph_filter_panel.isHidden())
+        self.assertEqual(self.tab.morph_filter_toggle.text(), "")
+        self.assertFalse(self.tab.morph_filter_toggle.icon().isNull())
+        self.assertTrue(self.tab.morph_view.itemIcon(0).isNull())
+        empty_icon = self.tab.morph_filter_toggle.icon().cacheKey()
+        QTest.mouseClick(self.tab.morph_filter_toggle, Qt.LeftButton)
+        self.assertFalse(self.tab.morph_filter_panel.isHidden())
+        first = next(iter(self.presenter._morph_rows.values()))
+        # Search the full name, including the elided portion.
+        query = first.label.accessibleName()
+        self.tab.morph_filter.setText(query)
+        self.tab.morph_view.setCurrentIndex(1)
+        self.assertEqual(self.tab.morph_filter.text(), query)
+        self.assertEqual(sum(not row.isHidden() for _, row in self.presenter._morph_instances), 1)
+        QTest.mouseClick(self.tab.morph_filter_toggle, Qt.LeftButton)
+        self.assertTrue(self.tab.morph_filter_panel.isHidden())
+        self.assertEqual(self.tab.morph_filter.text(), query)
+        self.assertIn(query, self.tab.morph_filter_toggle.toolTip())
+        self.assertNotEqual(self.tab.morph_filter_toggle.icon().cacheKey(), empty_icon)
+        self.tab.retranslateUi()
+        self.assertEqual(self.tab.morph_filter_toggle.text(), "")
+        self.tab.morph_view.setCurrentIndex(0)
+        self.assertEqual(sum(not row.isHidden() for row in self.presenter._morph_rows.values()), 1)
+        self.tab.morph_filter.clear()
+        self.assertTrue(all(not row.isHidden() for row in self.presenter._morph_rows.values()))
+
+    def test_frames_without_members_and_unassigned_fallback(self):
+        frames = [{"name": "Partial", "elements": [
+            {"type": 1, "index": 2}, {"type": 1, "index": 2},
+            {"type": 1, "index": 99}, {"type": 0, "index": 0}]}]
+        cmds.setAttr(f"{self.root}.mmd_display_frames_json", json.dumps(frames), type="string")
+        self.presenter._reload_for_model(self.root)
+        self.tab.morph_view.setCurrentIndex(1)
+        self.assertEqual(list(self.presenter._morph_groups), ["frame_0", "unassigned"])
+        self.assertEqual(len(self.presenter._morph_instances), 3)
+        self.assertEqual(self.presenter._morph_groups["frame_0"][1].count(), 1)
+        cmds.setAttr(f"{self.root}.mmd_display_frames_json", "[]", type="string")
+        self.presenter._reload_for_model(self.root)
+        self.assertEqual(list(self.presenter._morph_groups), ["unassigned"])
+        self.assertEqual(len(self.presenter._morph_instances), 3)
+        other = cmds.createNode("transform", name="noMorphsModel")
+        self.presenter._reload_for_model(other)
+        self.assertEqual(self.presenter._morph_instances, [])
 
     def test_grid_columns_numeric_edit_and_external_refresh(self):
         self.assertEqual(len(self.presenter._morph_rows), 3)

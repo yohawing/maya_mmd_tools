@@ -96,7 +96,7 @@ class TestIkMiniChainOrdering(unittest.TestCase):
             create.call_args.kwargs["bones"][2]["rest_position"], [1.0, 0.0, 0.0]
         )
 
-    def test_local_axis_stays_attached_to_its_remapped_bone_slot(self):
+    def test_pmx_local_axis_does_not_override_ik_limit_frame(self):
         local_axis = {"x": [0.0, 0.0, 1.0], "z": [0.0, 1.0, 0.0]}
         bones = [
             self._bone(-1, [0.0, 0.0, 0.0]),
@@ -117,7 +117,7 @@ class TestIkMiniChainOrdering(unittest.TestCase):
         self.assertEqual(result[1]["pmx_to_slot"][1], 2)
         self.assertIsNone(create.call_args.kwargs["bones"][0]["local_axis"])
         self.assertIsNone(create.call_args.kwargs["bones"][1]["local_axis"])
-        self.assertEqual(create.call_args.kwargs["bones"][2]["local_axis"], local_axis)
+        self.assertIsNone(create.call_args.kwargs["bones"][2]["local_axis"])
 
     def test_multiple_roots_and_siblings_have_deterministic_parent_first_slots(self):
         manifest = self._manifest([

@@ -1,6 +1,10 @@
 """Animator Toolset tab with picker tools and the MMD Control Rig manager."""
 
+from pathlib import Path
+
 from ..qt_compat import (
+    QIcon,
+    QSize,
     QComboBox,
     QGridLayout,
     QGroupBox,
@@ -92,10 +96,43 @@ class AnimationTab(BaseTab):
 
         self.morph_page = QWidget()
         morph_outer = QVBoxLayout(self.morph_page)
-        morph_outer.setContentsMargins(0, 0, 0, 0)
+        morph_outer.setContentsMargins(8, 10, 8, 8)
+        morph_outer.setSpacing(8)
+        morph_view_layout = QHBoxLayout()
+        morph_view_layout.setSpacing(8)
+        self.morph_view = QComboBox()
+        self.morph_view.addItems(["Normal", "Display frames"])
+        self.morph_view.setMinimumHeight(28)
+        morph_view_layout.addWidget(self.morph_view, 1)
+        morph_outer.addLayout(morph_view_layout)
+        self.morph_filter_toggle = SymbolToolButton("search", checkable=True)
+        self.morph_filter_toggle.setFixedSize(28, 28)
+        self.morph_filter_toggle.setIconSize(QSize(20, 20))
+        self.morph_filter_toggle.setStyleSheet(
+            "QPushButton { border: 1px solid #585858; background: #414141; } "
+            "QPushButton:checked { background: #4b555b; border-color: #6d8a97; } "
+            "QPushButton:hover { background: #505050; }"
+        )
+        self._morph_search_icon = self.morph_filter_toggle.icon()
+        self._morph_search_active_icon = QIcon(str(
+            Path(__file__).resolve().parents[1] / "assets/symbols/search_active.svg"
+        ))
+        morph_view_layout.addWidget(self.morph_filter_toggle)
+        self.morph_filter_panel = QWidget()
+        filter_layout = QVBoxLayout(self.morph_filter_panel)
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        morph_outer.addWidget(self.morph_filter_panel)
+        self.morph_filter_panel.hide()
+        self.morph_filter_toggle.toggled.connect(self.morph_filter_panel.setVisible)
         self.morph_filter = QLineEdit()
-        self.morph_filter.setPlaceholderText("Filter morphs")
-        morph_outer.addWidget(self.morph_filter)
+        self.morph_filter.setMinimumHeight(28)
+        self.morph_filter.setClearButtonEnabled(True)
+        self.morph_filter.setStyleSheet(
+            "QLineEdit { padding: 3px 7px; border: 1px solid #555555; background: #303030; } "
+            "QLineEdit:focus { border-color: #6699aa; }"
+        )
+        self.morph_filter.textChanged.connect(self._update_morph_search_icon)
+        filter_layout.addWidget(self.morph_filter)
         morph_scroll = QScrollArea()
         morph_scroll.setObjectName("MorphPickerScroll")
         morph_scroll.setWidgetResizable(True)
@@ -105,8 +142,8 @@ class AnimationTab(BaseTab):
         )
         self.morph_scroll_content = QWidget()
         self.morph_groups_layout = QVBoxLayout(self.morph_scroll_content)
-        self.morph_groups_layout.setContentsMargins(4, 4, 4, 4)
-        self.morph_groups_layout.setSpacing(2)
+        self.morph_groups_layout.setContentsMargins(0, 4, 0, 4)
+        self.morph_groups_layout.setSpacing(10)
         self.morph_groups_layout.addStretch()
         morph_scroll.setWidget(self.morph_scroll_content)
         morph_outer.addWidget(morph_scroll)
@@ -230,12 +267,29 @@ class AnimationTab(BaseTab):
 
         return self._translator.get_language()
 
+    def _update_morph_search_icon(self, *_args):
+        """Indicate an active query even while the search field is collapsed."""
+        query = self.morph_filter.text().strip()
+        label = self.tr("morph_search", "animation_toolset")
+        self.morph_filter_toggle.setText(label)
+        self.morph_filter_toggle.setIcon(
+            self._morph_search_active_icon if query else self._morph_search_icon
+        )
+        self.morph_filter_toggle.setToolTip(f"{label}: {query}" if query else label)
+        self.morph_filter_toggle.setAccessibleDescription(query)
+
     def retranslateUi(self):
         """Update static Animator Toolset text without rebuilding picker state."""
         def tr(key):
             return self.tr(key, "animation_toolset")
 
         self.refresh_btn.setText(tr("refresh"))
+        self._update_morph_search_icon()
+        self.morph_view.setAccessibleName(tr("morph_view"))
+        self.morph_view.setToolTip(tr("morph_view"))
+        for index, key in enumerate(("morph_view_normal", "morph_view_frames")):
+            self.morph_view.setItemText(index, tr(key))
+        self.morph_filter.setPlaceholderText(tr("morph_search"))
         for index, key in enumerate(("body", "finger", "morph", "display")):
             self.picker_tabs.setTabText(index, tr(key))
         self.select_all_btn.setText(tr("select_all"))

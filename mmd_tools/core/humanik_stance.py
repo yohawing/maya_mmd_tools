@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 from mmd_tools.core.humanik_constraints import (
     BLOCKING_CLASSIFICATIONS,
     collect_hik_ownership_report,
-    is_supported_mmd_ccdik_feedback_row,
+    is_supported_mmd_feedback_row,
 )
 from mmd_tools.core.humanik_resolver import HumanIkBoneAssignment
 from mmd_tools.core.humanik_utils import incoming_sources, maya_cmds
@@ -357,9 +357,6 @@ def _edge_connected(cmds, source: str, destination: str) -> bool:
         return source in incoming_sources(cmds, destination)
 
 
-_supported_mmd_ccdik_feedback_row = is_supported_mmd_ccdik_feedback_row
-
-
 @dataclass
 class HumanIkStanceTransaction:
     """One model-scoped automatic horizontal arm stance transaction."""
@@ -404,7 +401,7 @@ class HumanIkStanceTransaction:
         supported_feedback = [
             row
             for row in report.get("rows", [])
-            if _supported_mmd_ccdik_feedback_row(row, self.assignments)
+            if is_supported_mmd_feedback_row(row, self.assignments, report.get("rows", ()), cmds)
         ]
         blockers = [
             row

@@ -410,6 +410,21 @@ def _ensure_string_attr(cmds, node: str, attr: str) -> None:
     cmds.addAttr(node, longName=attr, dataType="string")
 
 
+def include_unconnected_hik_trs(cmds, hik_joints: Iterable[str], destinations: Iterable[str]) -> List[str]:
+    """Include free HIK channels whose values can change when HIK takes control."""
+    result = set(destinations)
+    for joint in hik_joints:
+        for attribute in ("translate", "rotate", "scale"):
+            parent = f"{joint}.{attribute}"
+            if parent in result or cmds.connectionInfo(parent, isExactDestination=True):
+                continue
+            for axis in "XYZ":
+                plug = parent + axis
+                if not incoming_sources(cmds, plug):
+                    result.add(plug)
+    return sorted(result)
+
+
 def capture_humanik_restore_state(
     ownership_id: str,
     character: str,
@@ -429,6 +444,10 @@ def capture_humanik_restore_state(
     source = str(mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or "")
     raw_input_type = mel.eval(f"hikGetInputType({mel_string(character)})")
     input_type = int(raw_input_type) if raw_input_type is not None else -1
+    # Maya can still list an old retargeter after switching to inactive stance.
+    # It is not the active input and must not be re-enabled on the next restore.
+    if input_type == 0:
+        source = ""
     return HumanIkRestoreState(
         ownership_id=str(ownership_id),
         character=str(character),
@@ -519,10 +538,16 @@ def apply_humanik_restore_state(
     # already restored).  Any other incoming source is a foreign writer that
     # appeared while the transaction was active; fail closed before the first
     # disconnect/value/MEL mutation so the user can inspect and repair it.
+    # These are the target character's own temporary HIK writers, not foreign
+    # topology. Resolve through the UUID-checked character, never by node type.
+    owned_hik_nodes = set()
+    if character is not None and restore_state.input_type == 0:
+        owned_hik_nodes = set(mel.eval(f"hikGetState2SKFromCharacter({mel_string(character)});") or [])
     topology_drift = []
     for snapshot, destination in live_plugs:
         actual = incoming_sources(cmds, destination)
-        unexpected = sorted(set(actual) - set(snapshot.sources))
+        unexpected = sorted(source for source in set(actual) - set(snapshot.sources)
+                            if source.rsplit(".", 1)[0] not in owned_hik_nodes)
         if unexpected:
             topology_drift.append(
                 {
@@ -546,7 +571,11 @@ def apply_humanik_restore_state(
             current_source = str(
                 mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or ""
             )
-            if current_source != restore_state.input_source:
+            if restore_state.input_type == 0:
+                # An empty retarget source still builds/enables HIKState2SK.
+                # Input type also handles old snapshots with a stale source.
+                mel.eval(f"hikSetInactiveStanceInput({mel_string(character)});")
+            elif current_source != restore_state.input_source:
                 mel.eval(
                     f"hikSetCharacterInput({mel_string(character)}, "
                     f"{mel_string(restore_state.input_source)});"

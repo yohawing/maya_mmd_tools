@@ -520,8 +520,14 @@ void classifyMaterialTextureAlpha(
     std::unordered_map<std::string, DecodedTextureAlpha>& cache,
     const std::vector<float>& uvs, const std::vector<uint32_t>& indices)
 {
-    if (!input.transparencyMode.empty() || input.diffuseAlpha < 0.999F ||
-        input.mainTexturePath.empty()) return;
+    if (!input.transparencyMode.empty()) return;
+    // Match the imported shader's blend mode even when a morph later raises
+    // diffuse alpha to one. Its texture may still contain soft transparency.
+    if (input.diffuseAlpha < 0.999F) {
+        input.transparencyMode = "blend";
+        return;
+    }
+    if (input.mainTexturePath.empty()) return;
     const DecodedTextureAlpha* decoded = loadTextureAlpha(input.mainTexturePath, cache);
     if (decoded) {
         input.transparencyMode = mmd::mmdTextureAlphaModeName(

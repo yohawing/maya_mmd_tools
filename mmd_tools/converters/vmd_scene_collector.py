@@ -573,10 +573,12 @@ def _bake_timeline_authored_input_plug(
 def _bake_timeline_single_key_bone_route(
     joint: str,
     route: Mapping[str, tuple[str, str]],
+    *,
+    channels: Sequence[str] = _BONE_EXPORT_ATTRS,
 ) -> Optional[str]:
     """Return ``direct``/``layered`` for a safe one-key source graph."""
     blend_kinds: set[str] = set()
-    for attribute in _BONE_EXPORT_ATTRS:
+    for attribute in channels:
         node, physical_attr = route.get(attribute, (joint, attribute))
         if not _bake_timeline_authored_input_plug(
             str(node), str(physical_attr), attribute
@@ -3420,6 +3422,16 @@ class VmdSceneCollector:
                         if attribute.startswith(group)
                     )
                     if not group_channels:
+                        continue
+                    # A runtime-driven rotation must not invalidate a proven
+                    # authored translation layer on the same bone (or vice
+                    # versa). Keep the existing layer/curve validation for
+                    # the complete channel group before inspecting its graph.
+                    if _bake_timeline_single_key_bone_route(
+                        joint,
+                        route,
+                        channels=tuple(f"{group}{axis}" for axis in "XYZ"),
+                    ) is not None:
                         continue
                     classification = _classify_unsupported_bone_dependency(
                         joint,

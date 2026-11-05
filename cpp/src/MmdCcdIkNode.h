@@ -86,6 +86,11 @@ public:
     static MObject aInputRotateArrayY;
     static MObject aInputRotateArrayZ;
 
+    static MObject aPreIkRotateArray;
+    static MObject aPreIkRotateArrayX;
+    static MObject aPreIkRotateArrayY;
+    static MObject aPreIkRotateArrayZ;
+
     static MObject aInputTranslateArray;
     static MObject aInputTranslateArrayX;
     static MObject aInputTranslateArrayY;

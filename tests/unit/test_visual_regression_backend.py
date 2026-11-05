@@ -42,6 +42,8 @@ def test_visual_regression_seeds_maya_security_allowlist(tmp_path):
     prefs = (maya_app_dir / "2026" / "ja_JP" / "prefs" / "userPrefs.mel").read_text(encoding="utf-8")
     expected_plugin_dir = (project_root / "mmd_tools").resolve().as_posix()
     assert f'SafeModeAllowedlistPaths" "{expected_plugin_dir}"' in prefs
+    assert '"SafeModeExecUserSetupScript" 0' in prefs
+    assert "SafeModeUserSetupHashOption" not in prefs
 
 
 def test_device_validation_is_backend_specific():

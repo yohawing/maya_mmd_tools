@@ -54,7 +54,11 @@
       "**/Thumbs.db",
       "**/*-local.*",
       "**/local-*/**",
-      "plug-ins/**/.gitkeep"
+      "plug-ins/**/.gitkeep",
+      "**/*.bundle",
+      "**/*.bundle/**",
+      "**/*.dylib",
+      "mmd_tools/native/macos/**"
     ]
   },
   "maya_versions": [
@@ -64,8 +68,7 @@
     "2027"
   ],
   "platform_policy": [
-    "windows",
-    "macos"
+    "windows"
   ],
   "platforms": {
     "windows": {
