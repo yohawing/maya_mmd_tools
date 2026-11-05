@@ -122,6 +122,133 @@ class TestControlRigArmIk(MayaTestBase):
         self.assertLess(pose_delta(expected, arm_pose(joints)), 1e-4)
         self.assertEqual(endpoints(), original_keys)
 
+    def test_animated_intermediate_twists_preserve_segments_and_lifecycle(self):
+        """Off-axis intermediate twists must move helper offsets without a world cycle."""
+        import tempfile
+        from mmd_tools.core.mmd_control_rig_builder import remove_mmd_control_rig
+        from mmd_tools.core.mmd_control_rig_motion import restore_mmd_control_rig_attached
+
+        for inward in (False, True):
+            with self.subTest(inward=inward):
+                cmds.file(new=True, force=True)
+                root, _controls, joints = create_arm_case()
+                metadata = read_mmd_control_rig_metadata(root)
+                for role, values in (("right_arm_twist", (20, 50)), ("right_wrist_twist", (-15, -35))):
+                    control = cmds.ls(metadata["controls"][role], long=True)[0]
+                    for frame, value in zip((1, 10), values):
+                        cmds.setKeyframe(control + ".rotateZ", time=frame, value=value)
+                    cmds.keyTangent(control + ".rotateZ", inTangentType="linear", outTangentType="linear")
+                cmds.currentTime(1, update=True)
+                cmds.currentTime(5, update=True)
+                cycles = set(cmds.cycleCheck(all=True, list=True) or [])
+                row = enable_arm_ik(root, "right")
+                target = move_target(row, joints) if inward else cmds.xform(row["target"], query=True, worldSpace=True, translation=True)
+                for frame in (1, 10):
+                    for axis, value in zip("XYZ", target):
+                        cmds.setKeyframe(row["target"], attribute="translate" + axis, time=frame, value=value)
+                cmds.currentTime(5, update=True)
+                expected = arm_pose(joints)
+                disable_arm_ik(root, "right", match_fk=True)
+                self.assertLess(pose_delta(expected, arm_pose(joints)), 1e-4)
+                enable_arm_ik(root, "right")
+                self.assertLess(pose_delta(expected, arm_pose(joints)), 1e-4)
+                cmds.undo()
+                self.assertFalse(inspect_arm_ik(root, "right")["active"])
+                self.assertLess(pose_delta(expected, arm_pose(joints)), 1e-4)
+                cmds.redo()
+                self.assertTrue(inspect_arm_ik(root, "right")["active"])
+                row = inspect_arm_ik(root, "right")
+                helpers = [cmds.ls(uid, long=True)[0] for uid in row["helperUuids"]]
+                frames = {}
+                for frame in range(1, 11):
+                    cmds.currentTime(frame, update=True)
+                    frames[frame] = arm_pose(joints)
+                    self.assertLess(pose_delta(frames[frame], arm_pose(helpers)), 1e-4, "helper frame " + str(frame))
+                    wrist = cmds.xform(joints[-1], query=True, worldSpace=True, translation=True)
+                    self.assertLess(max(abs(a-b) for a,b in zip(target, wrist)), 1e-4, "target frame " + str(frame))
+                self.assertEqual(set(cmds.cycleCheck(all=True, list=True) or []) - cycles, set())
+                with tempfile.TemporaryDirectory() as directory:
+                    scene = str(Path(directory) / "twisted_arm.ma")
+                    cmds.file(rename=scene)
+                    cmds.file(save=True, type="mayaAscii", force=True)
+                    cmds.file(scene, open=True, force=True)
+                    self.assertTrue(inspect_arm_ik(root, "right")["active"])
+                    for frame, pose in frames.items():
+                        cmds.currentTime(frame, update=True)
+                        self.assertLess(pose_delta(pose, arm_pose(joints)), 1e-4, "reload frame " + str(frame))
+                owned = inspect_arm_ik(root, "right")["nodes"]
+                restore_mmd_control_rig_attached(root)
+                remove_mmd_control_rig(root)
+                self.assertTrue(all(not cmds.ls(uid, long=True) for uid in owned))
+
+    def test_intermediate_append_feedback_is_rejected_without_scene_changes(self):
+        """A main-arm grant on an intermediate twist would feed IK back into itself."""
+        from mmd_tools.io.mmd_importer import import_mmd_file
+        for custom_name in (None, "custom_twist"):
+            cmds.file(new=True, force=True)
+            root = import_mmd_file(str(ROOT / "tests/data/mmt_test_model.pmx"), options={
+                "setup_rig": True, "setup_bone_orientation": True,
+                "import_physics": False, "use_namespace": True,
+            })
+            joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True)
+            by_name = {cmds.getAttr(joint + ".mmd_bone_name"): joint for joint in joints}
+            if custom_name:
+                cmds.setAttr(by_name["右腕捩"] + ".mmd_bone_name", custom_name, type="string")
+            append = cmds.createNode("mmdAppend", name="armTwistFromMainArm")
+            cmds.setAttr(append + ".schemaMode", 2)
+            cmds.setAttr(append + ".ratio", 0.5)
+            cmds.connectAttr(by_name["右腕"] + ".rotate", append + ".sourceRotate")
+            cmds.connectAttr(append + ".outputRotate", by_name["右腕捩"] + ".rotate", force=True)
+            build_mmd_control_rig(root)
+            enter_mmd_control_rig_edit(root)
+            metadata = read_mmd_control_rig_metadata(root)
+            if custom_name:
+                self.assertNotIn("right_arm_twist", metadata["bindings"])
+            else:
+                self.assertEqual(metadata["bindings"]["right_arm_twist"]["inputKind"], "append_base")
+            def snapshot():
+                return {
+                    "nodes": set(cmds.ls(uuid=True)),
+                    "metadata": read_mmd_control_rig_metadata(root),
+                    "pose": arm_pose(joints),
+                    "append_connections": cmds.listConnections(append, connections=True, plugs=True),
+                    "curves": curve_snapshot(),
+                }
+            before = snapshot()
+            with self.assertRaisesRegex(MmdControlRigBuildError, "direct intermediate bone routes"):
+                enable_arm_ik(root, "right")
+            self.assertEqual(snapshot(), before)
+
+    def test_custom_static_intermediate_accepts_then_rejects_append_route_change(self):
+        from mmd_tools.io.mmd_importer import import_mmd_file
+        root = import_mmd_file(str(ROOT / "tests/data/mmt_test_model.pmx"), options={
+            "setup_rig": True, "setup_bone_orientation": True,
+            "import_physics": False, "use_namespace": True,
+        })
+        joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True)
+        by_name = {cmds.getAttr(joint + ".mmd_bone_name"): joint for joint in joints}
+        twist = by_name["右腕捩"]
+        cmds.setAttr(twist + ".mmd_bone_name", "custom_twist", type="string")
+        build_mmd_control_rig(root)
+        enter_mmd_control_rig_edit(root)
+        self.assertNotIn("right_arm_twist", read_mmd_control_rig_metadata(root)["bindings"])
+        enable_arm_ik(root, "right")
+        disable_arm_ik(root, "right")
+        append = cmds.createNode("mmdAppend", name="changedIntermediateAppend")
+        cmds.setAttr(append + ".schemaMode", 2)
+        cmds.setAttr(append + ".ratio", 0.5)
+        cmds.connectAttr(by_name["右腕"] + ".rotate", append + ".sourceRotate")
+        cmds.connectAttr(append + ".outputRotate", twist + ".rotate", force=True)
+        metadata = read_mmd_control_rig_metadata(root)
+        nodes = set(cmds.ls(uuid=True))
+        pose = arm_pose(joints)
+        with self.assertRaisesRegex(MmdControlRigBuildError, "direct intermediate bone routes"):
+            enable_arm_ik(root, "right")
+        self.assertEqual(read_mmd_control_rig_metadata(root), metadata)
+        self.assertEqual(set(cmds.ls(uuid=True)), nodes)
+        self.assertEqual(arm_pose(joints), pose)
+        self.assertTrue(cmds.isConnected(append + ".outputRotate", twist + ".rotate"))
+
     def test_foreign_writer_rejects_without_touching_other_model(self):
         root, controls, joints = create_arm_case()
         other_root, _other_controls, other_joints = create_arm_case('left')

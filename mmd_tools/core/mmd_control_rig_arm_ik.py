@@ -18,7 +18,7 @@ from .mmd_control_rig_basis import matrix_from_quaternion
 def _node(cmds, uuid):
     nodes = cmds.ls(uuid, long=True) or []
     if len(nodes) != 1:
-        raise MmdControlRigBuildError("arm IK owned node is missing or ambiguous: " + uuid)
+        raise MmdControlRigBuildError("IK owned node is missing or ambiguous: " + uuid)
     return nodes[0]
 
 
@@ -140,6 +140,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                 raise MmdControlRigBuildError("arm IK requires static unit scale")
             if any(abs(value - 1) > 1e-8 for value in cmds.getAttr(node + ".scale")[0]):
                 raise MmdControlRigBuildError("arm IK currently requires unit scale")
+    segments = _segment_intermediates(cmds, metadata, joints)
     positions = [om.MVector(cmds.xform(node, q=True, ws=True, t=True)) for node in joints]
     shoulder, elbow, wrist = positions
     axis = wrist - shoulder
@@ -196,6 +197,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             static.append({"uuid": _uuid(cmds, joint), "values": values})
             cmds.xform(helper, ws=True, matrix=cmds.xform(joint, q=True, ws=True, matrix=True))
             helpers.append(helper)
+        segment_nodes = _create_segment_offsets(cmds, joints, helpers, side, segments)
         target = _create_control_curve(cmds, side + "_wrist_IK", side + "_wrist", max((wrist - shoulder).length() * 0.08, 0.01))
         target = cmds.parent(target, group)[0]
         _color_control(cmds, target, 6 if side == "left" else 13)
@@ -229,7 +231,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         cmds.setAttr(helpers[0] + ".visibility", False)
         cmds.setAttr(handle + ".visibility", False)
         edges = []
-        converters = [anchor_matrix]
+        converters = [anchor_matrix] + segment_nodes
         for role, joint, control, helper in zip(roles, joints, controls, helpers):
             basis = om.MMatrix(matrix_from_quaternion(metadata["authoringBases"][role]["quaternion"]))
 
@@ -334,9 +336,10 @@ def _reenable(cmds, root, metadata, side):
     from maya.api import OpenMaya as om
 
     row = validate_arm_ik(cmds, metadata, side)
+    joints = [_node(cmds, uuid) for uuid in row["jointUuids"]]
+    _segment_intermediates(cmds, metadata, joints)
     if row["active"]:
         return inspect_arm_ik(root, side, cmds_module=cmds)
-    joints = [_node(cmds, uuid) for uuid in row["jointUuids"]]
     helper = [_node(cmds, uuid) for uuid in row["helperUuids"]]
     target, pole = _node(cmds, row["targetUuid"]), _node(cmds, row["poleUuid"])
     fresh = []
@@ -360,7 +363,8 @@ def _reenable(cmds, root, metadata, side):
         for solved, joint in zip(helper, joints):
             # Wrist rotation remains owned by its orientation constraint.
             if solved != helper[-1]:
-                cmds.xform(solved, ws=True, matrix=cmds.xform(joint, q=True, ws=True, matrix=True))
+                # Segment translations are driven by intermediate local matrices.
+                cmds.xform(solved, ws=True, rotation=cmds.xform(joint, q=True, ws=True, rotation=True))
         _match_world_pose(cmds, target, cmds.xform(joints[-1], q=True, ws=True, matrix=True))
         pole_matrix = cmds.xform(pole, q=True, ws=True, matrix=True)
         pole_matrix[12:15] = list(elbow + bend.normal() * ((elbow - shoulder).length() + (wrist - elbow).length()))
@@ -475,3 +479,64 @@ def _rebind_handle(cmds, metadata, row, handle, helper):
         metadata["nodes"] = [item for item in metadata["nodes"] if item["uuid"] != old_uuid]
         metadata["nodes"].append({"uuid": new_uuid, "name": _node(cmds, new_uuid)})
     row["graph"] = _graph_snapshot(cmds, row)
+
+
+def _create_segment_offsets(cmds, joints, helpers, side, segments):
+    """Follow intermediate local offsets without reading a solved bone world matrix.
+
+    A fixed-axis twist need not point at its child. Its rotation can therefore
+    change the next main joint's offset even when segment length barely changes.
+    The end joint contributes only translation, so its solved rotation cannot
+    feed back into the helper chain.
+    """
+    nodes = []
+    for index, intermediates in enumerate(segments, 1):
+        end = joints[index]
+        if not intermediates:
+            cmds.connectAttr(end + ".translate", helpers[index] + ".translate")
+            continue
+        compose = cmds.createNode("composeMatrix", name=side + "_arm_IK_endTranslate")
+        mult = cmds.createNode("multMatrix", name=side + "_arm_IK_localOffset")
+        decompose = cmds.createNode("decomposeMatrix", name=side + "_arm_IK_segment")
+        cmds.connectAttr(end + ".translate", compose + ".inputTranslate")
+        cmds.connectAttr(compose + ".outputMatrix", mult + ".matrixIn[0]")
+        for slot, intermediate in enumerate(intermediates, 1):
+            cmds.connectAttr(intermediate + ".matrix", mult + ".matrixIn[%d]" % slot)
+        cmds.connectAttr(mult + ".matrixSum", decompose + ".inputMatrix")
+        cmds.connectAttr(decompose + ".outputTranslate", helpers[index] + ".translate")
+        nodes.extend((compose, mult, decompose))
+    return nodes
+
+
+def _segment_intermediates(cmds, metadata, joints):
+    """Check current intermediate routes, including bones without a named control role."""
+    from .mmd_control_rig_analyzer import analyze_mmd_control_rig
+    bindings = {binding["jointUuid"]: binding for binding in metadata["bindings"].values()}
+    root = _node(cmds, metadata["modelRootUuid"])
+    live = {_uuid(cmds, bone.joint): bone for bone in analyze_mmd_control_rig(root, cmds_module=cmds).bones}
+    owned = {node["uuid"] for node in metadata["nodes"]}
+    segments = []
+    for start, end in zip(joints, joints[1:]):
+        parent = cmds.listRelatives(end, parent=True, fullPath=True)[0]
+        intermediates = []
+        while parent != start:
+            uuid = _uuid(cmds, parent)
+            binding = bindings.get(uuid)
+            current = live.get(uuid)
+            kind = current.input_kind if current else "direct_channel"
+            # Existing EDIT converters are owned writers, not a new external route.
+            if (binding and binding["inputKind"] == "direct_channel" and kind == "unsupported"
+                    and current.incoming and all(_uuid(cmds, edge.source_plug.split(".", 1)[0]) in owned
+                                                 for edge in current.incoming)):
+                kind = "direct_channel"
+            if (binding and binding["inputKind"] != "direct_channel") or kind != "direct_channel":
+                # Reading append/morph output here can feed the solved main arm
+                # back into its own helper offsets. Those routes are not supported.
+                raise MmdControlRigBuildError("arm IK requires direct intermediate bone routes: " + parent)
+            intermediates.append(parent)
+            parents = cmds.listRelatives(parent, parent=True, fullPath=True) or []
+            if not parents:
+                raise MmdControlRigBuildError("arm IK roles must form one ancestor chain")
+            parent = parents[0]
+        segments.append(intermediates)
+    return segments
