@@ -204,16 +204,27 @@ def resolve_solver_pose_plugs(
         for row in binding.incoming
         if str(row.source_node_type) == "mmdCcdIk"
     ]
-    if len(rows) != 1:
-        raise RuntimeError(
-            f"Reset Pose solver output route is ambiguous: {target}"
-        )
-    row = rows[0]
-    if str(row.destination_plug) != f"{target}.rotate":
-        raise RuntimeError(
-            f"Reset Pose solver output destination is unsupported: {target}"
-        )
-    source = str(row.source_plug)
+    rotation_rows = [row for row in binding.incoming if str(row.destination_plug).startswith(f"{target}.rotate")]
+    layered_or_children = rotation_rows and (
+        all(str(row.destination_plug) in {f"{target}.rotate{axis}" for axis in "XYZ"} for row in rotation_rows)
+        or any(str(row.source_node_type).startswith("animBlendNode") for row in rotation_rows)
+    )
+    if layered_or_children:
+        from .native_layer_routes import NativeLayerRouteError, resolve_joint_input_source
+
+        try:
+            source = resolve_joint_input_source(target, "rotate", cmds_module=cmds)
+        except NativeLayerRouteError as exc:
+            raise RuntimeError(f"Reset Pose solver output route is ambiguous: {target}") from exc
+        if not source or cmds.nodeType(source.split(".", 1)[0]) != "mmdCcdIk":
+            raise RuntimeError(f"Reset Pose solver output route is ambiguous: {target}")
+    elif len(rows) == 1:
+        row = rows[0]
+        if str(row.destination_plug) != f"{target}.rotate":
+            raise RuntimeError(f"Reset Pose solver output destination is unsupported: {target}")
+        source = str(row.source_plug)
+    else:
+        raise RuntimeError(f"Reset Pose solver output route is ambiguous: {target}")
     node, separator, attribute = source.rpartition(".")
     prefix = "outputRotate["
     if (

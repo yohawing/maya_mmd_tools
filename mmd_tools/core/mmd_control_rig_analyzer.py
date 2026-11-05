@@ -26,6 +26,11 @@ from mmd_tools.core.display_frame_metadata import display_frames_from_json
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_bone_names import normalize_mmd_bone_name
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.core.native_layer_routes import (
+    NativeLayerRouteError,
+    resolve_joint_input_source,
+    source_joint_destinations,
+)
 
 
 CONTROL_RIG_SPEC_SCHEMA = "mmd_tools.mmd_control_rig_spec"
@@ -92,6 +97,9 @@ class MmdControlRigBoneFact:
     solver_input_plugs: Tuple[str, ...] = ()
     bone_morph_base_plugs: Tuple[str, ...] = ()
     fixed_axis: Optional[Tuple[float, float, float]] = None
+    # Classification-only provenance; never serialized as physical connections.
+    native_inputs: Tuple[MmdControlRigConnectionFact, ...] = ()
+    native_input_blockers: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -391,6 +399,24 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
         raise ValueError(f"{canonical_root}: no indexed MMD joints")
 
     owned_joints = {row["joint"] for row in bone_rows}
+    for row in bone_rows:
+        native_inputs = []
+        blockers = []
+        for family in ("translate", "rotate"):
+            try:
+                source = resolve_joint_input_source(row["joint"], family, cmds_module=cmds)
+                if source is None:
+                    continue
+                destinations = source_joint_destinations(source, family, cmds_module=cmds)
+                if row["joint"] not in destinations or not set(destinations).issubset(owned_joints):
+                    raise NativeLayerRouteError(f"Native output has foreign or unresolved joint ownership: {source}")
+                native_inputs.append(MmdControlRigConnectionFact(
+                    source, f"{row['joint']}.{family}", cmds.nodeType(source.split(".", 1)[0]),
+                ))
+            except NativeLayerRouteError as exc:
+                blockers.append(str(exc))
+        row["native_inputs"] = tuple(native_inputs)
+        row["native_input_blockers"] = tuple(blockers)
     ik_solvers_by_name = _collect_owned_ik_solvers(cmds, owned_joints)
     facts = [
         MmdControlRigBoneFact(
@@ -405,13 +431,17 @@ def analyze_mmd_control_rig(model_root: str, cmds_module=None) -> MmdControlRigS
                     (),
                 )
             ),
-            solver_input_plugs=_solver_input_rotate_plugs(cmds, row["incoming"]),
+            solver_input_plugs=() if row["native_input_blockers"] else _solver_input_rotate_plugs(
+                cmds, row["native_inputs"] or row["incoming"],
+            ),
             bone_morph_base_plugs=_bone_morph_base_plugs(
                 cmds,
                 row["joint"],
-                row["incoming"],
-            ),
+                row["native_inputs"] or row["incoming"],
+            ) if not row["native_input_blockers"] else (),
             fixed_axis=row["fixed_axis"],
+            native_inputs=row["native_inputs"],
+            native_input_blockers=row["native_input_blockers"],
         )
         for row in bone_rows
     ]
@@ -444,16 +474,19 @@ def _classify_bone_input(fact: MmdControlRigBoneFact) -> MmdControlRigBoneBindin
             ),
         )
     )
-    physics = [row for row in incoming if row.source_node_type == "mmdPhysicsBoneDriver"]
+    if fact.native_input_blockers:
+        return _bone_binding(fact, INPUT_UNSUPPORTED, (), incoming, blockers=fact.native_input_blockers)
+    classified = (*incoming, *fact.native_inputs)
+    physics = [row for row in classified if row.source_node_type == "mmdPhysicsBoneDriver"]
     solver_outputs = [
         row
-        for row in incoming
+        for row in classified
         if row.source_node_type == "mmdCcdIk"
         and ".outputRotate" in row.source_plug
     ]
     append_outputs = [
         row
-        for row in incoming
+        for row in classified
         if row.source_node_type == "mmdAppend"
         and (
             ".outputRotate" in row.source_plug
@@ -462,7 +495,7 @@ def _classify_bone_input(fact: MmdControlRigBoneFact) -> MmdControlRigBoneBindin
     ]
     bone_morph_outputs = [
         row
-        for row in incoming
+        for row in classified
         if row.source_node_type == "mmdBoneMorphAccum"
         and (
             ".outputRotate" in row.source_plug
@@ -500,12 +533,7 @@ def _classify_bone_input(fact: MmdControlRigBoneFact) -> MmdControlRigBoneBindin
         )
         return _bone_binding(fact, INPUT_UNSUPPORTED, (), incoming, blockers=blockers)
     if solver_outputs:
-        blockers = tuple(
-            _unique_sorted(
-                "solver output cannot be used as a controller input: " + row.destination_plug
-                for row in solver_outputs
-            )
-        )
+        blockers = (f"solver output cannot be used as a controller input: {fact.joint}.rotate",)
         return _bone_binding(fact, INPUT_SOLVER_OUTPUT, (), incoming, blockers=blockers)
     if unsupported:
         blockers = tuple(
@@ -666,7 +694,7 @@ def _resolve_role(
             )
     if definition.uses_solver_input:
         authored_plugs = winner.bone_morph_base_plugs or winner.solver_input_plugs
-        if authored_plugs:
+        if authored_plugs and not winner.native_input_blockers:
             binding = MmdControlRigBoneBinding(
                 joint=winner.joint,
                 mmd_name=winner.mmd_name,
@@ -870,20 +898,16 @@ def _collect_incoming_connections(cmds, joint: str) -> Tuple[MmdControlRigConnec
     rows = {}
     for attribute in _INPUT_ATTRS:
         destination = f"{joint}.{attribute}"
-        for source in cmds.listConnections(
-            destination,
-            source=True,
-            destination=False,
-            plugs=True,
-        ) or []:
-            source = str(source)
-            source_node = source.split(".", 1)[0]
-            row = MmdControlRigConnectionFact(
-                source_plug=source,
-                destination_plug=destination,
-                source_node_type=str(cmds.nodeType(source_node)),
-            )
-            rows[(row.source_plug, row.destination_plug)] = row
+        if not cmds.connectionInfo(destination, isExactDestination=True):
+            continue
+        source = str(cmds.connectionInfo(destination, sourceFromDestination=True))
+        source_node = source.split(".", 1)[0]
+        row = MmdControlRigConnectionFact(
+            source_plug=source,
+            destination_plug=destination,
+            source_node_type=str(cmds.nodeType(source_node)),
+        )
+        rows[(row.source_plug, row.destination_plug)] = row
     return tuple(
         sorted(
             rows.values(),

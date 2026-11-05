@@ -10,6 +10,7 @@ import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
+from ..core.native_layer_routes import source_joint_destinations
 from . import vmd_profile
 from .vmd_append_decomposition import get_or_expand_runtime_channel
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
@@ -26,29 +27,17 @@ def collect_mmd_ik_passthrough_info() -> Dict[str, Dict[str, Union[str, int]]]:
             link_slots = [int(link.get("bone_slot", -1)) for link in cfg.get("links", [])]
         except Exception:
             link_slots = []
-        for dest in cmds.listConnections(f"{node}.outputRotate", s=False, d=True, p=True) or []:
-            if not dest.endswith(".rotate"):
-                continue
-            joint = dest.rsplit(".", 1)[0]
-            source_plugs = cmds.listConnections(dest, s=True, d=False, p=True) or []
-            link_index = None
-            prefix = f"{node}.outputRotate["
-            for source in source_plugs:
-                if source.startswith(prefix):
-                    try:
-                        link_index = int(source[len(prefix) :].split("]", 1)[0])
-                    except (TypeError, ValueError):
-                        link_index = None
-                    break
-            if link_index is None:
-                continue
+        indices = cmds.getAttr(f"{node}.outputRotate", multiIndices=True) or []
+        for link_index in sorted(set(indices) | set(range(len(link_slots)))):
             input_slot = link_slots[link_index] if link_index < len(link_slots) else link_index
             info = {"node": node, "link_index": link_index, "input_slot": input_slot}
-            result[joint] = info
-            short_name = joint.rsplit("|", 1)[-1]
-            result[short_name] = info
-            for long_name in cmds.ls(joint, long=True) or []:
-                result[long_name] = info
+            for joint in source_joint_destinations(
+                f"{node}.outputRotate[{link_index}]", "rotate", cmds_module=cmds
+            ):
+                result[joint] = info
+                result[joint.rsplit("|", 1)[-1]] = info
+                for long_name in cmds.ls(joint, long=True) or []:
+                    result[long_name] = info
     return result
 
 

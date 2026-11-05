@@ -66,6 +66,13 @@ class _AccumulatorCmds:
             return self.target
         return 0.0
 
+    def connectionInfo(self, plug, sourceFromDestination=False):
+        sources = self.outputs.get(plug, [])
+        if not sources and plug[-1:] in "XYZ":
+            sources = self.outputs.get(plug[:-1], [])
+            return sources[0] + plug[-1] if sources else ""
+        return sources[0] if sources else ""
+
     def listConnections(self, plug, s=False, d=False, p=False, **_kwargs):
         return list(self.outputs.get(plug, []))
 

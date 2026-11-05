@@ -12,6 +12,7 @@ from ..core.mmd_control_rig_motion import (
     control_rig_edit_routes_for_joints,
     control_rig_fixed_axis_twist_joints,
 )
+from ..core.native_layer_routes import source_joint_destinations
 from ..core.model_registry import get_model_registry
 from ..core.secondary_bone_controls import secondary_control_input_route
 from .bone_morph_runtime import resolve_owned_bone_morph_base_routes
@@ -219,17 +220,14 @@ def collect_ik_link_joints() -> dict:
 
         links = cfg.get("links", [])
         for link_index, link in enumerate(links):
-            dests = cmds.listConnections(
-                f"{node}.outputRotate[{link_index}]",
-                s=False,
-                d=True,
-                p=True,
-            ) or []
+            joints = source_joint_destinations(
+                f"{node}.outputRotate[{link_index}]", "rotate", cmds_module=cmds
+            )
             bone_slot = link.get("bone_slot", link_index)
-            for dest in dests:
-                jnt = dest.split(".", 1)[0]
+            for jnt in joints:
                 info = {"solver": node, "slot": bone_slot}
                 ik_link_joints[jnt] = info
+                ik_link_joints[jnt.rsplit("|", 1)[-1]] = info
                 try:
                     for long_name in cmds.ls(jnt, long=True) or []:
                         ik_link_joints[long_name] = info

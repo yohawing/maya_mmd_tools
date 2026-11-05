@@ -21,6 +21,24 @@ from mmd_tools.converters.rig_converter import RigConverter  # noqa: E402
 
 
 class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
+    def test_ik_child_outputs_preserve_append_input_once(self):
+        converter = rig_converter.RigConverter()
+        sources = {f"joint.rotate{axis}": [f"append.outputRotate{axis}"] for axis in "XYZ"}
+        with patch.object(rig_converter.maya_scene_utils, "object_exists", return_value=True), \
+                patch.object(rig_converter.cmds, "connectionInfo", side_effect=lambda plug, **kw: bool(sources.get(plug)) if kw.get("isExactDestination") else sources[plug][0]), \
+                patch.object(rig_converter.cmds, "nodeType", return_value="mmdAppend"), \
+                patch.object(rig_converter.cmds, "disconnectAttr") as disconnect, \
+                patch.object(rig_converter.cmds, "attributeQuery", return_value=False), \
+                patch.object(rig_converter.cmds, "connectAttr") as connect:
+            converter._connect_ik_output_rotates("solver", [7], {7: 0}, ["joint"])
+        self.assertEqual(disconnect.call_args_list, [
+            call(f"append.outputRotate{axis}", f"joint.rotate{axis}") for axis in "XYZ"
+        ])
+        self.assertEqual(connect.call_args_list, [
+            call("append.outputRotate", "solver.inputRotate[7]"),
+            *[call(f"solver.outputRotate[0].outputRotateElement{axis}", f"joint.rotate{axis}") for axis in "XYZ"],
+        ])
+
     def test_self_grant_is_disabled_with_named_continue_diagnostic(self):
         converter = RigConverter()
         converter.logger = MagicMock()

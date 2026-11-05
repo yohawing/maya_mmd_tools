@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from ..core.native_layer_routes import source_joint_destinations
 from .vmd_runtime_rig_helper import _ls_mmd_append_nodes
 
 
@@ -105,12 +106,9 @@ def collect_append_info() -> Dict[str, dict]:
     append_nodes = _ls_mmd_append_nodes()
 
     def _compound_destinations(src_attr, dst_attr):
-        plugs = cmds.listConnections(src_attr, s=False, d=True, p=True) or []
-        suffix = f".{dst_attr}"
         return [
-            stable_long_dag_path(plug.rsplit(".", 1)[0])
-            for plug in plugs
-            if plug.endswith(suffix)
+            stable_long_dag_path(joint)
+            for joint in source_joint_destinations(src_attr, dst_attr, cmds_module=cmds)
         ]
 
     node_targets = {}

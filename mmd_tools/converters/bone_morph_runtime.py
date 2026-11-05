@@ -14,6 +14,7 @@ from maya import cmds
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.native_layer_routes import resolve_joint_input_source
 from mmd_tools.converters.morph_runtime_common import (
     connect_if_needed as _connect_if_needed,
     get_morph_order,
@@ -740,7 +741,8 @@ def _destination_upstream_of_append(joint: str, attr_kind: str) -> str:
     joint_attr = f"{joint}.{attr_kind}"
     output_name = f"output{attr_kind.capitalize()}"
     base_name = f"base{attr_kind.capitalize()}"
-    for source in cmds.listConnections(joint_attr, s=True, d=False, p=True) or []:
+    native_source = resolve_joint_input_source(joint, attr_kind, cmds_module=cmds)
+    for source in [native_source] if native_source else []:
         source_node, source_attr = _split_plug(source)
         if not source_node:
             continue

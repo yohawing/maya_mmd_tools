@@ -1101,7 +1101,8 @@ class RigConverter:
                             cmds.disconnectAttr(anim_src[0], f"{target_joint}.rotate{axis}")
                             cmds.connectAttr(anim_src[0], f"{node}.baseRotate{axis}")
 
-                    cmds.connectAttr(f"{node}.outputRotate", f"{target_joint}.rotate")
+                    for axis in "XYZ":
+                        cmds.connectAttr(f"{node}.outputRotate{axis}", f"{target_joint}.rotate{axis}")
 
                 if affect_translation:
                     target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
@@ -1120,7 +1121,8 @@ class RigConverter:
                             cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
                             cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
 
-                    cmds.connectAttr(f"{node}.outputTranslate", f"{target_joint}.translate")
+                    for axis in "XYZ":
+                        cmds.connectAttr(f"{node}.outputTranslate{axis}", f"{target_joint}.translate{axis}")
 
                 if not cmds.attributeQuery("mmd_grant_node", node=node, exists=True):
                     cmds.addAttr(node, longName="mmd_grant_node", attributeType="bool")
@@ -1383,27 +1385,33 @@ class RigConverter:
             if not maya_scene_utils.object_exists(link_joint):
                 continue
 
-            compound_sources = cmds.listConnections(
-                f"{link_joint}.rotate", s=True, d=False, p=True
-            ) or []
-            for source in compound_sources:
+            # Parent queries also report inherited child sources. Disconnect only
+            # exact edges so a compound connection is not disconnected three times.
+            incoming_edges = {}
+            for suffix in ("", "X", "Y", "Z"):
+                destination = f"{link_joint}.rotate{suffix}"
+                if cmds.connectionInfo(destination, isExactDestination=True):
+                    incoming_edges[destination] = cmds.connectionInfo(
+                        destination, sourceFromDestination=True
+                    )
+            forwarded_append_nodes = set()
+            for source in dict.fromkeys(incoming_edges.values()):
                 source_node = source.split(".", 1)[0]
-                if cmds.nodeType(source_node) == self._append_node_type():
-                    cmds.connectAttr(source, f"{node}.inputRotate[{link_slot}]")
-                try:
-                    cmds.disconnectAttr(source, f"{link_joint}.rotate")
-                except Exception:
-                    pass
+                if (
+                    cmds.nodeType(source_node) == self._append_node_type()
+                    and source_node not in forwarded_append_nodes
+                ):
+                    cmds.connectAttr(f"{source_node}.outputRotate", f"{node}.inputRotate[{link_slot}]")
+                    forwarded_append_nodes.add(source_node)
+            for destination, source in incoming_edges.items():
+                cmds.disconnectAttr(source, destination)
 
-            for axis in ("X", "Y", "Z"):
-                src = cmds.listConnections(f"{link_joint}.rotate{axis}", s=True, d=False, p=True)
-                if src:
-                    try:
-                        cmds.disconnectAttr(src[0], f"{link_joint}.rotate{axis}")
-                    except Exception:
-                        pass
-
-            cmds.connectAttr(f"{node}.outputRotate[{link_i}]", f"{link_joint}.rotate")
+            # Maya animation layers preserve dynamic sources on child channels.
+            for axis in "XYZ":
+                cmds.connectAttr(
+                    f"{node}.outputRotate[{link_i}].outputRotateElement{axis}",
+                    f"{link_joint}.rotate{axis}",
+                )
 
             if not cmds.attributeQuery("outputMmdLinkQuaternions", node=node, exists=True):
                 continue
