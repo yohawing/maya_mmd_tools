@@ -294,6 +294,34 @@ class TestHumanIkPreview(unittest.TestCase):
         self.assertEqual(mel.source, "")
         self.assertEqual(cmds.connections[destination], [f"{node}.outputRotate"])
 
+    def test_preisolated_foot_preserves_authored_input_forwarding(self):
+        leg, toe = "left_leg_ik_mmdCcdIk", "left_toe_ik_mmdCcdIk"
+        for source_attr, destination_node, destination_attr, allowed in (
+            ("inputRotate[4]", toe, "preIkRotate[5]", True),
+            ("outputRotate[0]", toe, "preIkRotate[5]", False),
+            ("inputRotate[4]", "foreign_ik", "preIkRotate[5]", False),
+            ("inputRotate[4]", toe, "inputRotate[5]", False),
+        ):
+            with self.subTest(source=source_attr, destination=destination_node, attribute=destination_attr):
+                cmds, mel = FakeCmds(), FakeMel()
+                cmds.downstream_pairs[leg] = [f"{leg}.{source_attr}", f"{destination_node}.{destination_attr}"]
+                # An isolated toe with no outputs is omitted by fact collection.
+                report = {"rows": [{"node": leg, "nodeType": "mmdCcdIk",
+                                    "classification": "manual", "writes": []}]}
+                with patch("mmd_tools.core.humanik_preview.classify_humanik_constraints", return_value=report):
+                    if allowed:
+                        preview = begin_humanik_target_preview(
+                            "owner", "Target", "Source", report, {"|hips"}, cmds, mel,
+                            preisolated_feedback_nodes=(leg, toe),
+                        )
+                        stop_humanik_target_preview(preview, cmds, mel)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "pre-scan found blocker"):
+                            begin_humanik_target_preview(
+                                "owner", "Target", "Source", report, {"|hips"}, cmds, mel,
+                                preisolated_feedback_nodes=(leg, toe),
+                            )
+
     def test_control_rig_preisolated_foot_feedback_is_allowed_without_writer(self):
         for reverse in (False, True):
             with self.subTest(reverse=reverse):

@@ -15,6 +15,7 @@ exactly like ``input_source``/``lock_state`` are restored via the restore_state.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from mmd_tools.core.humanik_builder import (
@@ -175,8 +176,8 @@ def _has_unresolved_indirect_output(row: Dict[str, Any], cmds, hik_joints) -> bo
     return False
 
 
-def _preisolated_foot_has_unexpected_output(row: Dict[str, Any], cmds, rows_by_node) -> bool:
-    """Allow only the retained foot-IK quaternion path to outside joints."""
+def _preisolated_foot_has_unexpected_output(row: Dict[str, Any], cmds, rows_by_node, isolated_nodes) -> bool:
+    """Allow authored-input forwarding and the retained foot-IK append path."""
     node = row["node"]
     pairs = cmds.listConnections(
         node, source=False, destination=True, plugs=True, connections=True
@@ -190,6 +191,16 @@ def _preisolated_foot_has_unexpected_output(row: Dict[str, Any], cmds, rows_by_n
             source, destination = second, first
         else:
             return True
+        destination_node, _, destination_attr = destination.rpartition(".")
+        # These are authored inputs, not solved outputs. Both endpoints must
+        # belong to foot writers already isolated by this Control Rig owner.
+        if (
+            re.fullmatch(r"inputRotate\[\d+\]", source[len(node) + 1:])
+            and re.fullmatch(r"preIkRotate\[\d+\]", destination_attr)
+            and destination_node in isolated_nodes
+            and not rows_by_node.get(destination_node, {}).get("writes")
+        ):
+            continue
         if source != f"{node}.outputMmdLinkQuaternions" or "." not in destination:
             return True
         append_node, attribute = destination.rsplit(".", 1)
@@ -263,12 +274,14 @@ def begin_humanik_target_preview(
     )
     # The active Control Rig already isolated these foot writers. Their only
     # accepted remaining output is the known append path to non-HIK joints.
-    verified_preisolated_nodes = {row["node"] for row in preisolated_feedback}
+    # Output-free toe nodes are omitted from collected facts, but remain in
+    # the transaction's UUID-validated isolation records.
+    verified_preisolated_nodes = set(preisolated_nodes)
     pre_rows_by_node = {row["node"]: row for row in pre_report["rows"]}
     indirect_blockers = [
         row for row in pre_report["rows"]
         if (
-            _preisolated_foot_has_unexpected_output(row, cmds, pre_rows_by_node)
+            _preisolated_foot_has_unexpected_output(row, cmds, pre_rows_by_node, verified_preisolated_nodes)
             if row["node"] in verified_preisolated_nodes
             else _has_unresolved_indirect_output(row, cmds, hik_joint_set)
         )
@@ -353,7 +366,7 @@ def begin_humanik_target_preview(
             raise RuntimeError("HumanIK TARGET preview post-scan found blocker in arm IK output")
         post_rows_by_node = {row["node"]: row for row in post_report["rows"]}
         if any(
-            _preisolated_foot_has_unexpected_output(row, cmds, post_rows_by_node)
+            _preisolated_foot_has_unexpected_output(row, cmds, post_rows_by_node, verified_preisolated_nodes)
             for row in post_report["rows"] if row["node"] in verified_preisolated_nodes
         ):
             raise RuntimeError("HumanIK TARGET preview post-scan found blocker")
