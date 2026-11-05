@@ -74,6 +74,7 @@ def initialize():
     # --- Gravity (input) ---
     MmdPhysicsWorldShape.aGravityX = nAttr.create("gravityX", "grx", om.MFnNumericData.kDouble, 0.0)
     _hide_attribute(nAttr)
+    # Keep the serialized legacy default; the scene builder sets new worlds to -98.
     MmdPhysicsWorldShape.aGravityY = nAttr.create("gravityY", "gry", om.MFnNumericData.kDouble, -9.8)
     _hide_attribute(nAttr)
     MmdPhysicsWorldShape.aGravityZ = nAttr.create("gravityZ", "grz", om.MFnNumericData.kDouble, 0.0)

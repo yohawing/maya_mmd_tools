@@ -138,6 +138,90 @@ class TestPhysicsSolverNode(MayaTestBase):
         solver = self._create_solver(root)
         self.assertEqual(cmds.nodeType(solver), "mmdPhysicsSolver")
 
+    def test_imported_world_gravity_matches_native_default(self):
+        """A new imported world must not slow native gravity by a factor of ten."""
+        from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimePhysicsWorld
+
+        _root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH)
+        native_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        try:
+            expected = tuple(native_world.get_gravity())
+            self.assertEqual(expected, (0.0, -98.0, 0.0))
+            self.assertEqual(_solver_world_gravity(solver), expected)
+        finally:
+            native_world.free()
+        for suffix, file_type in (("ma", "mayaAscii"), ("mb", "mayaBinary")):
+            with self.subTest(format=suffix):
+                scene = self.get_temp_filename("new_world_gravity." + suffix)
+                cmds.file(rename=scene)
+                cmds.file(save=True, type=file_type, force=True)
+                cmds.file(scene, open=True, force=True)
+                self.assertEqual(_solver_world_gravity(solver), expected)
+
+    def test_existing_world_gravity_survives_import_and_reload(self):
+        """Import reuses both legacy-default and customized scene worlds."""
+        from mmd_tools.converters.physics_scene_builder import _find_or_create_world_node
+
+        for gravity in ((0.0, -9.8, 0.0), (1.25, -3.5, 2.0)):
+            for suffix, file_type in (("ma", "mayaAscii"), ("mb", "mayaBinary")):
+                with self.subTest(gravity=gravity, format=suffix):
+                    cmds.file(new=True, force=True)
+                    world = cmds.createNode("mmdPhysicsWorldShape", name="retainedWorldShape")
+                    if gravity != (0.0, -9.8, 0.0):
+                        cmds.setAttr(f"{world}.gravity", *gravity)
+                    self.assertEqual(tuple(cmds.getAttr(f"{world}.gravity")[0]), gravity)
+                    _root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH)
+                    self.assertEqual(_solver_world_gravity(solver), gravity)
+                    self.assertEqual(len(cmds.ls(type="mmdPhysicsWorldShape") or []), 1)
+                    scene = self.get_temp_filename("retained_gravity." + suffix)
+                    cmds.file(rename=scene)
+                    cmds.file(save=True, type=file_type, force=True)
+                    cmds.file(scene, open=True, force=True)
+                    _find_or_create_world_node()
+                    worlds = cmds.ls(type="mmdPhysicsWorldShape") or []
+                    self.assertEqual(len(worlds), 1)
+                    self.assertEqual(tuple(cmds.getAttr(worlds[0] + ".gravity")[0]), gravity)
+
+    def test_new_import_gravity_drives_full_strength_free_fall(self):
+        """A fresh imported sphere falls ten times farther than legacy -9.8."""
+        import maya.api.OpenMaya as om
+        from mmd_tools.io.pmx_importer import import_pmx_file
+
+        fixture = parse_pmx_file(str(FIXTURE_PATH))
+        body = fixture.rigid_bodies[0]
+        body.related_bone_index = -1
+        body.shape_type, body.physics_mode = 0, 1
+        body.size, body.position, body.rotation = (0.5, 0.0, 0.0), (0.0, 100.0, 0.0), (0.0, 0.0, 0.0)
+        body.mass = 1.0
+        body.velocity_attenuation = body.rotation_attenuation = 0.0
+        fixture.rigid_bodies, fixture.joints = [body], []
+        drops = []
+        for gravity in (None, -9.8):
+            cmds.file(new=True, force=True)
+            cmds.currentUnit(time="ntsc")
+            root = import_pmx_file(fixture, str(FIXTURE_PATH), scale=1.0,
+                                   options={"import_physics": True, "create_mmd_shaders": False})
+            solvers = _model_physics_solvers(root)
+            self.assertEqual(len(solvers), 1)
+            solver = solvers[0]
+            world = _connect_enabled_world(solver)
+            if gravity is not None:
+                cmds.setAttr(f"{world}.gravityY", gravity)
+            cmds.currentTime(0)
+            self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+            selection = om.MSelectionList()
+            selection.add(solver)
+            native = om.MFnDependencyNode(selection.getDependNode(0)).userNode()._world
+            self.assertAlmostEqual(native.get_gravity()[1], gravity if gravity is not None else -98.0, places=5)
+            start_y = native.copy_rigidbody_states()[0][0][1]
+            for frame in range(1, 31):
+                cmds.currentTime(frame)
+                self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+            drops.append(start_y - native.copy_rigidbody_states()[0][0][1])
+        self.assertGreater(drops[0], 40.0)
+        self.assertLess(drops[0], 60.0)
+        self.assertAlmostEqual(drops[0] / drops[1], 10.0, delta=0.01)
+
     def test_ui_enable_moves_solver_joints_and_skinned_mesh(self):
         """The Physics-tab enable path must produce visible scene motion."""
         from types import SimpleNamespace
@@ -275,7 +359,10 @@ class TestPhysicsSolverNode(MayaTestBase):
 
         scale = 0.5
         root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH, scale=scale)
-        _connect_enabled_world(solver)
+        world = _connect_enabled_world(solver)
+        # Native reset includes a settle step. Isolate the length-scale
+        # contract from gravity-induced motion rather than tolerating it.
+        cmds.setAttr(f"{world}.gravity", 0.0, 0.0, 0.0)
         cmds.currentTime(0)
         solver_flat = list(cmds.getAttr(f"{solver}.outBoneMatrices"))
 
