@@ -90,6 +90,15 @@ class TestMmdTimeEditor(MayaTestBase):
         self.assert_poses(poses(others), untouched)
         # Time Editor owns copied curves while the original UUIDs stay intact.
         self.assertEqual(curve_payload(original), original)
+        cmds.timeEditorClip(edit=True, mute=True, clipId=row["clipId"])
+        self.assertTrue(cmds.timeEditorClip(row["clipId"], query=True, mute=True))
+        # Native clip mute has no promise of falling back to scene animation.
+        # Unmute must restore this clip, and removal while muted must restore
+        # the original authoring inputs without changing another model.
+        cmds.timeEditorClip(edit=True, mute=False, clipId=row["clipId"])
+        unmuted = poses(joints, [f + 20 for f in baseline])
+        self.assert_poses({f: unmuted[f + 20] for f in baseline}, baseline)
+        cmds.timeEditorClip(edit=True, mute=True, clipId=row["clipId"])
         self.assertTrue(te.remove_model_clip(root))
         self.assertFalse(te.inspect_model_clip(root)["active"])
         self.assert_poses(poses(joints), baseline)
@@ -97,6 +106,57 @@ class TestMmdTimeEditor(MayaTestBase):
         self.assertTrue(te.create_model_clip(root)["active"])
         self.assertTrue(te.remove_model_clip(root))
         self.assertEqual(curve_payload(), original)
+
+    def test_fractional_fixture_motion_survives_clip_move_and_removal(self):
+        """Cover intermediate times for the fixture's existing TT input curves."""
+        root, joints = create_case()
+        timing_curves = cmds.ls(type="animCurveTT") or []
+        self.assertEqual(len(timing_curves), 9)
+        self.assertTrue(all(cmds.keyframe(node, query=True, keyframeCount=True)
+                            for node in timing_curves))
+        original = curve_payload()
+        frames = [index / 4.0 for index in range(21)]
+        baseline = poses(joints, frames)
+        self.assertGreater(pose_error(baseline[0.0], baseline[5.0]), 1e-3)
+        row = te.create_model_clip(root)
+        self.assert_poses(poses(joints, frames), baseline)
+        cmds.timeEditorClip(edit=True, moveClip=20, clipId=row["clipId"])
+        moved = poses(joints, [frame + 20 for frame in frames])
+        self.assert_poses({frame: moved[frame + 20] for frame in frames}, baseline)
+        self.assertEqual(curve_payload(original), original)
+        self.assertTrue(te.remove_model_clip(root))
+        self.assert_poses(poses(joints, frames), baseline)
+        self.assertEqual(curve_payload(), original)
+
+    def test_nonidentity_time_curve_is_rejected_without_scene_changes(self):
+        root, joints = create_case()
+        frames = [index / 4.0 for index in range(21)]
+        linear_pose = poses(joints, frames)
+        timing = next(node for node in cmds.ls(type="animCurveTT")
+                      if node.endswith(":head_vmdRotationTime"))
+        # Keep both endpoints while creating a real, monotonic time warp.
+        cmds.setKeyframe(timing, time=2.5, value=0.5)
+        cmds.keyTangent(timing, edit=True, inTangentType="linear", outTangentType="linear")
+        self.assertGreater(abs(cmds.getAttr(timing + ".output", time=2.5) - 2.5), 0.1)
+        baseline = poses(joints, frames)
+        self.assertGreater(max(pose_error(baseline[f], linear_pose[f]) for f in frames), 1e-3)
+        original = curve_payload()
+        uuids = set(cmds.ls(uuid=True))
+        curves = cmds.ls(type="animCurve") or []
+        connections = {node: sorted(cmds.listConnections(node, source=True, destination=True,
+                                                       plugs=True, connections=True) or [])
+                       for node in curves}
+        metadata_exists = cmds.attributeQuery(te.METADATA_ATTRIBUTE, node=root, exists=True)
+        with self.assertRaises(te.MmdTimeEditorError):
+            te.create_model_clip(root)
+        self.assertEqual(set(cmds.ls(uuid=True)), uuids)
+        self.assertEqual(curve_payload(), original)
+        self.assertEqual({node: sorted(cmds.listConnections(node, source=True, destination=True,
+                                                          plugs=True, connections=True) or [])
+                          for node in curves}, connections)
+        self.assertEqual(cmds.attributeQuery(te.METADATA_ATTRIBUTE, node=root, exists=True), metadata_exists)
+        self.assertFalse(te.inspect_model_clip(root)["active"])
+        self.assert_poses(poses(joints, frames), baseline)
 
     def test_create_and_remove_undo_redo(self):
         root, joints = create_case()

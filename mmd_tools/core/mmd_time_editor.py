@@ -129,7 +129,47 @@ def _animated_inputs(root):
                 inputs[destination] = {"destination": _ref(destination), "source": _ref(source)}
     if not inputs:
         raise MmdTimeEditorError("The model has no keyed bone authoring inputs")
+    for source in {_plug(item["source"]).split(".", 1)[0] for item in inputs.values()}:
+        _require_identity_time_input(source)
     return inputs
+
+
+def _require_identity_time_input(curve):
+    """Typed Time Editor sources cannot preserve arbitrary time remapping."""
+    driver = cmds.connectionInfo(curve + ".input", sourceFromDestination=True)
+
+    def scene_time(plug):
+        return bool(plug and plug.endswith(".outTime") and cmds.nodeType(plug.split(".", 1)[0]) == "time")
+
+    if not driver or scene_time(driver):
+        return
+    if not driver.endswith(".output") or cmds.nodeType(driver.split(".", 1)[0]) != "animCurveTT":
+        raise MmdTimeEditorError("Unsupported animation time input: " + curve)
+    time_curve = driver.split(".", 1)[0]
+    if any(cmds.getAttr(node + "." + attr) != 0 for node in (curve, time_curve)
+           for attr in ("preInfinity", "postInfinity")):
+        raise MmdTimeEditorError("Time-remapped model clips require constant infinity: " + curve)
+    upstream = cmds.connectionInfo(time_curve + ".input", sourceFromDestination=True)
+    # Native VMD TT curves use Maya's implicit evaluation time when unconnected.
+    if upstream and not scene_time(upstream):
+        raise MmdTimeEditorError("Unsupported time remapping input: " + time_curve)
+    times = cmds.keyframe(time_curve, query=True, timeChange=True) or []
+    values = cmds.keyframe(time_curve, query=True, valueChange=True) or []
+    source_times = cmds.keyframe(curve, query=True, timeChange=True) or []
+    identity = (len(times) >= 2 and len(times) == len(values)
+                and all(math.isfinite(t) and math.isfinite(v) and abs(t-v) < 1e-7 for t, v in zip(times, values))
+                and source_times and times[0] <= min(source_times) and times[-1] >= max(source_times))
+    # Every Bezier control point must lie on y=x. Endpoint equality alone does
+    # not prove this; reject step tangents and inspect both handles per segment.
+    for angle_flag, type_flag, selection in (("outAngle", "outTangentType", slice(None, -1)),
+                                             ("inAngle", "inTangentType", slice(1, None))):
+        angles = cmds.keyTangent(time_curve, query=True, **{angle_flag: True}) or []
+        kinds = cmds.keyTangent(time_curve, query=True, **{type_flag: True}) or []
+        identity = identity and len(angles) == len(times) and len(kinds) == len(times)
+        identity = identity and all(math.isfinite(a) and abs(a-45.0) < 1e-5 for a in angles[selection])
+        identity = identity and all(k not in ("step", "stepnext") for k in kinds[selection])
+    if not identity:
+        raise MmdTimeEditorError("Non-identity time remapping is not supported by model clips: " + time_curve)
 
 
 def _external_inputs(owned):
