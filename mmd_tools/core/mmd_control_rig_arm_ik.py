@@ -1,0 +1,477 @@
+"""Owned three-joint arm IK for Control Rig EDIT, using Maya stock DG nodes."""
+
+import math
+from uuid import uuid4
+import json
+from contextlib import contextmanager
+
+from .mmd_control_rig_builder import (
+    MmdControlRigBuildError,
+    _write_metadata,
+    _create_control_curve,
+    _color_control,
+    read_mmd_control_rig_metadata,
+)
+from .mmd_control_rig_basis import matrix_from_quaternion
+
+
+def _node(cmds, uuid):
+    nodes = cmds.ls(uuid, long=True) or []
+    if len(nodes) != 1:
+        raise MmdControlRigBuildError("arm IK owned node is missing or ambiguous: " + uuid)
+    return nodes[0]
+
+
+def _uuid(cmds, node):
+    return cmds.ls(node, uuid=True)[0]
+
+
+def _ref(cmds, plug):
+    node, attribute = plug.split(".", 1)
+    return {"nodeUuid": _uuid(cmds, node), "attribute": attribute}
+
+
+def resolve_arm_plug(cmds, ref):
+    """Resolve a saved arm plug without relying on names or namespaces."""
+    return _node(cmds, ref["nodeUuid"]) + "." + ref["attribute"]
+
+
+@contextmanager
+def _transaction(cmds, label):
+    if not cmds.undoInfo(query=True, state=True):
+        raise MmdControlRigBuildError("arm IK requires Maya Undo to be enabled")
+    chunk_name = label + "_" + uuid4().hex
+    cmds.undoInfo(openChunk=True, chunkName=chunk_name)
+    try:
+        yield
+    except Exception:
+        cmds.undoInfo(closeChunk=True)
+        if cmds.undoInfo(query=True, undoName=True) == chunk_name:
+            cmds.undo()
+        raise
+    else:
+        cmds.undoInfo(closeChunk=True)
+
+
+def validate_arm_ik(cmds, metadata, side):
+    """Reject missing/replaced owned nodes or modified live input connections."""
+    row = metadata.get("armIk", {}).get(side)
+    if not row:
+        raise MmdControlRigBuildError("arm IK is not built: " + side)
+    owned = {item["uuid"] for item in metadata["nodes"]}
+    for uuid in row["nodes"]:
+        if uuid not in owned:
+            raise MmdControlRigBuildError("arm IK ownership metadata is incomplete")
+        _node(cmds, uuid)
+    actual_graph = _graph_snapshot(cmds, row)
+    if row.get("graph") != actual_graph:
+        changed = [_node(cmds, uuid) for uuid in row["nodes"] if row.get("graph", {}).get(uuid) != actual_graph.get(uuid)]
+        raise MmdControlRigBuildError("arm IK graph ownership or connections changed: " + ", ".join(changed))
+    for uuid in (row["targetUuid"], row["poleUuid"]):
+        node = _node(cmds, uuid)
+        for channel in ("translate", "rotate"):
+            for axis in "XYZ":
+                writer = cmds.connectionInfo(node + "." + channel + axis, sourceFromDestination=True)
+                if writer and cmds.nodeType(writer.split(".", 1)[0]) not in ("animCurveTA", "animCurveTL"):
+                    raise MmdControlRigBuildError("arm IK wrist/pole require direct time animation curves")
+    for item in row["inputs"]:
+        if item["sourceRef"]:
+            resolve_arm_plug(cmds, item["sourceRef"])
+    for edge in row["edges"]:
+        if not cmds.isConnected(resolve_arm_plug(cmds, edge[0]), resolve_arm_plug(cmds, edge[1])):
+            raise MmdControlRigBuildError("arm IK graph connection was modified")
+    if row["active"]:
+        for item in row["inputs"]:
+            if not cmds.isConnected(resolve_arm_plug(cmds, item["outputRef"]), resolve_arm_plug(cmds, item["controlRef"])):
+                raise MmdControlRigBuildError("arm IK control writer was modified")
+    else:
+        for item in row["inputs"]:
+            if cmds.isConnected(resolve_arm_plug(cmds, item["outputRef"]), resolve_arm_plug(cmds, item["controlRef"])):
+                raise MmdControlRigBuildError("inactive arm IK bridge was reconnected")
+    for item in row["static"]:
+        node = _node(cmds, item["uuid"])
+        for attribute, value in item["values"].items():
+            if cmds.getAttr(node + "." + attribute) != value:
+                # JSON changes tuples into lists after save/reload.
+                if not _numeric_equal(cmds.getAttr(node + "." + attribute), value):
+                    raise MmdControlRigBuildError("arm IK static joint configuration changed")
+    return row
+
+
+def enable_arm_ik(model_root, side, *, cmds_module=None):
+    """Match an independent wrist/pole solver to the current FK pose in EDIT."""
+    from maya import cmds as maya_cmds
+    from maya.api import OpenMaya as om
+    from . import mmd_control_rig_motion as motion
+
+    cmds = cmds_module or maya_cmds
+    if side not in ("left", "right"):
+        raise MmdControlRigBuildError("arm IK side must be left or right")
+    metadata = read_mmd_control_rig_metadata(model_root, cmds_module=cmds)
+    if not metadata or metadata["state"] != "EDIT" or metadata.get("owner") != "CONTROL_OWNED":
+        raise MmdControlRigBuildError("arm IK requires Control Rig EDIT")
+    if metadata.get("armIk", {}).get(side):
+        return _reenable(cmds, model_root, metadata, side)
+    roles = [side + suffix for suffix in ("_arm", "_elbow", "_wrist")]
+    joints = [_node(cmds, metadata["bindings"][role]["jointUuid"]) for role in roles]
+    controls = [_node(cmds, metadata["controls"][role]) for role in roles]
+    _, journal, _ = motion._resolve_edit_journal(cmds, metadata)
+    for item in journal:
+        if item["control"].split(".")[0] in controls and (
+            item.get("layerRoute") or item.get("twistController") or item.get("fixedAxisTwist")
+        ):
+            raise MmdControlRigBuildError("arm IK does not support layered or twist control routes")
+    scale_nodes = set()
+    for control in controls:
+        if cmds.listConnections(control + ".rotateOrder", source=True, destination=False):
+            raise MmdControlRigBuildError("arm IK requires static rotation order")
+    for role, joint in zip(roles, joints):
+        for attribute in ("jointOrient", "rotateAxis", "rotateOrder"):
+            if cmds.listConnections(joint + "." + attribute, source=True, destination=False):
+                raise MmdControlRigBuildError("arm IK requires static joint orientation")
+        if metadata["bindings"][role]["inputKind"] != "direct_channel":
+            raise MmdControlRigBuildError("arm IK currently requires direct bone input routes")
+        ancestors = [joint]
+        while cmds.listRelatives(ancestors[-1], parent=True, fullPath=True):
+            ancestors.append(cmds.listRelatives(ancestors[-1], parent=True, fullPath=True)[0])
+        scale_nodes.update(ancestors)
+        for node in ancestors:
+            if cmds.listConnections(node + ".scale", source=True, destination=False):
+                raise MmdControlRigBuildError("arm IK requires static unit scale")
+            if any(abs(value - 1) > 1e-8 for value in cmds.getAttr(node + ".scale")[0]):
+                raise MmdControlRigBuildError("arm IK currently requires unit scale")
+    positions = [om.MVector(cmds.xform(node, q=True, ws=True, t=True)) for node in joints]
+    shoulder, elbow, wrist = positions
+    axis = wrist - shoulder
+    if axis.length() < 1e-6:
+        raise MmdControlRigBuildError("arm IK chain has zero reach")
+    bend = elbow - (shoulder + axis * (((elbow - shoulder) * axis) / (axis * axis)))
+    if bend.length() < 1e-5:
+        bend = _straight_pole_direction(cmds, joints[0], axis)
+    inputs = []
+    for control in controls:
+        for axis_name in "XYZ":
+            plug = control + ".rotate" + axis_name
+            writer = cmds.connectionInfo(plug, sourceFromDestination=True)
+            if writer:
+                _require_fk_curve(cmds, writer, plug)
+            inputs.append(
+                {
+                    "controlRef": _ref(cmds, plug),
+                    "sourceRef": _ref(cmds, writer) if writer else None,
+                    "value": cmds.getAttr(plug),
+                }
+            )
+    with _transaction(cmds, "Enable Arm IK"):
+        group = cmds.createNode("transform", name=side + "_arm_IK", parent=_node(cmds, metadata["controlGroupUuid"]))
+        # Wrist/pole remain in world space while only the shoulder anchor follows torso.
+        cmds.setAttr(group + ".inheritsTransform", False, lock=True)
+        for channel in ("translate", "rotate", "scale"):
+            for axis_name in "XYZ":
+                cmds.setAttr(group + "." + channel + axis_name, lock=True)
+        anchor = cmds.createNode("transform", name=side + "_shoulder_IK_space", parent=group)
+        anchor_matrix = cmds.createNode("decomposeMatrix", name=side + "_shoulder_IK_parent")
+        shoulder_parent = cmds.listRelatives(joints[0], parent=True, fullPath=True)[0]
+        cmds.connectAttr(shoulder_parent + ".worldMatrix[0]", anchor_matrix + ".inputMatrix")
+        cmds.connectAttr(anchor_matrix + ".outputTranslate", anchor + ".translate")
+        cmds.connectAttr(anchor_matrix + ".outputRotate", anchor + ".rotate")
+        helpers = []
+        static = [
+            {"uuid": _uuid(cmds, node), "values": {"scale": cmds.getAttr(node + ".scale")}} for node in sorted(scale_nodes)
+        ]
+        static.extend(
+            {"uuid": _uuid(cmds, node), "values": {"rotateOrder": cmds.getAttr(node + ".rotateOrder")}} for node in controls
+        )
+        for role, joint in zip(roles, joints):
+            helper = cmds.createNode("joint", name=role + "_IK_helper", parent=helpers[-1] if helpers else anchor)
+            values = {}
+            for attribute in ("jointOrient", "rotateAxis", "rotateOrder"):
+                value = cmds.getAttr(joint + "." + attribute)
+                values[attribute] = value
+                if attribute == "rotateOrder":
+                    cmds.setAttr(helper + "." + attribute, value)
+                else:
+                    cmds.setAttr(helper + "." + attribute, *value[0])
+            values["scale"] = cmds.getAttr(joint + ".scale")
+            static.append({"uuid": _uuid(cmds, joint), "values": values})
+            cmds.xform(helper, ws=True, matrix=cmds.xform(joint, q=True, ws=True, matrix=True))
+            helpers.append(helper)
+        target = _create_control_curve(cmds, side + "_wrist_IK", side + "_wrist", max((wrist - shoulder).length() * 0.08, 0.01))
+        target = cmds.parent(target, group)[0]
+        _color_control(cmds, target, 6 if side == "left" else 13)
+        cmds.xform(target, ws=True, matrix=cmds.xform(joints[-1], q=True, ws=True, matrix=True))
+        size = max((wrist - shoulder).length() * 0.04, 0.01)
+        pole = cmds.curve(
+            name=side + "_elbow_IK", degree=1, point=[(0, size, 0), (size, 0, 0), (0, -size, 0), (-size, 0, 0), (0, size, 0)]
+        )
+        pole = cmds.parent(pole, group)[0]
+        _color_control(cmds, pole, 6 if side == "left" else 13)
+        cmds.sets([target, pole], add=_node(cmds, metadata["selectionSetUuid"]))
+        for node in (target, pole):
+            for axis_name in "XYZ":
+                cmds.setAttr(node + ".scale" + axis_name, lock=True)
+            static.append(
+                {
+                    "uuid": _uuid(cmds, node),
+                    "values": {"scale": cmds.getAttr(node + ".scale"), "rotateOrder": cmds.getAttr(node + ".rotateOrder")},
+                }
+            )
+        cmds.xform(
+            pole, ws=True, translation=list(elbow + bend.normal() * ((elbow - shoulder).length() + (wrist - elbow).length()))
+        )
+        cmds.joint(helpers[0], edit=True, setPreferredAngles=True, children=True)
+        handle, _ = cmds.ikHandle(
+            startJoint=helpers[0], endEffector=helpers[-1], solver="ikRPsolver", name=side + "_arm_IK_handle"
+        )
+        cmds.parent(handle, target, absolute=True)
+        cmds.poleVectorConstraint(pole, handle)
+        cmds.orientConstraint(target, helpers[-1], maintainOffset=False)
+        cmds.setAttr(helpers[0] + ".visibility", False)
+        cmds.setAttr(handle + ".visibility", False)
+        edges = []
+        converters = [anchor_matrix]
+        for role, joint, control, helper in zip(roles, joints, controls, helpers):
+            basis = om.MMatrix(matrix_from_quaternion(metadata["authoringBases"][role]["quaternion"]))
+
+            def orientation(attribute):
+                return om.MEulerRotation(
+                    *[math.radians(value) for value in cmds.getAttr(joint + "." + attribute)[0]]
+                ).asMatrix()
+
+            mult = cmds.createNode("multMatrix", name=role + "_IK_basis")
+            decomp = cmds.createNode("decomposeMatrix", name=role + "_IK_rotation")
+            converters.extend((mult, decomp))
+            cmds.setAttr(mult + ".matrixIn[0]", *list(basis * orientation("rotateAxis").inverse()), type="matrix")
+            cmds.setAttr(mult + ".matrixIn[3]", *list(orientation("jointOrient").inverse() * basis.inverse()), type="matrix")
+            parent = cmds.listRelatives(joint, parent=True, fullPath=True)[0]
+            for src, dst in (
+                (helper + ".worldMatrix[0]", mult + ".matrixIn[1]"),
+                (parent + ".worldInverseMatrix[0]", mult + ".matrixIn[2]"),
+                (mult + ".matrixSum", decomp + ".inputMatrix"),
+            ):
+                cmds.connectAttr(src, dst)
+                edges.append([_ref(cmds, src), _ref(cmds, dst)])
+            cmds.setAttr(decomp + ".inputRotateOrder", cmds.getAttr(control + ".rotateOrder"))
+            for item in inputs:
+                if item["controlRef"]["nodeUuid"] == _uuid(cmds, control):
+                    item["outputRef"] = _ref(cmds, decomp + ".outputRotate" + item["controlRef"]["attribute"][-1])
+                    plug = resolve_arm_plug(cmds, item["controlRef"])
+                    if item["sourceRef"]:
+                        cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
+                    cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
+        owned = [
+            _uuid(cmds, node)
+            for node in [group] + (cmds.listRelatives(group, allDescendents=True, fullPath=True) or []) + converters
+        ]
+        for uuid in owned:
+            node = _node(cmds, uuid)
+            metadata["nodes"].append({"uuid": uuid, "name": node})
+            if not cmds.objectType(node, isAType="dagNode"):
+                metadata["helperNodes"].append(uuid)
+        row = {
+            "active": True,
+            "nodes": owned,
+            "inputs": inputs,
+            "edges": edges,
+            "static": static,
+            "targetUuid": _uuid(cmds, target),
+            "poleUuid": _uuid(cmds, pole),
+            "helperUuids": [_uuid(cmds, node) for node in helpers],
+            "jointUuids": [_uuid(cmds, node) for node in joints],
+            "handleUuid": _uuid(cmds, handle),
+        }
+        row["graph"] = _graph_snapshot(cmds, row)
+        metadata.setdefault("armIk", {})[side] = row
+        _write_metadata(cmds, model_root, metadata)
+    return inspect_arm_ik(model_root, side, cmds_module=cmds)
+
+
+def disable_arm_ik(model_root, side, *, match_fk=False, cmds_module=None):
+    """Restore exact stashed FK inputs, optionally keying the current IK pose."""
+    from maya import cmds as maya_cmds
+
+    cmds = cmds_module or maya_cmds
+    metadata = read_mmd_control_rig_metadata(model_root, cmds_module=cmds)
+    row = validate_arm_ik(cmds, metadata, side)
+    if not row["active"]:
+        return row
+    if metadata.get("state") != "EDIT" or metadata.get("owner") != "CONTROL_OWNED":
+        raise MmdControlRigBuildError("arm IK requires Control Rig EDIT ownership")
+    values = [cmds.getAttr(resolve_arm_plug(cmds, item["controlRef"])) for item in row["inputs"]]
+    with _transaction(cmds, "Disable Arm IK"):
+        for item, value in zip(row["inputs"], values):
+            plug = resolve_arm_plug(cmds, item["controlRef"])
+            cmds.disconnectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
+            if item["sourceRef"]:
+                cmds.connectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
+            else:
+                cmds.setAttr(plug, item["value"])
+            if match_fk:
+                cmds.setKeyframe(plug, time=cmds.currentTime(q=True), value=value)
+        if match_fk:
+            for item in row["inputs"]:
+                cmds.dgdirty(resolve_arm_plug(cmds, item["controlRef"]))
+            cmds.currentTime(cmds.currentTime(query=True), update=True)
+        row["active"] = False
+        _write_metadata(cmds, model_root, metadata)
+    return row
+
+
+def inspect_arm_ik(model_root, side, *, cmds_module=None):
+    """Return validated active state and resolved wrist/pole selection paths."""
+    from maya import cmds as maya_cmds
+
+    cmds = cmds_module or maya_cmds
+    metadata = read_mmd_control_rig_metadata(model_root, cmds_module=cmds)
+    if not metadata or side not in metadata.get("armIk", {}):
+        return {"active": False, "target": None, "pole": None}
+    row = validate_arm_ik(cmds, metadata, side)
+    return dict(row, target=_node(cmds, row["targetUuid"]), pole=_node(cmds, row["poleUuid"]))
+
+
+def _reenable(cmds, root, metadata, side):
+    """Reuse the owned chain and rematch its target from the current FK pose."""
+    from maya.api import OpenMaya as om
+
+    row = validate_arm_ik(cmds, metadata, side)
+    if row["active"]:
+        return inspect_arm_ik(root, side, cmds_module=cmds)
+    joints = [_node(cmds, uuid) for uuid in row["jointUuids"]]
+    helper = [_node(cmds, uuid) for uuid in row["helperUuids"]]
+    target, pole = _node(cmds, row["targetUuid"]), _node(cmds, row["poleUuid"])
+    fresh = []
+    for item in row["inputs"]:
+        plug = resolve_arm_plug(cmds, item["controlRef"])
+        writer = cmds.connectionInfo(plug, sourceFromDestination=True)
+        if writer:
+            _require_fk_curve(cmds, writer, plug)
+        fresh.append(dict(item, sourceRef=_ref(cmds, writer) if writer else None, value=cmds.getAttr(plug)))
+    positions = [om.MVector(cmds.xform(node, q=True, ws=True, t=True)) for node in joints]
+    shoulder, elbow, wrist = positions
+    axis = wrist - shoulder
+    if axis.length() < 1e-6:
+        raise MmdControlRigBuildError("arm IK chain has zero reach")
+    bend = elbow - (shoulder + axis * (((elbow - shoulder) * axis) / (axis * axis)))
+    if bend.length() < 1e-5:
+        bend = _straight_pole_direction(cmds, joints[0], axis)
+    with _transaction(cmds, "Enable Arm IK"):
+        handle = _node(cmds, row["handleUuid"])
+        cmds.setAttr(handle + ".ikBlend", 0)
+        for solved, joint in zip(helper, joints):
+            # Wrist rotation remains owned by its orientation constraint.
+            if solved != helper[-1]:
+                cmds.xform(solved, ws=True, matrix=cmds.xform(joint, q=True, ws=True, matrix=True))
+        _match_world_pose(cmds, target, cmds.xform(joints[-1], q=True, ws=True, matrix=True))
+        pole_matrix = cmds.xform(pole, q=True, ws=True, matrix=True)
+        pole_matrix[12:15] = list(elbow + bend.normal() * ((elbow - shoulder).length() + (wrist - elbow).length()))
+        _match_world_pose(cmds, pole, pole_matrix)
+        cmds.joint(helper[0], edit=True, setPreferredAngles=True, children=True)
+        cmds.setAttr(handle + ".ikBlend", 1)
+        _rebind_handle(cmds, metadata, row, handle, helper)
+        for item in fresh:
+            plug = resolve_arm_plug(cmds, item["controlRef"])
+            if item["sourceRef"]:
+                cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
+            cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
+        row["inputs"] = fresh
+        row["active"] = True
+        _write_metadata(cmds, root, metadata)
+    return inspect_arm_ik(root, side, cmds_module=cmds)
+
+
+def _graph_snapshot(cmds, row):
+    """Record exact types, DAG parents and solver inputs; targets remain animatable."""
+    result = {}
+    editable = {row["targetUuid"], row["poleUuid"]}
+    for uuid in row["nodes"]:
+        node = _node(cmds, uuid)
+        parents = cmds.listRelatives(node, parent=True, fullPath=True) or [] if cmds.objectType(node, isAType="dagNode") else []
+        incoming = []
+        pairs = cmds.listConnections(node, source=True, destination=False, plugs=True, connections=True) or []
+        for destination, source in zip(pairs[::2], pairs[1::2]):
+            attribute = cmds.attributeName(destination, long=True)
+            if uuid in editable and attribute.startswith(("translate", "rotate")):
+                continue
+            incoming.append([_ref(cmds, source), _ref(cmds, destination)])
+        outgoing = []
+        pairs = cmds.listConnections(node, source=False, destination=True, plugs=True, connections=True) or []
+        for source, destination in zip(pairs[::2], pairs[1::2]):
+            edge = [_ref(cmds, source), _ref(cmds, destination)]
+            if any(edge == [item["outputRef"], item["controlRef"]] for item in row["inputs"]):
+                continue
+            outgoing.append(edge)
+        result[uuid] = {
+            "outgoing": sorted(outgoing, key=lambda edge: json.dumps(edge, sort_keys=True)),
+            "type": cmds.nodeType(node),
+            "parents": [_uuid(cmds, parent) for parent in parents],
+            "incoming": sorted(incoming, key=lambda edge: json.dumps(edge, sort_keys=True)),
+        }
+    return result
+
+
+def _numeric_equal(left, right):
+    if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
+        return len(left) == len(right) and all(_numeric_equal(a, b) for a, b in zip(left, right))
+    return abs(float(left) - float(right)) < 1e-7
+
+
+def _require_fk_curve(cmds, writer, plug):
+    if cmds.nodeType(writer.split(".", 1)[0]) != "animCurveTA":
+        raise MmdControlRigBuildError("arm IK requires a direct time animation curve: " + plug)
+
+
+def _match_world_pose(cmds, node, matrix):
+    """Key only the current frame on existing curves; preserve all other keys."""
+    from maya.api import OpenMaya as om
+
+    parent = cmds.listRelatives(node, parent=True, fullPath=True)
+    local = om.MMatrix(matrix)
+    if parent:
+        local = local * om.MMatrix(cmds.xform(parent[0], q=True, ws=True, matrix=True)).inverse()
+    transform = om.MTransformationMatrix(local)
+    rotation = transform.rotation()
+    rotation.reorderIt(cmds.getAttr(node + ".rotateOrder"))
+    translation = transform.translation(om.MSpace.kTransform)
+    for channel, values in (("translate", translation), ("rotate", [math.degrees(value) for value in rotation])):
+        for axis, value in zip("XYZ", values):
+            plug = node + "." + channel + axis
+            if cmds.connectionInfo(plug, sourceFromDestination=True):
+                cmds.setKeyframe(plug, time=cmds.currentTime(q=True), value=value)
+                cmds.dgdirty(plug)
+            else:
+                cmds.setAttr(plug, value)
+    cmds.currentTime(cmds.currentTime(q=True), update=True)
+
+
+def _straight_pole_direction(cmds, joint, axis):
+    """Use the least parallel FK bone axis when a straight elbow has no bend plane."""
+    from maya.api import OpenMaya as om
+
+    matrix = cmds.xform(joint, q=True, ws=True, matrix=True)
+    unit = axis.normal()
+    candidates = [om.MVector(matrix[index : index + 3]) for index in (0, 4, 8)]
+    projected = [candidate - unit * (candidate * unit) for candidate in candidates]
+    return max(projected, key=lambda value: value.length()).normal()
+
+
+def _rebind_handle(cmds, metadata, row, handle, helper):
+    """Refresh native RP solver state at this frame without advancing scene time.
+
+    Maya recreates the effector when rebinding the same owned handle. Keep that
+    exact replacement in the ownership journal; solver, chain and pole stay put.
+    """
+    old_effector = cmds.ikHandle(handle, query=True, endEffector=True)
+    old_uuid = _uuid(cmds, old_effector)
+    if old_uuid not in row["nodes"]:
+        raise MmdControlRigBuildError("arm IK effector is not owned")
+    cmds.ikHandle(handle, edit=True, startJoint=helper[0], endEffector=helper[-1])
+    effector = cmds.ikHandle(handle, query=True, endEffector=True)
+    new_uuid = _uuid(cmds, effector)
+    if old_uuid != new_uuid:
+        remaining = cmds.ls(old_uuid, long=True) or []
+        if remaining:
+            cmds.delete(remaining)
+        row["nodes"] = [uid for uid in row["nodes"] if uid != old_uuid] + [new_uuid]
+        metadata["nodes"] = [item for item in metadata["nodes"] if item["uuid"] != old_uuid]
+        metadata["nodes"].append({"uuid": new_uuid, "name": _node(cmds, new_uuid)})
+    row["graph"] = _graph_snapshot(cmds, row)

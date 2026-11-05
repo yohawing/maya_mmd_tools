@@ -1137,87 +1137,88 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
     ik_rows, channel_rows, offset_rows = _resolve_edit_journal(cmds, metadata)
     rotation_converters = _resolve_rotation_converters(cmds, metadata)
 
-    with _edit_exit_transaction(
-        cmds,
-        root,
-        "Restore MMD Control Rig Attached",
-        "restore",
-        ik_rows + channel_rows,
-        offset_rows,
-        layer_journal=metadata.get("animLayerJournal"),
-        owned_nodes=tuple(
-            node
-            for converter in rotation_converters
-            for node in (
-                converter.get("compose"),
-                converter.get("mult"),
-                converter.get("decompose"),
-            )
-            if node
-        ) + _translate_baseline_nodes(ik_rows + channel_rows),
-    ):
-        for row in reversed(ik_rows):
-            if row.get("layerRoute"):
-                if row.get("translateBaselineOutput"):
-                    _disconnect_translate_baseline(cmds, row)
-                    _disconnect_layer_control_source(cmds, row)
-                restore_mmd_control_rig_anim_layer_route(
-                    cmds,
-                    row["layerRoute"],
-                    row["control"],
+    with _arm_ik_exit_stage(cmds, root, metadata, ik_rows + channel_rows):
+        with _edit_exit_transaction(
+            cmds,
+            root,
+            "Restore MMD Control Rig Attached",
+            "restore",
+            ik_rows + channel_rows,
+            offset_rows,
+            layer_journal=metadata.get("animLayerJournal"),
+            owned_nodes=tuple(
+                node
+                for converter in rotation_converters
+                for node in (
+                    converter.get("compose"),
+                    converter.get("mult"),
+                    converter.get("decompose"),
                 )
-                continue
-            source, target = row["control"], row["target"]
-            _disconnect_translate_baseline(cmds, row)
-            if cmds.isConnected(source, target):
-                cmds.disconnectAttr(source, target)
-            _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
-            control_source = row.get("controlSource")
-            if control_source and cmds.isConnected(control_source, source):
-                cmds.disconnectAttr(control_source, source)
-            prior = row.get("source")
-            if prior:
-                cmds.connectAttr(prior, target, force=False)
-            else:
-                cmds.setAttr(target, bool(row["value"]))
-        for row in reversed(channel_rows):
-            if row.get("layerRoute"):
-                if row.get("translateBaselineOutput"):
-                    _disconnect_translate_baseline(cmds, row)
-                    _disconnect_layer_control_source(cmds, row)
-                restore_mmd_control_rig_anim_layer_route(
-                    cmds,
-                    row["layerRoute"],
-                    row["control"],
-                )
-                continue
-            control, target = row["control"], row["target"]
-            _disconnect_translate_baseline(cmds, row)
-            if cmds.isConnected(control, target):
-                cmds.disconnectAttr(control, target)
-            _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
-            control_source = row.get("controlSource")
-            if control_source and cmds.isConnected(control_source, control):
-                cmds.disconnectAttr(control_source, control)
-            source = row.get("source")
-            if source:
-                if cmds.isConnected(source, control):
-                    cmds.disconnectAttr(source, control)
-                cmds.connectAttr(source, target, force=False)
-            else:
-                cmds.setAttr(target, float(row["value"]))
-        _restore_offsets(cmds, offset_rows, strict=True)
-        metadata.pop("journal", None)
-        _drop_rotation_converter_nodes(metadata, rotation_converters)
-        metadata.pop("rotationConverters", None)
-        for row in metadata.get("curveRepresentations", []):
-            if isinstance(row, dict):
-                row["activeOwner"] = CONTROL_RIG_MMD_OWNED
-        metadata["state"] = CONTROL_RIG_ATTACHED
-        metadata["owner"] = CONTROL_RIG_MMD_OWNED
-        _remove_rotation_converters(cmds, rotation_converters)
-        _write_metadata(cmds, root, metadata)
-        _remove_translate_baseline_nodes(cmds, ik_rows + channel_rows)
+                if node
+            ) + _translate_baseline_nodes(ik_rows + channel_rows),
+        ):
+            for row in reversed(ik_rows):
+                if row.get("layerRoute"):
+                    if row.get("translateBaselineOutput"):
+                        _disconnect_translate_baseline(cmds, row)
+                        _disconnect_layer_control_source(cmds, row)
+                    restore_mmd_control_rig_anim_layer_route(
+                        cmds,
+                        row["layerRoute"],
+                        row["control"],
+                    )
+                    continue
+                source, target = row["control"], row["target"]
+                _disconnect_translate_baseline(cmds, row)
+                if cmds.isConnected(source, target):
+                    cmds.disconnectAttr(source, target)
+                _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
+                control_source = row.get("controlSource")
+                if control_source and cmds.isConnected(control_source, source):
+                    cmds.disconnectAttr(control_source, source)
+                prior = row.get("source")
+                if prior:
+                    cmds.connectAttr(prior, target, force=False)
+                else:
+                    cmds.setAttr(target, bool(row["value"]))
+            for row in reversed(channel_rows):
+                if row.get("layerRoute"):
+                    if row.get("translateBaselineOutput"):
+                        _disconnect_translate_baseline(cmds, row)
+                        _disconnect_layer_control_source(cmds, row)
+                    restore_mmd_control_rig_anim_layer_route(
+                        cmds,
+                        row["layerRoute"],
+                        row["control"],
+                    )
+                    continue
+                control, target = row["control"], row["target"]
+                _disconnect_translate_baseline(cmds, row)
+                if cmds.isConnected(control, target):
+                    cmds.disconnectAttr(control, target)
+                _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
+                control_source = row.get("controlSource")
+                if control_source and cmds.isConnected(control_source, control):
+                    cmds.disconnectAttr(control_source, control)
+                source = row.get("source")
+                if source:
+                    if cmds.isConnected(source, control):
+                        cmds.disconnectAttr(source, control)
+                    cmds.connectAttr(source, target, force=False)
+                else:
+                    cmds.setAttr(target, float(row["value"]))
+            _restore_offsets(cmds, offset_rows, strict=True)
+            metadata.pop("journal", None)
+            _drop_rotation_converter_nodes(metadata, rotation_converters)
+            metadata.pop("rotationConverters", None)
+            for row in metadata.get("curveRepresentations", []):
+                if isinstance(row, dict):
+                    row["activeOwner"] = CONTROL_RIG_MMD_OWNED
+            metadata["state"] = CONTROL_RIG_ATTACHED
+            metadata["owner"] = CONTROL_RIG_MMD_OWNED
+            _remove_rotation_converters(cmds, rotation_converters)
+            _write_metadata(cmds, root, metadata)
+            _remove_translate_baseline_nodes(cmds, ik_rows + channel_rows)
     return metadata
 
 
@@ -1274,151 +1275,264 @@ def bake_mmd_control_rig(
     )
     rotation_converters = _resolve_rotation_converters(cmds, metadata)
     rows = ik_rows + channel_rows
-    created_curve_nodes = []
-    sources_by_control = {}
-    for row in rows:
-        incoming = cmds.listConnections(
-            row["control"], source=True, destination=False, plugs=True
-        ) or []
-        if len(incoming) > 1:
-            raise MmdControlRigBuildError(
-                f"multiple controller animation inputs: {row['control']}"
-            )
-        source = str(incoming[0]) if incoming else None
-        if source:
-            _require_animation_source(cmds, source, row["target"])
-        sources_by_control[row["control"]] = source
+    with _arm_ik_exit_stage(
+        cmds, root, metadata, rows, bake=True, frame_range=dense_frame_range
+    ) as arm_sample_nodes:
+        created_curve_nodes = []
+        sources_by_control = {}
+        for row in rows:
+            incoming = cmds.listConnections(
+                row["control"], source=True, destination=False, plugs=True
+            ) or []
+            if len(incoming) > 1:
+                raise MmdControlRigBuildError(
+                    f"multiple controller animation inputs: {row['control']}"
+                )
+            source = str(incoming[0]) if incoming else None
+            if source:
+                _require_animation_source(cmds, source, row["target"])
+            sources_by_control[row["control"]] = source
 
-    rotation_groups = [
-        group
-        for group in _rotation_channel_groups(
-            channel_rows,
-            include_sampled_direct=True,
-            include_sampled_passthrough=True,
-        )
-        if not any(row.get("layerRoute") for row in group)
-        and (
-            all(row.get("twistController") for row in group)
-            or any(
-                row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAMPLED
-                for row in group
+        rotation_groups = [
+            group
+            for group in _rotation_channel_groups(
+                channel_rows,
+                include_sampled_direct=True,
+                include_sampled_passthrough=True,
             )
+            if not any(row.get("layerRoute") for row in group)
+            and (
+                all(row.get("twistController") for row in group)
+                or any(
+                    row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAMPLED
+                    for row in group
+                )
+                or _rotation_group_uses_quaternion(cmds, group, sources_by_control)
+            )
+        ]
+        quaternion_grouped_rows = {
+            id(row)
+            for group in rotation_groups
+            if all(row.get("twistController") for row in group)
             or _rotation_group_uses_quaternion(cmds, group, sources_by_control)
-        )
-    ]
-    quaternion_grouped_rows = {
-        id(row)
-        for group in rotation_groups
-        if all(row.get("twistController") for row in group)
-        or _rotation_group_uses_quaternion(cmds, group, sources_by_control)
-        for row in group
-    }
-    live_target_samples_by_group = {
-        id(group[0]): _capture_live_target_rotation_samples(
-            cmds,
-            group,
-            sources_by_control,
-            frame_range=dense_frame_range,
-        )
-        for group in rotation_groups
-        if _rotation_group_requires_live_target_sampling(group)
-    }
-    with _edit_exit_transaction(
-        cmds,
-        root,
-        "Bake MMD Control Rig",
-        "bake",
-        rows,
-        offset_rows,
-        layer_journal=layer_journal,
-        curve_plugs=tuple(
-            plug
-            for row in rows
-            for plug in (row.get("source"), row.get("controlSource"))
-            if plug
-        ),
-        created_curve_nodes=created_curve_nodes,
-        rotation_groups=rotation_groups,
-        owned_nodes=tuple(
-            node
-            for converter in rotation_converters
-            for node in (
-                converter.get("compose"),
-                converter.get("mult"),
-                converter.get("decompose"),
-            )
-            if node
-        ) + _translate_baseline_nodes(rows),
-    ):
-        mmd_sources_by_control = {}
-        for row in reversed(ik_rows):
-            mmd_sources_by_control[row["control"]] = _commit_control_input(
-                cmds,
-                row,
-                sources_by_control[row["control"]],
-                created_curve_nodes=created_curve_nodes,
-                frame_range=dense_frame_range,
-            )
-        _disconnect_rotation_converters(cmds, rotation_converters)
-        grouped_rows = {id(row) for group in rotation_groups for row in group}
-        for group in reversed(rotation_groups):
-            group_sources = _commit_control_rotation_group(
+            for row in group
+        }
+        live_target_samples_by_group = {
+            id(group[0]): _capture_live_target_rotation_samples(
                 cmds,
                 group,
                 sources_by_control,
-                created_curve_nodes=created_curve_nodes,
-                quaternion_interpolation=all(
-                    id(row) in quaternion_grouped_rows for row in group
-                ),
-                evaluated_target_samples=live_target_samples_by_group.get(
-                    id(group[0])
-                ),
                 frame_range=dense_frame_range,
             )
-            mmd_sources_by_control.update(group_sources)
-        for row in reversed(channel_rows):
-            if id(row) in grouped_rows:
-                continue
-            mmd_sources_by_control[row["control"]] = _commit_control_input(
-                cmds,
-                row,
-                sources_by_control[row["control"]],
-                created_curve_nodes=created_curve_nodes,
-                frame_range=dense_frame_range,
+            for group in rotation_groups
+            if _rotation_group_requires_live_target_sampling(group)
+        }
+        with _edit_exit_transaction(
+            cmds,
+            root,
+            "Bake MMD Control Rig",
+            "bake",
+            rows,
+            offset_rows,
+            layer_journal=layer_journal,
+            curve_plugs=tuple(
+                plug
+                for row in rows
+                for plug in (row.get("source"), row.get("controlSource"))
+                if plug and plug.split(".", 1)[0] not in arm_sample_nodes
+            ),
+            created_curve_nodes=created_curve_nodes,
+            rotation_groups=rotation_groups,
+            owned_nodes=tuple(
+                node
+                for converter in rotation_converters
+                for node in (
+                    converter.get("compose"),
+                    converter.get("mult"),
+                    converter.get("decompose"),
+                )
+                if node
+            ) + _translate_baseline_nodes(rows),
+        ):
+            mmd_sources_by_control = {}
+            for row in reversed(ik_rows):
+                mmd_sources_by_control[row["control"]] = _commit_control_input(
+                    cmds,
+                    row,
+                    sources_by_control[row["control"]],
+                    created_curve_nodes=created_curve_nodes,
+                    frame_range=dense_frame_range,
+                )
+            _disconnect_rotation_converters(cmds, rotation_converters)
+            grouped_rows = {id(row) for group in rotation_groups for row in group}
+            for group in reversed(rotation_groups):
+                group_sources = _commit_control_rotation_group(
+                    cmds,
+                    group,
+                    sources_by_control,
+                    created_curve_nodes=created_curve_nodes,
+                    quaternion_interpolation=all(
+                        id(row) in quaternion_grouped_rows for row in group
+                    ),
+                    evaluated_target_samples=live_target_samples_by_group.get(
+                        id(group[0])
+                    ),
+                    frame_range=dense_frame_range,
+                )
+                mmd_sources_by_control.update(group_sources)
+            for row in reversed(channel_rows):
+                if id(row) in grouped_rows:
+                    continue
+                mmd_sources_by_control[row["control"]] = _commit_control_input(
+                    cmds,
+                    row,
+                    sources_by_control[row["control"]],
+                    created_curve_nodes=created_curve_nodes,
+                    frame_range=dense_frame_range,
+                )
+            _restore_offsets(cmds, offset_rows, strict=True)
+            _drop_rotation_converter_nodes(metadata, rotation_converters)
+            representations = _curve_representations(metadata)
+            metadata["curveRepresentations"] = representations
+            for row in rows:
+                _record_curve_representation(
+                    representations,
+                    row["target"],
+                    mmd_sources_by_control.get(row["control"]) or row.get("source"),
+                    row.get("controlSource") or sources_by_control[row["control"]],
+                    cmds,
+                    quaternion_interpolation=(
+                        id(row) in quaternion_grouped_rows
+                        if id(row) in grouped_rows
+                        and str(row.get("target", "")).rsplit(".", 1)[-1]
+                        in {"rotateX", "rotateY", "rotateZ"}
+                        else None
+                    ),
+                )
+            metadata.pop("journal", None)
+            metadata.pop("rotationConverters", None)
+            metadata["routeDiagnostics"] = _route_diagnostics(
+                {"channels": rows, "ikEnabled": []}
             )
-        _restore_offsets(cmds, offset_rows, strict=True)
-        _drop_rotation_converter_nodes(metadata, rotation_converters)
-        representations = _curve_representations(metadata)
-        metadata["curveRepresentations"] = representations
-        for row in rows:
-            _record_curve_representation(
-                representations,
-                row["target"],
-                mmd_sources_by_control.get(row["control"]) or row.get("source"),
-                row.get("controlSource") or sources_by_control[row["control"]],
-                cmds,
-                quaternion_interpolation=(
-                    id(row) in quaternion_grouped_rows
-                    if id(row) in grouped_rows
-                    and str(row.get("target", "")).rsplit(".", 1)[-1]
-                    in {"rotateX", "rotateY", "rotateZ"}
-                    else None
-                ),
-            )
-        metadata.pop("journal", None)
-        metadata.pop("rotationConverters", None)
-        metadata["routeDiagnostics"] = _route_diagnostics(
-            {"channels": rows, "ikEnabled": []}
-        )
-        for row in metadata.get("curveRepresentations", []):
-            if isinstance(row, dict):
-                row["activeOwner"] = CONTROL_RIG_MMD_OWNED
-        metadata["state"] = CONTROL_RIG_BAKED
-        metadata["owner"] = CONTROL_RIG_MMD_OWNED
-        _remove_rotation_converters(cmds, rotation_converters)
-        _write_metadata(cmds, root, metadata)
-        _remove_translate_baseline_nodes(cmds, rows)
+            for row in metadata.get("curveRepresentations", []):
+                if isinstance(row, dict):
+                    row["activeOwner"] = CONTROL_RIG_MMD_OWNED
+            metadata["state"] = CONTROL_RIG_BAKED
+            metadata["owner"] = CONTROL_RIG_MMD_OWNED
+            _remove_rotation_converters(cmds, rotation_converters)
+            _write_metadata(cmds, root, metadata)
+            _remove_translate_baseline_nodes(cmds, rows)
     return metadata
+
+
+@contextmanager
+def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=None):
+    """Stage only validated arm writers as ordinary animation for EDIT exit.
+
+    The inner exit transaction owns MMD-side rollback. This outer context
+    restores the live arm edges if staging or that transaction fails. Helpers
+    remain present; successful sample curves become curve representations.
+    """
+    active = [side for side, arm in metadata.get("armIk", {}).items() if arm.get("active")]
+    if not active:
+        yield ()
+        return
+    from mmd_tools.core.mmd_control_rig_arm_ik import resolve_arm_plug, validate_arm_ik
+
+    arms = [validate_arm_ik(cmds, metadata, side) for side in active]
+    controls = {row["control"]: row for row in rows}
+    inputs = []
+    times = set()
+    # Other EDIT controls can move the shoulder after the arm's last key.
+    # Use the existing journal's animation range rather than walking the DG.
+    for row in rows:
+        for plug in (row.get("control"), row.get("source"), row.get("controlSource")):
+            if plug:
+                times.update(cmds.keyframe(plug, query=True, timeChange=True) or [])
+    for arm in arms:
+        for key in ("targetUuid", "poleUuid"):
+            node = cmds.ls(arm[key], long=True) or []
+            times.update(cmds.keyframe(node[0], query=True, timeChange=True) or [])
+        for item in arm["inputs"]:
+            control = resolve_arm_plug(cmds, item["controlRef"])
+            if control not in controls or controls[control].get("layerRoute"):
+                raise MmdControlRigBuildError(f"arm IK exit has no ordinary EDIT route: {control}")
+            source = resolve_arm_plug(cmds, item["sourceRef"]) if item.get("sourceRef") else None
+            output = resolve_arm_plug(cmds, item["outputRef"])
+            inputs.append((item, control, source, output))
+            for plug in (source, controls[control].get("source")):
+                if plug:
+                    times.update(cmds.keyframe(plug.split(".", 1)[0], query=True, timeChange=True) or [])
+    if bake and frame_range is not None:
+        start, end = frame_range
+        for _, control, source, _ in inputs:
+            for plug in (source, controls[control].get("source")):
+                if plug and any(
+                    time < start or time > end
+                    for time in (
+                        cmds.keyframe(plug.split(".", 1)[0], query=True, timeChange=True) or []
+                    )
+                ):
+                    raise MmdControlRigBuildError(
+                        "Arm IK partial bake cannot preserve keys outside frame_range; "
+                        "bake the full animation range or disable Arm IK first"
+                    )
+    sample_times = _dense_sample_times(sorted(times), frame_range)
+    if not sample_times:
+        sample_times = [float(cmds.currentTime(query=True))]
+    # Evaluate every live channel before disconnecting any axis.
+    samples = {control: [] for _, control, _, _ in inputs}
+    if bake:
+        current_time = cmds.currentTime(query=True)
+        try:
+            for time in sample_times:
+                cmds.currentTime(time, update=True)
+                for control in samples:
+                    samples[control].append((time, float(cmds.getAttr(control))))
+        finally:
+            cmds.currentTime(current_time, update=True)
+    states = _capture_plug_states(cmds, [control for _, control, _, _ in inputs])
+    raw_metadata = _raw_metadata(cmds, root)
+    created = []
+    with _undo_chunk(cmds, "Stage Arm IK Exit"):
+        try:
+            for item, control, source, output in inputs:
+                staged_source = source
+                if bake:
+                    curve = cmds.createNode("animCurveTA", name="armIK_bake")
+                    created.append(curve)
+                    time_nodes = cmds.ls(type="time") or []
+                    if len(time_nodes) != 1:
+                        raise MmdControlRigBuildError("arm IK bake requires one scene time node")
+                    cmds.connectAttr(time_nodes[0] + ".outTime", curve + ".input")
+                    for time, value in samples[control]:
+                        cmds.setKeyframe(curve, time=time, value=value)
+                    cmds.keyTangent(curve, edit=True, inTangentType="linear", outTangentType="linear")
+                    staged_source = curve + ".output"
+                cmds.disconnectAttr(output, control)
+                if staged_source:
+                    cmds.connectAttr(staged_source, control, force=False)
+                else:
+                    cmds.setAttr(control, item["value"])
+                row = controls[control]
+                row["controlSource"] = staged_source
+                row["controlSourceRef"] = _plug_reference(cmds, staged_source) if staged_source else None
+            for arm in arms:
+                arm["active"] = False
+            # These curves are discarded by this context on failure, so the
+            # inner transaction need not duplicate them for curve snapshots.
+            yield tuple(created)
+        except Exception:
+            _restore_plug_states(
+                cmds, states,
+                allowed_sources={source for _, _, source, _ in inputs if source},
+                owned_nodes=set(created),
+            )
+            for curve in created:
+                if cmds.objExists(curve):
+                    cmds.delete(curve)
+            _restore_raw_metadata(cmds, root, raw_metadata)
+            raise
 
 
 def _resolve_edit_journal(cmds, metadata: Mapping[str, Any]):
