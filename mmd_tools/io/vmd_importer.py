@@ -158,6 +158,7 @@ def import_vmd_file(
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
             - vmd_fps: VMDインポート時のMayaシーンFPS (24, 30, or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
+            - use_animation_layers: 通常読込でアニメーションレイヤーを使用する（既定True）。Falseでも既存レイヤーは削除しない。
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
@@ -228,6 +229,7 @@ def import_vmd_file(
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
+        converter.use_animation_layers = bool(options.get("use_animation_layers", True))
         # Apply VMD import FPS setting (sets Maya scene time unit; VMD frame numbers are not rescaled)
         vmd_fps = _normalize_vmd_fps(options.get("vmd_fps", 30), logger)
         converter.fps = float(vmd_fps)
