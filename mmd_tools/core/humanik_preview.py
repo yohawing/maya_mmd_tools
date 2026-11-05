@@ -152,12 +152,27 @@ class HumanIkTargetPreview:
         )
 
 
-def _has_unresolved_indirect_output(row: Dict[str, Any], cmds) -> bool:
-    """Fail closed on manual writers whose downstream ownership is unknown."""
-    return bool(
-        row["classification"] == "manual"
-        and cmds.listConnections(row["node"], source=False, destination=True, plugs=True)
-    )
+def _has_unresolved_indirect_output(row: Dict[str, Any], cmds, hik_joints) -> bool:
+    """Reject manual writers only when their outputs can affect this target."""
+    if row["classification"] != "manual":
+        return False
+    pending = [row["node"]]
+    visited = set()
+    while pending:
+        node = pending.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        outputs = cmds.listConnections(node, source=False, destination=True, plugs=True) or []
+        if outputs and (row.get("readHikJoints") or row.get("writeHikJoints")):
+            return True
+        for plug in outputs:
+            destination = plug.split(".", 1)[0]
+            names = cmds.ls(destination, long=True) or []
+            if hik_joints.intersection(names):
+                return True
+            pending.append(destination)
+    return False
 
 
 def _preisolated_foot_has_unexpected_output(row: Dict[str, Any], cmds, rows_by_node) -> bool:
@@ -255,7 +270,7 @@ def begin_humanik_target_preview(
         if (
             _preisolated_foot_has_unexpected_output(row, cmds, pre_rows_by_node)
             if row["node"] in verified_preisolated_nodes
-            else _has_unresolved_indirect_output(row, cmds)
+            else _has_unresolved_indirect_output(row, cmds, hik_joint_set)
         )
     ]
     if indirect_blockers:
@@ -347,13 +362,12 @@ def begin_humanik_target_preview(
             if row["node"] not in muted_nodes
             and row["node"] not in feedback_nodes
             and row["classification"] in BLOCKING_CLASSIFICATIONS
-            # Unknown outgoing connections may reach this target through a
-            # utility node, so only an output-free manual node is unrelated.
+            # Ignore manual writers whose downstream graph is unrelated to this target.
             and (
                 row["classification"] != "manual"
                 or row.get("readHikJoints")
                 or row.get("writeHikJoints")
-                or _has_unresolved_indirect_output(row, cmds)
+                or _has_unresolved_indirect_output(row, cmds, hik_joint_set)
             )
         ]
         if post_blockers:

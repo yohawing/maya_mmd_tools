@@ -463,6 +463,24 @@ class TestHumanIkPreview(unittest.TestCase):
         stop_humanik_target_preview(preview, cmds, mel)
         self.assertEqual(mel.source, "")
 
+    def test_other_model_indirect_outputs_do_not_block_preview(self):
+        cmds, mel = FakeCmds(), FakeMel()
+        cmds.downstream.update({
+            "other_append": ["other_utility.input"],
+            "other_utility": ["|other_model|joint.rotateX", "other_append.input"],
+        })
+        report = {"rows": [{
+            "node": "other_append", "classification": "manual",
+            "readHikJoints": [], "writeHikJoints": [], "writes": [],
+        }]}
+        with patch("mmd_tools.core.humanik_preview.classify_humanik_constraints", return_value=report):
+            preview = begin_humanik_target_preview(
+                "owner:target", "Target", "Source", {"rows": []}, {"|hips"}, cmds, mel
+            )
+        self.assertTrue(preview.active)
+        stop_humanik_target_preview(preview, cmds, mel)
+        self.assertEqual(mel.source, "")
+
     def test_post_scan_still_blocks_unresolved_target_constraint(self):
         cmds, mel = FakeCmds(), FakeMel()
         post_report = {"rows": [{
@@ -483,6 +501,7 @@ class TestHumanIkPreview(unittest.TestCase):
     def test_pre_scan_blocks_unresolved_indirect_output_before_connect(self):
         cmds, mel = FakeCmds(), FakeMel()
         cmds.downstream["unknown_append"] = ["utility.input"]
+        cmds.downstream["utility"] = ["|hips.rotateX"]
         post_report = {"rows": [{
             "node": "unknown_append",
             "classification": "manual",
@@ -521,6 +540,7 @@ class TestHumanIkPreview(unittest.TestCase):
     def test_post_scan_blocks_new_unresolved_output_and_rolls_back(self):
         cmds, mel = FakeCmds(), FakeMel()
         cmds.downstream["new_unknown_append"] = ["utility.input"]
+        cmds.downstream["utility"] = ["|hips.rotateX"]
         post_report = {"rows": [{
             "node": "new_unknown_append",
             "classification": "manual",
@@ -566,6 +586,7 @@ class TestHumanIkPreview(unittest.TestCase):
             with self.subTest(node_type=node_type):
                 cmds, mel = FakeCmds(), FakeMel()
                 cmds.downstream["unknown_node"] = ["utility.input"]
+                cmds.downstream["utility"] = ["|hips.rotateX"]
                 cmds.downstream_pairs["unknown_node"] = ["unknown_node.outputRotate", "utility.input"]
                 report = {"rows": [{
                     "node": "unknown_node",
