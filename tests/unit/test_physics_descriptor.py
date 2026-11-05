@@ -11,6 +11,7 @@ from mmd_tools.core.physics_descriptor import (
     _body_from_bone,
     _bone_from_body,
     _quat_from_euler_zyx,
+    _pmx_body_euler_to_bullet,
     _quat_mul,
     build_descriptors_from_pmx,
     validate_joint_fields,
@@ -28,6 +29,26 @@ FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_
 
 class TestQuaternionMath(unittest.TestCase):
     """Verify quaternion helpers match expected results."""
+
+    def test_pmx_body_adapter_matches_independent_axis_composition(self):
+        # PMX bodies use Ry * Rx * Rz; Bullet decodes Rz * Ry * Rx.
+        for angles in ((.23, -.41, .67), (.7, .4, -.3),
+                       (0.0, math.pi / 2, 0.0), (0.0, -math.pi / 2, 0.0),
+                       (0.0, math.pi / 2 - 1e-7, 0.0)):
+            with self.subTest(angles=angles):
+                x, y, z = angles
+                expected = _quat_mul(
+                    _quat_mul((0, math.sin(y/2), 0, math.cos(y/2)),
+                              (math.sin(x/2), 0, 0, math.cos(x/2))),
+                    (0, 0, math.sin(z/2), math.cos(z/2)),
+                )
+                actual = _quat_from_euler_zyx(*_pmx_body_euler_to_bullet(angles))
+                self.assertAlmostEqual(abs(sum(a*b for a, b in zip(actual, expected))), 1.0, places=12)
+                forward = _body_from_bone((1, 2, 3), angles, (0, 0, 0))[1]
+                inverse = _bone_from_body((1, 2, 3), angles, (0, 0, 0))[1]
+                for a, b in zip(forward, expected):
+                    self.assertAlmostEqual(a, b, places=12)
+                self.assertAlmostEqual(abs(_quat_mul(forward, inverse)[3]), 1.0, places=12)
 
     def test_identity_euler(self):
         q = _quat_from_euler_zyx(0.0, 0.0, 0.0)
@@ -182,6 +203,22 @@ class TestBuildDescriptorsFromPmx(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
+
+    def test_only_body_abi_angles_are_adapted_without_mutating_pmx(self):
+        pmx = copy.deepcopy(self.pmx)
+        angles = (.23, -.41, .67)
+        pmx.rigid_bodies[0].rotation = angles
+        for joint in pmx.joints:
+            joint.rotation = angles
+        descriptors = build_descriptors_from_pmx(pmx.rigid_bodies, pmx.joints, pmx.bones)
+        body = descriptors.rigid_bodies[0]
+        reconstructed = _quat_from_euler_zyx(*body.rotation_euler_xyz)
+        expected = _body_from_bone((0, 0, 0), angles, (0, 0, 0))[1]
+        self.assertAlmostEqual(abs(sum(a*b for a, b in zip(reconstructed, expected))), 1.0, places=7)
+        self.assertEqual(pmx.rigid_bodies[0].rotation, angles)
+        self.assertEqual(pmx.joints[0].rotation, angles)
+        for actual, raw in zip(descriptors.joints[0].rotation_euler_xyz, angles):
+            self.assertAlmostEqual(actual, raw, places=7)
 
     def test_descriptor_count_matches_pmx(self):
         desc_set = build_descriptors_from_pmx(

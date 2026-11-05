@@ -1,10 +1,10 @@
-"""DAG descriptor parity: PMX import → DAG → descriptors → physics world.
+"""DAG descriptor parity against a corrected legacy native PMX reference.
 
-Verifies that the full pipeline (scene builder → DAG attrs → descriptor
-extraction → typed physics world) produces identical simulation results
-to the direct PMX bytes path.
-
-Requires Maya (mayapy) and the native physics DLL with Bullet support.
+Reference PMX copies normalize body rotations to the legacy native reader's
+ZYX convention using an independent matrix oracle. Original fixture bytes,
+model instances, joint frames and exported PMX metadata remain unchanged.
+The raw native reader is retained as a negative orientation control.
+Requires Maya and the native physics DLL with Bullet support.
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def _create_minimal_joints(bones, scale=1.0) -> list[str]:
 
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 class TestPhysicsDagParity(MayaTestBase):
-    """Typed descriptor world from DAG must match PMX direct world."""
+    """DAG world must match the independently normalized legacy native reference."""
 
     @classmethod
     def setUpClass(cls):
@@ -83,6 +83,10 @@ class TestPhysicsDagParity(MayaTestBase):
 
         cls.pmx_bytes = FIXTURE_PATH.read_bytes()
         cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
+        from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes
+        cls.corrected_native_bytes = legacy_native_reference_pmx_bytes(
+            parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        )
         cls.pmx_desc_set = build_descriptors_from_pmx(
             cls.pmx.rigid_bodies, cls.pmx.joints, cls.pmx.bones,
         )
@@ -414,7 +418,7 @@ class TestPhysicsDagParity(MayaTestBase):
             pmx_model.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_scaled_import_native_physics_world_preserves_character_scale(self):
+    def test_scaled_import_matches_normalized_legacy_reference_scale(self):
         """Physics reset must keep the imported character scale."""
         from mmd_tools.io.pmx_importer import import_pmx_file
         from mmd_tools.core.physics_solver import _collect_bone_joints
@@ -437,7 +441,7 @@ class TestPhysicsDagParity(MayaTestBase):
         )
         dag_model = MmdRuntimeModel.from_descriptors(dag_model_desc)
         dag_instance = MmdRuntimeInstance.for_model(dag_model)
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
         pmx_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         pmx_instance = MmdRuntimeInstance.for_model(pmx_model)
         self.assertIsNotNone(dag_world)
@@ -486,7 +490,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
 
         self.assertEqual(dag_world.rigidbody_count(), pmx_world.rigidbody_count())
         self.assertEqual(dag_world.rigidbody_count(), 16)
@@ -495,7 +499,7 @@ class TestPhysicsDagParity(MayaTestBase):
         pmx_world.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_dag_world_initial_states_match_pmx_world(self):
+    def test_dag_world_initial_states_match_normalized_legacy_native_reference(self):
         root, maya_joints, _, _ = self._build_dag_scene()
         dag_desc_set = build_descriptors_from_dag(
             root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
@@ -503,7 +507,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
 
         # Keep each reset on an independent runtime instance.  Reusing one
         # instance can hide state leakage between the descriptor and direct
@@ -544,7 +548,7 @@ class TestPhysicsDagParity(MayaTestBase):
         pmx_world.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_dag_world_multi_step_matches_pmx_world(self):
+    def test_dag_world_multi_step_matches_normalized_legacy_native_reference(self):
         root, maya_joints, _, _ = self._build_dag_scene()
         dag_desc_set = build_descriptors_from_dag(
             root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
@@ -553,7 +557,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
 
         dag_states = self._run_steps(dag_world, num_steps=10)
         pmx_states = self._run_steps(pmx_world, num_steps=10)
@@ -577,7 +581,7 @@ class TestPhysicsDagParity(MayaTestBase):
         pmx_world.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_dag_bone_world_matrices_match_pmx_after_stepping(self):
+    def test_dag_bone_world_matrices_match_normalized_legacy_reference_after_stepping(self):
         """Bone world matrices must match after split-evaluation physics stepping."""
         root, maya_joints, _, _ = self._build_dag_scene()
         dag_desc_set = build_descriptors_from_dag(
@@ -586,7 +590,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
 
         dag_matrices = self._run_split_eval_steps(dag_world, num_steps=10)
         pmx_matrices = self._run_split_eval_steps(pmx_world, num_steps=10)
@@ -641,6 +645,141 @@ class TestPhysicsDagParity(MayaTestBase):
         instance.free()
         model.free()
         return matrices
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
+@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+class TestCompoundColliderNativeContract(MayaTestBase):
+    """Independent PMX body Ry*Rx*Rz contract, separate from legacy native parsing."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.load_plugin(str(Path(__file__).resolve().parents[2] / 'mmd_tools/plugin_main.py'))
+
+    @staticmethod
+    def fixture(scale):
+        from types import SimpleNamespace
+        root = cmds.createNode('transform', name='CompoundColliderModel')
+        bone = cmds.createNode('joint', name='ColliderBone', parent=root)
+        cmds.setAttr(bone + '.translate', scale, 2 * scale, -3 * scale)
+        bodies = [SimpleNamespace(name=name, name_english=name, shape_type=i, size=size,
+                  position=(3 + i * 7, 4, 5), rotation=(.23, -.41, .67), physics_mode=0,
+                  mass=0., velocity_attenuation=.1, rotation_attenuation=.1,
+                  friction=.5, elasticity=0., group=1, collision_mask=0, related_bone_index=0)
+                  for i, (name, size) in enumerate([('sphere', (1.2, 0, 0)),
+                  ('box', (1.1, 2.3, .7)), ('capsule', (.8, 2.6, 0))])]
+        constraint = SimpleNamespace(name='frame', name_english='frame', joint_type=0,
+                     position=(5, 6, 7), rotation=(.17, -.29, .51),
+                     translation_limit_min=(0, 0, 0), translation_limit_max=(0, 0, 0),
+                     rotation_limit_min=(-.1, -.2, -.3), rotation_limit_max=(.1, .2, .3),
+                     spring_translation=(0, 0, 0), spring_rotation=(0, 0, 0),
+                     rigid_body_a_index=0, rigid_body_b_index=1)
+        transforms, _ = build_physics_scene(rigid_bodies=bodies, joints=[constraint], bones=[],
+                                           maya_joints=[bone], root_group=root, scale=scale)
+        return root, bone, bodies, transforms
+
+    def verify(self, root, bone, bodies, transforms, scale):
+        import math
+        from ctypes import c_float
+        from maya.api import OpenMaya as om
+        from mmd_tools.converters.physics_export_collector import collect_physics_from_scene
+        from mmd_tools.core.collider_geometry import collider_half_extents
+
+        def multiply(a, b):
+            x, y, z, w = a
+            X, Y, Z, W = b
+            return (w*X+x*W+y*Z-z*Y, w*Y-x*Z+y*W+z*X,
+                    w*Z+x*Y-y*X+z*W, w*W-x*X-y*Y-z*Z)
+
+        x, y, z = bodies[0].rotation
+        # Hamilton product from Saba's explicit Ry * Rx * Rz body matrix.
+        expected_q = multiply(multiply((0, math.sin(y/2), 0, math.cos(y/2)),
+                                      (math.sin(x/2), 0, 0, math.cos(x/2))),
+                              (0, 0, math.sin(z/2), math.cos(z/2)))
+        descriptors = build_descriptors_from_dag(root, bone_joints=[bone], bone_count=1)
+        self.assertTrue(descriptors.is_valid)
+        exports, joint_exports = collect_physics_from_scene(root, {bone: 0})
+        # Joint frames retain the existing Bullet ZYX contract; body conversion
+        # must not silently apply the body's YXZ convention to constraints.
+        self.assertEqual(len(descriptors.joints), 1)
+        self.assertEqual(list(descriptors.joints[0].rotation_euler_xyz),
+                         [c_float(v).value for v in (.17, -.29, .51)])
+        self.assertListAlmostEqual(joint_exports[0]['rotation'], (.17, -.29, .51))
+        world = MmdRuntimePhysicsWorld.from_descriptors(descriptors.rigid_bodies, [])
+        self.assertIsNotNone(world)
+        try:
+            states = world.copy_rigidbody_states()
+            self.assertEqual(len(states), 3)
+            for body, transform, descriptor, state, exported in zip(
+                    bodies, transforms, descriptors.rigid_bodies, states, exports):
+                position, rotation = state
+                self.assertLess(1-abs(sum(a*b for a,b in zip(rotation,expected_q))), 1e-6)
+                shape = cmds.listRelatives(transform, shapes=True, fullPath=True)[0]
+                self.assertListAlmostEqual(cmds.getAttr(shape+'.rotation')[0],
+                                           [math.degrees(v) for v in body.rotation])
+                self.assertListAlmostEqual(exported['rotation'], body.rotation)
+                self.assertEqual(list(descriptor.shape_size), [c_float(v*scale).value for v in body.size])
+                selection = om.MSelectionList()
+                selection.add(shape)
+                dag = selection.getDagPath(0)
+                bbox = om.MFnDagNode(dag).boundingBox
+                self.assertListAlmostEqual([bbox.width/2,bbox.height/2,bbox.depth/2],
+                                           collider_half_extents(body.shape_type, descriptor.shape_size), places=5)
+                native = om.MTransformationMatrix()
+                native.setRotation(om.MQuaternion(-rotation[0],-rotation[1],rotation[2],rotation[3]))
+                native.setTranslation(om.MVector(position[0],position[1],-position[2]),om.MSpace.kTransform)
+                self.assertLess(max(abs(a-b) for a,b in zip(dag.inclusiveMatrix(),native.asMatrix())),1e-5)
+                self.assertListAlmostEqual(descriptor.body_from_bone_position_xyz,
+                                           [(body.position[i]-(1,2,3)[i])*scale for i in range(3)],places=5)
+                self.assertLess(1-abs(sum(a*b for a,b in zip(descriptor.body_from_bone_rotation_xyzw,expected_q))),1e-6)
+                # Inverse offset composed with the body offset must be identity.
+                q = om.MQuaternion(*descriptor.body_from_bone_rotation_xyzw)
+                inverse_position = om.MVector(*descriptor.bone_from_body_position_xyz).rotateBy(q)
+                self.assertLess((inverse_position+om.MVector(*descriptor.body_from_bone_position_xyz)).length(),1e-5)
+        finally:
+            world.free()
+
+    def test_three_shapes_three_scales_match_native_and_preserve_raw_export(self):
+        for scale in (.5, 1., 10.):
+            with self.subTest(scale=scale):
+                cmds.file(new=True, force=True)
+                self.verify(*self.fixture(scale), scale)
+
+    def test_legacy_raw_native_is_a_negative_control_for_fixed_mmd_orientation(self):
+        expected = (0.16635528384310905, 0.13165804153184718,
+                    0.6064593322922748, 0.7662892129692844)
+        pmx = parse_pmx_file(str(FIXTURE_PATH))
+        self.assertEqual(tuple(pmx.rigid_bodies[0].rotation),
+                         (.09540669620037079, .41741126775741577, 1.3591997623443604))
+        descriptors = build_descriptors_from_pmx(pmx.rigid_bodies, pmx.joints, pmx.bones)
+        adapted = MmdRuntimePhysicsWorld.from_descriptors(descriptors.rigid_bodies, descriptors.joints)
+        legacy = MmdRuntimePhysicsWorld.from_pmx_bytes(FIXTURE_PATH.read_bytes())
+        self.assertIsNotNone(adapted)
+        self.assertIsNotNone(legacy)
+        try:
+            actual = adapted.copy_rigidbody_states()[0][1]
+            raw = legacy.copy_rigidbody_states()[0][1]
+            self.assertLess(max(abs(a-b) for a, b in zip(actual, expected)), 1e-6)
+            self.assertGreater(max(abs(a-b) for a, b in zip(raw, expected)), .1)
+        finally:
+            adapted.free()
+            legacy.free()
+
+    def test_compound_collider_undo_and_ascii_roundtrip(self):
+        import tempfile
+        root, bone, bodies, transforms = self.fixture(.5)
+        cmds.undoInfo(state=True)
+        cmds.setAttr(transforms[1]+'.translateX', 99.)
+        cmds.undo()
+        self.verify(root, bone, bodies, transforms, .5)
+        with tempfile.TemporaryDirectory() as directory:
+            scene = str(Path(directory)/'compound.ma')
+            cmds.file(rename=scene)
+            cmds.file(save=True, type='mayaAscii', force=True)
+            cmds.file(new=True, force=True)
+            cmds.file(scene, open=True, force=True)
+            self.verify(root, bone, bodies, transforms, .5)
 
 
 if __name__ == "__main__":

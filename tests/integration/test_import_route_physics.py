@@ -10,6 +10,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes
+
 from maya import cmds
 
 from mmd_tools.core.constants import (
@@ -117,7 +119,11 @@ class TestImportRoutePhysics(MayaTestBase):
 
     def _native_live_oracle(self, gravity):
         """Reuse the DAG parity split-evaluation helper for the PMX oracle."""
-        world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+            legacy_native_reference_pmx_bytes(
+                parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+            )
+        )
         self.assertIsNotNone(world, "native PMX physics world creation")
         try:
             self.assertTrue(world.set_gravity(gravity))
@@ -264,7 +270,7 @@ class TestImportRoutePhysics(MayaTestBase):
         )
 
     def test_python_and_cpp_routes_match_live_physics_and_native_oracle(self):
-        """The same off/on, live, and reopen contract must agree for both routes."""
+        """Both routes agree with the normalized legacy native reference and reopen."""
         results = {}
         for route in ImportRoute:
             with self.subTest(route=route.value):

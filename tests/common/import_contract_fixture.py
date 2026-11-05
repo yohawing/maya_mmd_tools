@@ -223,6 +223,21 @@ def _assert_descriptor_semantics(test_case: Any, actual: Any, expected: Any) -> 
                 "physics rigid body {} {}".format(index, field),
             )
         for field, count in body_float_fields:
+            if field == "bone_from_body_position_xyz":
+                # Maya angle radians->UI degrees->radians can move a derived
+                # inverse-rotated offset by one float32 ULP. Raw fields stay exact.
+                import struct
+
+                for actual_value, expected_value in zip(
+                    getattr(actual_body, field)[:count], getattr(expected_body, field)[:count]
+                ):
+                    if actual_value == expected_value:
+                        continue
+                    actual_bits = struct.unpack("!i", struct.pack("!f", actual_value))[0]
+                    expected_bits = struct.unpack("!i", struct.pack("!f", expected_value))[0]
+                    test_case.assertLessEqual(abs(actual_bits - expected_bits), 1,
+                                              "physics rigid body {} {} float32 ULP".format(index, field))
+                continue
             test_case.assertEqual(
                 tuple(float(value) for value in getattr(actual_body, field)[:count]),
                 tuple(float(value) for value in getattr(expected_body, field)[:count]),

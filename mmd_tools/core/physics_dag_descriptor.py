@@ -29,6 +29,7 @@ from mmd_tools.core.physics_descriptor import (
     PhysicsDescriptorSet,
     _body_from_bone,
     _bone_from_body,
+    _pmx_body_euler_to_bullet,
     _set_float3,
     _set_float4,
     validate_joint_fields,
@@ -189,7 +190,7 @@ def build_descriptors_from_dag(
         desc.shape = shape_type
         _set_float3(desc.shape_size, shape_size)
         _set_float3(desc.position_xyz, position)
-        _set_float3(desc.rotation_euler_xyz, rotation)
+        _set_float3(desc.rotation_euler_xyz, _pmx_body_euler_to_bullet(rotation))
         desc.mass = mass
         desc.linear_damping = linear_damping
         desc.angular_damping = angular_damping

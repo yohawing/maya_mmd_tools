@@ -3,7 +3,8 @@
 Converts PMX rigid-body / joint data into the typed descriptor structs
 expected by ``mmd_runtime_physics_world_create``.  The body_from_bone and
 bone_from_body transforms are computed here from PMX bone rest positions
-and rigid-body bind poses, matching the mmd-anim Rust implementation.
+and rigid-body bind poses. PMX body orientation is adapted to Bullet's ZYX
+encoding; native direct-from-PMX currently uses different compound rotations.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import math
 import struct
 from dataclasses import dataclass, field
 from typing import List, Sequence, Tuple
+
+from mmd_tools.core.coordinate_transform import mmd_rigid_body_euler_to_quaternion
 
 from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_JOINT_KIND_GENERIC_6DOF_SPRING,
@@ -50,11 +53,7 @@ Vec4 = Tuple[float, float, float, float]
 # ---------------------------------------------------------------------------
 
 def _quat_from_euler_zyx(x: float, y: float, z: float) -> Vec4:
-    """Euler XYZ radians -> quaternion (x,y,z,w) using intrinsic ZYX order.
-
-    Matches glam ``Quat::from_euler(EulerRot::ZYX, z, y, x)`` which is
-    equivalent to intrinsic X then Y then Z rotation — the MMD/PMX convention.
-    """
+    """Decode Bullet ABI XYZ angles as Rz * Ry * Rx, without PMX adaptation."""
     cx, sx = math.cos(x * 0.5), math.sin(x * 0.5)
     cy, sy = math.cos(y * 0.5), math.sin(y * 0.5)
     cz, sz = math.cos(z * 0.5), math.sin(z * 0.5)
@@ -63,6 +62,24 @@ def _quat_from_euler_zyx(x: float, y: float, z: float) -> Vec4:
     qy = cx * sy * cz + sx * cy * sz
     qz = cx * cy * sz - sx * sy * cz
     return (qx, qy, qz, qw)
+
+
+def _pmx_body_euler_to_bullet(euler_xyz: Vec3) -> Vec3:
+    """Encode PMX body orientation for btQuaternion.setEulerZYX(z, y, x).
+
+    This conversion is for rigid bodies only. Constraint-frame conventions
+    are separate and retain their existing ABI interpretation.
+    """
+    x, y, z, w = mmd_rigid_body_euler_to_quaternion(euler_xyz)
+    m31 = 2.0 * (x * z - y * w)
+    y_angle = math.asin(max(-1.0, min(1.0, -m31)))
+    if abs(m31) < 1.0 - 1e-12:
+        x_angle = math.atan2(2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y))
+        z_angle = math.atan2(2.0 * (x * y + z * w), 1.0 - 2.0 * (y * y + z * z))
+    else:
+        x_angle = 0.0
+        z_angle = math.atan2(2.0 * (z * w - x * y), 1.0 - 2.0 * (x * x + z * z))
+    return (x_angle, y_angle, z_angle)
 
 
 def _quat_conjugate(q: Vec4) -> Vec4:
@@ -93,10 +110,10 @@ def _body_from_bone(
 ) -> Tuple[Vec3, Vec4]:
     """Compute body_from_bone transform: inv(bone_bind) * body_bind.
 
-    bone_bind is translation-only. body_bind is translation + ZYX euler rotation.
+    bone_bind is translation-only. body_bind is translation + PMX Ry * Rx * Rz rotation.
     Result is (position_xyz, rotation_xyzw).
     """
-    body_quat = _quat_from_euler_zyx(*body_rot_euler)
+    body_quat = mmd_rigid_body_euler_to_quaternion(body_rot_euler)
     rel_pos = (
         body_pos[0] - bone_pos[0],
         body_pos[1] - bone_pos[1],
@@ -114,7 +131,7 @@ def _bone_from_body(
 
     Result is (position_xyz, rotation_xyzw).
     """
-    body_quat = _quat_from_euler_zyx(*body_rot_euler)
+    body_quat = mmd_rigid_body_euler_to_quaternion(body_rot_euler)
     inv_body_quat = _quat_conjugate(body_quat)
     rel_pos = (
         bone_pos[0] - body_pos[0],
@@ -323,7 +340,7 @@ def build_descriptors_from_pmx(
         desc.shape = rb.shape_type
         _set_float3(desc.shape_size, rb.size)
         _set_float3(desc.position_xyz, rb.position)
-        _set_float3(desc.rotation_euler_xyz, rb.rotation)
+        _set_float3(desc.rotation_euler_xyz, _pmx_body_euler_to_bullet(rb.rotation))
         desc.mass = rb.mass
         desc.linear_damping = rb.velocity_attenuation
         desc.angular_damping = rb.rotation_attenuation

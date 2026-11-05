@@ -33,10 +33,10 @@ def mmd_euler_xyz_to_maya(euler_xyz: Sequence[float]) -> Tuple[float, float, flo
     )
 
 
-def mmd_euler_xyz_to_maya_quaternion(
+def mmd_rigid_body_euler_to_quaternion(
     euler_xyz: Sequence[float],
 ) -> Tuple[float, float, float, float]:
-    """Convert PMX XYZ Euler radians to a reflected Maya-space quaternion."""
+    """Compose PMX rigid-body angles as Ry * Rx * Rz in MMD space."""
     half_x = float(euler_xyz[0]) * 0.5
     half_y = float(euler_xyz[1]) * 0.5
     half_z = float(euler_xyz[2]) * 0.5
@@ -48,6 +48,14 @@ def mmd_euler_xyz_to_maya_quaternion(
     qy = cos_x * sin_y * cos_z - sin_x * cos_y * sin_z
     qz = cos_x * cos_y * sin_z - sin_x * sin_y * cos_z
     qw = cos_x * cos_y * cos_z + sin_x * sin_y * sin_z
+    return (qx, qy, qz, qw)
+
+
+def mmd_euler_xyz_to_maya_quaternion(
+    euler_xyz: Sequence[float],
+) -> Tuple[float, float, float, float]:
+    """Reflect the existing PMX collider display orientation into Maya space."""
+    qx, qy, qz, qw = mmd_rigid_body_euler_to_quaternion(euler_xyz)
     return (-qx, -qy, qz, qw)
 
 
