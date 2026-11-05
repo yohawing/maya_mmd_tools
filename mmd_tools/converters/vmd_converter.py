@@ -230,6 +230,7 @@ class VmdConverter:
         self._rotation_time_curve_records: List[Dict[str, Any]] = []
         self.anim_layer = None  # 現在のアニメーションレイヤー名
         self._reuse_cleared_anim_layer = False
+        self._cleared_anim_layer_position = None
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
         self.import_camera_animation = True
         self.import_light_animation = True
@@ -573,6 +574,7 @@ class VmdConverter:
             self.logger.error("VMD model motion requires an explicit target model")
             return False
         self._reuse_cleared_anim_layer = False
+        self._cleared_anim_layer_position = None
         if create_mmd_control_rig and bake_mode:
             self._record_profile_warning(
                 profile,
@@ -804,6 +806,7 @@ class VmdConverter:
                             override=False,
                             weight=1.0,
                         )
+                        self._restore_cleared_anim_layer_position(self.anim_layer)
             else:
                 self.anim_layer = None
 
@@ -2608,6 +2611,15 @@ class VmdConverter:
                 authored_routes = self._build_legacy_bone_key_routes()
             except Exception as exc:
                 self.logger.debug("Failed to build VMD clear routes: %s", exc)
+        position = None
+        if cmds.objExists(layer_name) and cmds.nodeType(layer_name) == "animLayer":
+            parent = cmds.animLayer(layer_name, query=True, parent=True)
+            if parent:
+                siblings = cmds.animLayer(parent, query=True, children=True) or []
+                if layer_name in siblings:
+                    index = siblings.index(layer_name)
+                    successor = siblings[index + 1] if index + 1 < len(siblings) else None
+                    position = (parent, successor)
         self._reuse_cleared_anim_layer = bool(clear_existing_motion(
             self._import_state_context(),
             layer_name,
@@ -2617,7 +2629,22 @@ class VmdConverter:
             detached_curve_nodes=detached_curve_nodes,
             authored_routes=authored_routes,
         ))
+        self._cleared_anim_layer_position = position if not cmds.objExists(layer_name) else None
         return detached_curve_nodes
+
+    def _restore_cleared_anim_layer_position(self, layer: str) -> None:
+        """Put a replacement VMD layer back in its deleted sibling slot."""
+        position = self._cleared_anim_layer_position
+        self._cleared_anim_layer_position = None
+        if not position:
+            return
+        parent, successor = position
+        if not cmds.objExists(parent):
+            return
+        if cmds.animLayer(layer, query=True, parent=True) != parent:
+            cmds.animLayer(layer, edit=True, parent=parent)
+        if successor and cmds.objExists(successor):
+            cmds.animLayer(layer, edit=True, moveLayerBefore=successor)
 
     def _clear_existing_camera_motion(self) -> None:
         """既存のMMDカメラアニメーションキーを削除する。"""

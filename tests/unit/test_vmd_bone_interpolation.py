@@ -10,7 +10,7 @@ import maya.cmds as cmds
 from mmd_tools.converters import vmd_bezier_tangent, vmd_profile
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdImportStateContext
-from mmd_tools.converters.vmd_import_state import clear_existing_motion
+from mmd_tools.converters.vmd_import_state import clear_existing_motion, _delete_layer_preserving_static_bases
 from mmd_tools.converters.vmd_redirected_authoring_proxy import (
     resolve_redirected_authoring_proxy_authority,
 )
@@ -252,6 +252,68 @@ class TestVmdBoneInterpolation(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(plug), -90.0, places=3)
         cmds.animLayer(layer, edit=True, weight=0.0)
         self.assertAlmostEqual(cmds.getAttr(plug), 5.0, places=3)
+
+    def test_replacement_layer_retains_parent_and_sibling_slot(self):
+        for nested, has_successor in ((False, True), (True, True), (True, False)):
+            with self.subTest(nested=nested, has_successor=has_successor):
+                cmds.file(new=True, force=True)
+                parent = cmds.animLayer("manual_parent") if nested else None
+                layer = cmds.animLayer("replacement_vmd")
+                if parent:
+                    cmds.animLayer(layer, edit=True, parent=parent)
+                parent = cmds.animLayer(layer, query=True, parent=True)
+                if has_successor:
+                    successor = cmds.animLayer("manual_override", override=True, weight=0.6)
+                    cmds.animLayer(successor, edit=True, parent=parent)
+                expected = cmds.animLayer(parent, query=True, children=True)
+                with patch("mmd_tools.converters.vmd_converter.clear_existing_motion", side_effect=lambda *args, **kw: cmds.delete(layer)):
+                    self.converter._clear_existing_motion(layer, authored_routes={})
+                replacement = cmds.animLayer(layer)
+                self.converter._restore_cleared_anim_layer_position(replacement)
+                self.assertEqual(cmds.animLayer(replacement, query=True, parent=True), parent)
+                self.assertEqual(cmds.animLayer(parent, query=True, children=True), expected)
+                if has_successor:
+                    self.assertAlmostEqual(cmds.getAttr(successor + ".weight"), 0.6)
+                    self.assertTrue(cmds.getAttr(successor + ".override"))
+
+    def test_delete_vmd_layer_preserves_surviving_static_and_keyed_bases(self):
+        for keyed_base, channel in ((keyed, attr) for keyed in (False, True) for attr in ("rotateZ", "translateX")):
+            with self.subTest(keyed_base=keyed_base, channel=channel):
+                cmds.file(new=True, force=True)
+                target = cmds.createNode("transform", name="layer_base_target")
+                plug = target + "." + channel
+                cmds.setAttr(plug, 7.0)
+                if keyed_base:
+                    cmds.setKeyframe(plug, time=0, value=7.0)
+                    cmds.setKeyframe(plug, time=10, value=12.0)
+                vmd = cmds.animLayer("replacement_vmd")
+                cmds.animLayer(vmd, edit=True, attribute=plug)
+                cmds.setKeyframe(plug, time=0, value=20.0, animLayer=vmd)
+                cmds.setKeyframe(plug, time=10, value=40.0, animLayer=vmd)
+                manual = cmds.animLayer("manual_layer")
+                cmds.animLayer(manual, edit=True, attribute=plug)
+                cmds.setKeyframe(plug, time=0, value=23.0, animLayer=manual)
+                cmds.setKeyframe(plug, time=10, value=45.0, animLayer=manual)
+                retained = (cmds.animLayer(manual, query=True, animCurves=True) or []) + (
+                    cmds.animLayer(cmds.animLayer(query=True, root=True), query=True, animCurves=True) or []
+                )
+                curves = {curve: cmds.keyframe(curve, query=True, valueChange=True) for curve in retained}
+                cmds.setAttr(vmd + ".mute", True)
+                expected = [cmds.getAttr(plug, time=frame) for frame in (0, 10)]
+                cmds.setAttr(vmd + ".mute", False)
+                cmds.currentTime(10)
+                original = cmds.getAttr(plug)
+                cmds.undoInfo(openChunk=True)
+                try:
+                    _delete_layer_preserving_static_bases(vmd)
+                finally:
+                    cmds.undoInfo(closeChunk=True)
+                for frame, value in zip((0, 10), expected):
+                    self.assertAlmostEqual(cmds.getAttr(plug, time=frame), value, places=6)
+                self.assertEqual(curves, {curve: cmds.keyframe(curve, query=True, valueChange=True) for curve in retained})
+                cmds.undo()
+                self.assertTrue(cmds.objExists(vmd))
+                self.assertAlmostEqual(cmds.getAttr(plug), original, places=6)
 
     def test_clear_layered_ik_input_preserves_base_and_undo(self):
         """Clear removes the VMD solver layer without deleting manual base keys."""

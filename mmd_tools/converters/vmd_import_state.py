@@ -210,6 +210,41 @@ def collect_clearable_authoring_attrs(
     return routed_attrs
 
 
+def _delete_layer_preserving_static_bases(layer_name: str) -> None:
+    """Remove VMD contribution without baking it into a surviving layer's base.
+
+    Maya retains the deleted blend's evaluated output in a downstream static
+    inputA. Preserve its original static base instead; connected authored bases
+    are left to Maya's normal reconnection and are never reset here.
+    """
+    static_bases = {}
+    scalar_types = {"animBlendNodeAdditiveDA", "animBlendNodeAdditiveDL", "animBlendNodeAdditiveF"}
+    for blend in cmds.animLayer(layer_name, query=True, blendNodes=True) or []:
+        node_type = cmds.nodeType(blend)
+        if node_type == "animBlendNodeAdditiveRotation":
+            suffixes = ("X", "Y", "Z")
+        elif node_type in scalar_types:
+            suffixes = ("",)
+        else:
+            continue
+        for suffix in suffixes:
+            base = f"{blend}.inputA{suffix}"
+            if cmds.connectionInfo(base, sourceFromDestination=True):
+                continue
+            output = f"{blend}.output{suffix}"
+            for destination in cmds.listConnections(output, source=False, destination=True, plugs=True) or []:
+                target, attribute = destination.split(".", 1)
+                if (
+                    cmds.nodeType(target) in scalar_types | {"animBlendNodeAdditiveRotation"}
+                    and attribute in {"inputA", "inputAX", "inputAY", "inputAZ"}
+                ):
+                    static_bases[destination] = cmds.getAttr(base)
+    cmds.delete(layer_name)
+    for destination, value in static_bases.items():
+        if cmds.objExists(destination) and not cmds.connectionInfo(destination, sourceFromDestination=True):
+            cmds.setAttr(destination, value)
+
+
 def clear_existing_motion(
     converter_or_context: Union[Any, VmdImportStateContext],
     layer_name: str,
@@ -423,7 +458,7 @@ def clear_existing_motion(
     )
     if cmds.objExists(layer_name) and can_delete_layer and not retains_morph_controller:
         try:
-            cmds.delete(layer_name)
+            _delete_layer_preserving_static_bases(layer_name)
             cleared += 1
         except Exception as exc:
             context.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
