@@ -195,6 +195,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ):
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
                 "mmd_material",
                 "DiffuseColor",
@@ -230,6 +231,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.ls.side_effect = lambda **kwargs: ["current_glsl"] if kwargs.get("type") == "GLSLShader" else []
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
                 "mmd_material", "diffuse_color", "Opacity", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
             }
@@ -247,11 +249,22 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
         self.assertNotIn(call("current_glsl.DiffuseColorRGB", 0.8, 0.8, 0.8, type="double3"), mock_cmds.setAttr.call_args_list)
 
+    def test_legacy_migration_skips_unregistered_glsl_type(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.allNodeTypes.return_value = ["standardSurface", "dx11Shader"]
+            mock_cmds.ls.side_effect = AssertionError("Unregistered type query emits a Maya warning")
+
+            self.assertEqual(migrate_legacy_glsl_diffuse_contracts(), 0)
+
+        mock_cmds.ls.assert_not_called()
+        mock_cmds.setAttr.assert_not_called()
+
     def test_dedicated_legacy_migration_does_not_write_current_glsl_or_dx11(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
             mock_cmds.ls.return_value = ["current_glsl"]
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
                 "mmd_material", "diffuse_color", "Opacity", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
             }
@@ -266,6 +279,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.ls.side_effect = lambda **kwargs: ["current_glsl"] if kwargs.get("type") == "GLSLShader" else []
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr == "mmdDiffuseRgbContractVersion"
             mock_cmds.getAttr.return_value = 1
 
@@ -287,6 +301,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.ls.side_effect = lambda **kwargs: ["legacy_glsl"] if kwargs.get("type") == "GLSLShader" else []
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = attribute_query
             mock_cmds.getAttr.side_effect = lambda plug, **kwargs: False if kwargs.get("lock") else (
                 [legacy[:3]] if plug.endswith("DiffuseColorRGB") else legacy[3] if plug.endswith("DiffuseColorA") else [legacy]
@@ -307,6 +322,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.ls.side_effect = lambda **kwargs: ["legacy_glsl"] if kwargs.get("type") == "GLSLShader" else []
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
                 "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
             }
@@ -335,6 +351,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.ls.return_value = ["driven_legacy"]
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
                 "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
             }
@@ -377,6 +394,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.ls.return_value = ["legacy_glsl"]
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
                 "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
             }
@@ -424,6 +442,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             mock_cmds.ls.return_value = ["legacy_glsl"]
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.allNodeTypes.return_value = ["GLSLShader"]
             mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
                 "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA",
                 "mmdDiffuseRgbContractVersion",

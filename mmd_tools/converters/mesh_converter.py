@@ -1032,6 +1032,8 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
 
 def migrate_legacy_glsl_diffuse_contracts():
     """Migrate only unambiguous legacy MMD GLSL nodes in the current scene."""
+    if "GLSLShader" not in (cmds.allNodeTypes() or []):
+        return 0
     migrated = 0
     for shader in cmds.ls(type="GLSLShader") or []:
         if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) != "GLSLShader":
