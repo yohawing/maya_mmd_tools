@@ -2533,9 +2533,16 @@ class TestToolsSection(unittest.TestCase):
         return presenter, view, app_state, adapter
 
     def test_copy_pose_stores_clipboard(self):
+        from mmd_tools.actions.pose_actions import CopyPoseResult, PoseTransform
+
         presenter, view, _, adapter = self._make()
         adapter.selected = ["j1"]
-        presenter._on_tool_clicked("copy")
+        pose = {"j1": PoseTransform((1, 2, 3), (10, 20, 30))}
+        with patch("mmd_tools.actions.pose_actions.CopyPoseAction.execute", return_value=CopyPoseResult(succeeded=True, pose=pose)) as execute:
+            presenter._on_tool_clicked("copy")
+        request = execute.call_args.args[0]
+        self.assertEqual(request.joints, ["j1"])
+        self.assertEqual(request.model_root, "test_model")
         self.assertIsNotNone(presenter._pose_clipboard)
         self.assertIn("j1", presenter._pose_clipboard)
         self.assertIn("Copied", view.status_label.text())
@@ -2546,15 +2553,38 @@ class TestToolsSection(unittest.TestCase):
         self.assertIn("No joints", view.status_label.text())
 
     def test_paste_pose_applies_clipboard(self):
-        presenter, view, _, adapter = self._make()
-        adapter.selected = ["j1"]
-        presenter._on_tool_clicked("copy")
-        adapter._transforms["j1"] = ([0, 0, 0], [0, 0, 0])
-        presenter._on_tool_clicked("paste")
-        t, r = adapter._transforms["j1"]
-        self.assertEqual(t, [1, 2, 3])
-        self.assertEqual(r, [10, 20, 30])
+        from mmd_tools.actions.pose_actions import PastePoseResult, PoseTransform
+
+        presenter, view, _, _ = self._make()
+        presenter._pose_clipboard = {"j1": PoseTransform((1, 2, 3), (10, 20, 30))}
+        with patch("mmd_tools.actions.pose_actions.PastePoseAction.execute", return_value=PastePoseResult(succeeded=True, applied_count=1)) as execute:
+            presenter._on_tool_clicked("paste")
+        request = execute.call_args.args[0]
+        self.assertIs(request.pose, presenter._pose_clipboard)
+        self.assertEqual(request.model_root, "test_model")
         self.assertIn("Pasted", view.status_label.text())
+
+    def test_copy_uses_owned_controller_selection(self):
+        from mmd_tools.actions.pose_actions import CopyPoseResult, PoseTransform
+
+        presenter, _, _, adapter = self._make()
+        adapter._cmds = object()
+        adapter.selected = ["control1"]
+        pose = {"control1": PoseTransform((0, 0, 0), (10, 0, 0))}
+        with patch.object(presenter, "_rest_pose_targets", return_value=(["control1"], {})):
+            with patch("mmd_tools.actions.pose_actions.CopyPoseAction.execute", return_value=CopyPoseResult(succeeded=True, pose=pose)) as execute:
+                presenter._on_tool_clicked("copy")
+        self.assertEqual(execute.call_args.args[0].joints, ["control1"])
+
+    def test_failed_paste_does_not_display_success(self):
+        from mmd_tools.actions.pose_actions import PastePoseResult, PoseTransform
+
+        presenter, view, _, _ = self._make()
+        presenter._pose_clipboard = {"j1": PoseTransform((0, 0, 0), (0, 0, 0))}
+        with patch("mmd_tools.actions.pose_actions.PastePoseAction.execute", return_value=PastePoseResult(error=RuntimeError("layer is locked"))):
+            presenter._on_tool_clicked("paste")
+        self.assertNotIn("Pasted", view.status_label.text())
+        self.assertIn("layer is locked", view.status_label.text())
 
     def test_paste_pose_no_clipboard(self):
         presenter, view, _, _ = self._make()
