@@ -30,6 +30,7 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.humanik_utils import maya_cmds
 from mmd_tools.core.mmd_control_rig_analyzer import (
     INPUT_IK_CONTROLLER,
+    INPUT_DIRECT_CHANNEL,
     MmdControlRigRoleBinding,
     MmdControlRigSpec,
     STATUS_FALLBACK,
@@ -1058,15 +1059,27 @@ def _control_shape_rotation(
     """
     if role not in _AUTO_ORIENT_SHAPE_ROLES:
         return None
-    direction = (
-        _twist_child_direction(
-            cmds,
-            binding,
-            (role_joints or {}).get(_TWIST_CHILD_ROLES.get(role)),
+    direction = None
+    if (
+        role in _TWIST_RING_ROLES
+        and binding.input_kind == INPUT_DIRECT_CHANNEL
+        and binding.pmx_flags & int(PmxBoneFlag.AXIS_FIXED)
+    ):
+        fixed_axis = _vector_attribute(cmds, binding.joint, ATTR_MMD_FIXED_AXIS)
+        if fixed_axis is not None and sum(value * value for value in fixed_axis) > 1e-12:
+            # Registered VMD keys obey the PMX fixed axis, which may differ from
+            # the child direction. Authoring off-axis roll cannot round-trip.
+            direction = fixed_axis
+    if direction is None:
+        direction = (
+            _twist_child_direction(
+                cmds,
+                binding,
+                (role_joints or {}).get(_TWIST_CHILD_ROLES.get(role)),
+            )
+            if role in _TWIST_RING_ROLES
+            else _pmx_tail_direction(cmds, binding, indexed_joints)
         )
-        if role in _TWIST_RING_ROLES
-        else _pmx_tail_direction(cmds, binding, indexed_joints)
-    )
     if direction is None and role in _TWIST_RING_ROLES:
         direction = _vector_attribute(cmds, binding.joint, ATTR_MMD_FIXED_AXIS)
         if direction is None:

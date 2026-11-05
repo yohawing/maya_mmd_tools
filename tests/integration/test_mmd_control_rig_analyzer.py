@@ -457,8 +457,8 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         fixture_basis = read_mmd_control_rig_metadata(fixture_root)["authoringBases"]
         self.assertIn("pmx_tail", {record["source"] for record in fixture_basis.values()})
 
-    def test_arm_controls_use_mirrored_depth_axes_and_twists_aim_at_children(self):
-        """The checked-in A-pose fixture keeps ergonomic arm axes end to end."""
+    def test_arm_controls_use_mirrored_depth_axes_and_twists_follow_fixed_axes(self):
+        """Fixed-axis twist roll follows PMX authority; other controls aim at children."""
         root = self._import_fixture()
         spec = analyze_mmd_control_rig(root)
         rig = build_mmd_control_rig(root, spec=spec)
@@ -506,10 +506,15 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                 )
             )
             child_direction = (target - source).normal()
+            if role.endswith("_twist"):
+                fixed_axis = cmds.getAttr(joints[role] + ".mmd_fixed_axis")[0]
+                expected_direction = om.MVector(fixed_axis[0], fixed_axis[1], -fixed_axis[2]).normal()
+            else:
+                expected_direction = child_direction
             expected_depth_sign = -1.0 if role.startswith("left_") else 1.0
 
             with self.subTest(role=role):
-                self.assertGreater(z_axis * child_direction, 0.9998)
+                self.assertGreater(z_axis * expected_direction, 0.9998)
                 self.assertGreater(x_axis.z * expected_depth_sign, 0.99)
 
     def test_fixed_axis_twists_expose_only_roll_across_edit_restore(self):
