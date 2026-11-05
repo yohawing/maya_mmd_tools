@@ -840,6 +840,12 @@ def maya_ik_layers(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_arm_ik(session: nox.Session) -> None:
+    """Verify arm IK Manager actions and scene reload in fresh Maya GUI hosts."""
+    session.run(sys.executable, "tools/maya_gui/arm_ik_e2e.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 

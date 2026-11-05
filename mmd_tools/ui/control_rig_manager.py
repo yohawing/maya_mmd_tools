@@ -94,6 +94,23 @@ class ControlRigManagerWindow(QWidget):
             actions_layout.addWidget(button, index // 2, index % 2)
         layout.addWidget(actions_group)
 
+        self.arm_group = QGroupBox()
+        arm_layout = QGridLayout(self.arm_group)
+        self.arm_labels = {}
+        self.arm_buttons = {}
+        for row, side in enumerate(("left", "right")):
+            self.arm_labels[side] = QLabel()
+            arm_layout.addWidget(self.arm_labels[side], row, 0)
+            for column, action in enumerate(("ik", "fk", "pole", "restore"), start=1):
+                button = QPushButton()
+                button.setObjectName(f"ArmIK_{side}_{action}")
+                button.clicked.connect(
+                    lambda _checked=False, limb=side, key=action: self.perform_arm_action(limb, key)
+                )
+                self.arm_buttons[(side, action)] = button
+                arm_layout.addWidget(button, row, column)
+        layout.addWidget(self.arm_group)
+
         self.secondary_group = QGroupBox()
         secondary_layout = QVBoxLayout(self.secondary_group)
         self.secondary_status = QCheckBox()
@@ -134,6 +151,7 @@ class ControlRigManagerWindow(QWidget):
         self._secondary_timer = QTimer(self)
         self._secondary_timer.setInterval(1000)
         self._secondary_timer.timeout.connect(self._refresh_secondary_status)
+        self._secondary_timer.timeout.connect(self._refresh_arm_status)
         self._secondary_timer.start()
 
     @staticmethod
@@ -201,6 +219,12 @@ class ControlRigManagerWindow(QWidget):
         self.setWindowTitle(tr("window_title"))
         self.refresh_btn.setText(tr("refresh"))
         self.message_label.setText("")
+        self.arm_group.setTitle(tr("arm_title"))
+        for side, label in self.arm_labels.items():
+            label.setText(tr(f"arm_{side}"))
+        for (_side, action), button in self.arm_buttons.items():
+            button.setText(tr(f"arm_{action}"))
+            button.setToolTip(tr(f"arm_{action}_tooltip"))
         self.secondary_group.setTitle(tr("secondary_title"))
         self.secondary_visibility_label.setText(tr("secondary_visibility"))
         self.secondary_group.setToolTip(tr("secondary_title_tooltip"))
@@ -356,6 +380,69 @@ class ControlRigManagerWindow(QWidget):
         if self.selected_model_root() is None:
             self.message_label.clear()
         self._refresh_secondary_status(rebuild_groups=True)
+        self._refresh_arm_status()
+
+    def _refresh_arm_status(self) -> None:
+        """Refresh arm availability without creating helpers or changing modes."""
+        if not getattr(self, "arm_buttons", None):
+            return
+        root = self.selected_model_root()
+        editing = False
+        states = {}
+        try:
+            if root:
+                from ..core.mmd_control_rig_builder import (
+                    CONTROL_RIG_EDIT, CONTROL_RIG_CONTROL_OWNED, read_mmd_control_rig_metadata,
+                )
+                from ..core import mmd_control_rig_arm_ik
+
+                cmds = self._maya_cmds()
+                metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds) or {}
+                editing = (
+                    metadata.get("state") == CONTROL_RIG_EDIT
+                    and metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED
+                )
+                for side in ("left", "right"):
+                    states[side] = mmd_control_rig_arm_ik.inspect_arm_ik(root, side, cmds_module=cmds) or {}
+        except Exception as exc:
+            editing = False
+            self._set_status("status_error", error=exc)
+        for side, label in getattr(self, "arm_labels", {}).items():
+            title = self._translator.translate(f"arm_{side}", "control_rig_manager")
+            mode = "IK" if states.get(side, {}).get("active") else "FK"
+            label.setText(f"{title} · {mode}" if editing else title)
+        for (side, action), button in self.arm_buttons.items():
+            active = bool(states.get(side, {}).get("active"))
+            button.setEnabled(editing and (action == "ik" or active))
+
+    def perform_arm_action(self, side: str, action: str) -> None:
+        """Switch one arm or select its elbow control for the chosen character."""
+        root = self.selected_model_root()
+        if not root:
+            self._set_status("status_no_character")
+            return
+        try:
+            from ..core import mmd_control_rig_arm_ik
+
+            cmds = self._maya_cmds()
+            if action == "ik":
+                result = mmd_control_rig_arm_ik.enable_arm_ik(root, side, cmds_module=cmds)
+                cmds.select(result["target"], replace=True)
+            elif action in {"fk", "restore"}:
+                mmd_control_rig_arm_ik.disable_arm_ik(root, side, match_fk=action == "fk", cmds_module=cmds)
+            elif action == "pole":
+                result = mmd_control_rig_arm_ik.inspect_arm_ik(root, side, cmds_module=cmds)
+                if not result or not result.get("active"):
+                    raise RuntimeError("Arm IK is not active")
+                cmds.select(result["pole"], replace=True)
+            else:
+                raise ValueError(f"unknown arm action: {action}")
+            self._set_status("status_transition")
+            self.state_changed.emit(root, "arm_" + action)
+            self.refresh()
+        except Exception as exc:
+            logger.error("Control Rig arm action failed", exc_info=True)
+            self._set_status("status_error", error=exc)
 
     def _refresh_secondary_status(self, *, rebuild_groups=False) -> None:
         """Query existing physics authority without changing the scene."""

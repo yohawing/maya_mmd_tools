@@ -260,3 +260,48 @@ def test_physics_checkbox_dispatches_to_selected_model_and_refreshes():
         manager._toggle_secondary_physics(True)
     core.set_physics_enabled.assert_called_once_with("|character|MMDModel", True, cmds_module=manager._cmds)
     manager._refresh_secondary_status.assert_called_once_with()
+
+
+def test_arm_switch_uses_selected_character_and_distinguishes_match_from_restore():
+    manager = _manager()
+    core = MagicMock()
+    core.enable_arm_ik.return_value = {"target": "|owned|wrist"}
+    with patch("mmd_tools.core.mmd_control_rig_arm_ik", core, create=True):
+        manager.perform_arm_action("left", "ik")
+        core.enable_arm_ik.assert_called_once_with(
+            "|character|MMDModel", "left", cmds_module=manager._cmds,
+        )
+        manager._cmds.select.assert_called_once_with("|owned|wrist", replace=True)
+        manager.perform_arm_action("left", "fk")
+        core.disable_arm_ik.assert_called_with(
+            "|character|MMDModel", "left", match_fk=True, cmds_module=manager._cmds,
+        )
+        manager.perform_arm_action("right", "restore")
+        core.disable_arm_ik.assert_called_with(
+            "|character|MMDModel", "right", match_fk=False, cmds_module=manager._cmds,
+        )
+
+
+def test_arm_refresh_never_creates_or_switches_rig_and_disables_failed_inspection():
+    manager = _manager()
+    manager.arm_buttons = {
+        (side, action): MagicMock()
+        for side in ("left", "right") for action in ("ik", "fk", "pole", "restore")
+    }
+    core = MagicMock()
+    core.inspect_arm_ik.side_effect = [{"active": True}, None]
+    with patch("mmd_tools.core.mmd_control_rig_arm_ik", core, create=True), patch(
+        "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata",
+        return_value={"state": "EDIT", "owner": "CONTROL_OWNED"},
+    ):
+        manager._refresh_arm_status()
+        manager.arm_buttons[("left", "fk")].setEnabled.assert_called_with(True)
+        manager.arm_buttons[("right", "fk")].setEnabled.assert_called_with(False)
+        manager.arm_buttons[("right", "ik")].setEnabled.assert_called_with(True)
+        core.inspect_arm_ik.side_effect = RuntimeError("foreign arm input")
+        manager._refresh_arm_status()
+        for button in manager.arm_buttons.values():
+            button.setEnabled.assert_called_with(False)
+    core.enable_arm_ik.assert_not_called()
+    core.disable_arm_ik.assert_not_called()
+    manager._cmds.setAttr.assert_not_called()
