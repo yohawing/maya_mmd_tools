@@ -822,6 +822,12 @@ def maya_pmx_import_performance(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_scene_reload(session: nox.Session) -> None:
+    """Compare morph state after ASCII/Binary reload in fresh Maya GUI hosts."""
+    session.run(sys.executable, "tools/smoke/maya_scene_reload.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 
