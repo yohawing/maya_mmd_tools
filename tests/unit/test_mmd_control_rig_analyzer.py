@@ -506,7 +506,7 @@ class MmdControlRigCurveTemplateTest(unittest.TestCase):
             "twist.mmd_fixed_axis": [(0.0, 1.0, 0.0)],
         }
         cmds = _ShapeOrientationFake(values, children={"twist": ["elbow"]})
-        binding = SimpleNamespace(joint="twist", bone_index=10, pmx_flags=0)
+        binding = SimpleNamespace(joint="twist", bone_index=10, pmx_flags=0, input_kind="direct_channel")
         bind_matrix = (
             0.0, 0.0, -1.0, 0.0,
             0.0, 1.0, 0.0, 0.0,
