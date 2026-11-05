@@ -275,6 +275,32 @@ class TestVmdSceneCollector(unittest.TestCase):
             with self.subTest(inputs=inputs):
                 self.assertEqual(collector_module._dense_track_decision(*inputs), expected)
 
+    def test_time_editor_model_export_rejected_before_collection(self):
+        with mock.patch.object(collector_module.cmds, "attributeQuery", return_value=True), \
+                mock.patch.object(collector_module.cmds, "getAttr", return_value="stale clip metadata"):
+            collector = VmdSceneCollector()
+            with mock.patch.object(collector, "_collect_impl") as collect:
+                with self.assertRaisesRegex(ValueError, "Time Editor clip"):
+                    collector.collect({"target_model": "model"})
+                collect.assert_not_called()
+            sink = mock.Mock()
+            with self.assertRaisesRegex(ValueError, "Time Editor clip"):
+                collector.collect_to_sink({"target_model": "model", "export_strategy": "bake_timeline"}, sink)
+            self.assertEqual(sink.mock_calls, [])
+            collector_module._reject_time_editor_model_export({"target_model": "model", "export_target": "camera"})
+
+    def test_time_editor_guard_covers_targetless_and_explicit_joint_owners(self):
+        fake = FakeCmds()
+        fake.node_types = {"model": "transform", "bone": "joint", "other": "transform", "otherBone": "joint"}
+        fake.children = {"model": ["bone"], "other": ["otherBone"]}
+        fake.attrs[("model", "mmd_time_editor_json")] = "clip metadata"
+        with mock.patch.object(collector_module, "cmds", fake):
+            for options in ({}, {"joints": ["bone"]}, {"target_model": "other", "joints": ["bone"]}):
+                with self.subTest(options=options), self.assertRaisesRegex(ValueError, "Time Editor clip"):
+                    collector_module._reject_time_editor_model_export(options)
+            collector_module._reject_time_editor_model_export({"joints": ["otherBone"]})
+            collector_module._reject_time_editor_model_export({"export_target": "camera"})
+
     def test_zero_weight_unencodable_morph_is_omittable(self):
         self.assertFalse(
             collector_module._should_emit_morph_frame(

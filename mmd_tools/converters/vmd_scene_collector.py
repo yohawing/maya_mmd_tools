@@ -1370,6 +1370,7 @@ class VmdSceneCollector:
         self._source_omission_identities = set()
         try:
             options = options or {}
+            _reject_time_editor_model_export(options)
             result = self._collect_impl(options)
             self._diagnostics["status"] = "completed"
             return result
@@ -1399,6 +1400,7 @@ class VmdSceneCollector:
         if sink is None:
             raise TypeError("VMD stream collection requires a sink")
         options = options or {}
+        _reject_time_editor_model_export(options)
         export_strategy = str(options.get("export_strategy", "") or "").lower()
         if export_strategy not in {"bake_timeline", "preserve_keys"}:
             raise ValueError("unsupported VMD export strategy")
@@ -6044,6 +6046,27 @@ def _optional_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     return float(value)
+
+
+def _reject_time_editor_model_export(options):
+    """Do not silently write an empty motion from Time Editor-owned inputs."""
+    if "character" not in _resolve_bake_timeline_track_targets(options):
+        return
+    model = options.get("target_model") or options.get("model_root")
+    nodes = list(options.get("joints") or [])
+    if model:
+        nodes.append(model)
+    elif not nodes:
+        nodes = cmds.ls(type="joint", long=True) or []
+    checked = set()
+    for node in nodes:
+        while node and node not in checked:
+            checked.add(node)
+            if (cmds.attributeQuery("mmd_time_editor_json", node=node, exists=True)
+                    and cmds.getAttr(node + ".mmd_time_editor_json")):
+                raise ValueError("Remove this model's Time Editor clip before exporting VMD motion")
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            node = parents[0] if parents else None
 
 
 def _resolve_collection_frame_range(

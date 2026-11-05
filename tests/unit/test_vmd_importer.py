@@ -334,6 +334,22 @@ class TestVmdImporter(MayaTestBase):
                 }))
                 self.assertFalse(converter_class.return_value.use_animation_layers)
 
+    def test_time_editor_metadata_rejects_import_before_conversion(self):
+        root = cmds.createNode("transform", name="ClipOwnedModel")
+        cmds.addAttr(root, longName="mmd_time_editor_json", dataType="string")
+        for payload in ('{"clipUuid":"missing"}', 'invalid metadata'):
+            cmds.setAttr(root + ".mmd_time_editor_json", payload, type="string")
+            for clear in (False, True):
+                with self.subTest(payload=payload, clear=clear):
+                    with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+                        with self.assertRaises(MMDImportException) as raised:
+                            import_vmd_file(object(), "not-read.vmd", {
+                                "target_model": root, "clear_existing_motion": clear,
+                            })
+                        self.assertEqual(raised.exception.reason_code, "time_editor_clip_owns_model")
+                        converter_class.assert_not_called()
+                        self.assertEqual(cmds.getAttr(root + ".mmd_time_editor_json"), payload)
+
     def test_converter_failure_raises_import_exception(self):
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")
