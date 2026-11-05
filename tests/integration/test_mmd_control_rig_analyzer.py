@@ -1569,7 +1569,8 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         frames = (0, 10, 20, 30)
         before = self._capture_indexed_world_matrices(root, frames)
         control_world_before = tuple(
-            cmds.getAttr(f"{result.controls[role]}.worldMatrix[0]")
+            round(float(value), 8)
+            for value in cmds.getAttr(f"{result.controls[role]}.worldMatrix[0]")
         )
 
         edit = enter_mmd_control_rig_edit(root)
@@ -1578,7 +1579,10 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(before, self._capture_indexed_world_matrices(root, frames))
         self.assertEqual(
             control_world_before,
-            tuple(cmds.getAttr(f"{result.controls[role]}.worldMatrix[0]")),
+            # Match the existing all-bone world-matrix comparison precision:
+            # EDIT evaluates the optional eye control through a basis matrix.
+            tuple(round(float(value), 8) for value in
+                  cmds.getAttr(f"{result.controls[role]}.worldMatrix[0]")),
         )
         self.assertTrue(cmds.ls(original_curve_uuid, long=True))
         control_row = next(
@@ -1977,7 +1981,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         build_mmd_control_rig(root)
         metadata = read_mmd_control_rig_metadata(root)
         target = None
-        for binding in metadata["bindings"].values():
+        for role, binding in metadata["bindings"].items():
             if binding.get("inputKind") != INPUT_DIRECT_CHANNEL:
                 continue
             for compound in binding.get("authoredPlugs", []):
@@ -1987,6 +1991,12 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                     else [compound]
                 )
                 for candidate in candidates:
+                    control = cmds.ls(metadata["controls"][role], long=True)[0]
+                    channel = candidate.rsplit(".", 1)[-1]
+                    # Optional rotate-only roles also describe static translation
+                    # inputs; those are deliberately outside the EDIT journal.
+                    if not cmds.getAttr(f"{control}.{channel}", keyable=True):
+                        continue
                     if cmds.objExists(candidate):
                         try:
                             cmds.setKeyframe(candidate, time=0, value=0.0)
@@ -3016,6 +3026,12 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
                     else [compound]
                 )
                 for target in channels:
+                    control = cmds.ls(metadata["controls"][role], long=True)[0]
+                    channel = target.rsplit(".", 1)[-1]
+                    if not cmds.attributeQuery(channel, node=control, exists=True):
+                        continue
+                    if not cmds.getAttr(f"{control}.{channel}", keyable=True):
+                        continue
                     sources = cmds.listConnections(
                         target, source=True, destination=False, plugs=True
                     ) or []
