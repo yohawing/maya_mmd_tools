@@ -1453,6 +1453,53 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(stored.get("0"), {"name": "にっこり", "index": 0})
         self.assertEqual(stored.get("1"), {"name": "にやり", "index": 1})
 
+    def test_vertex_morph_attribute_names_remain_editable_after_reload(self):
+        """Reserved long/short attribute names cannot shadow morph aliases."""
+        mesh = self._create_test_mesh()
+        names = ("w", "weight", "envelope", "en", "message", "inputTarget", "it")
+        morphs = []
+        for name in names:
+            morph = type("VertexMorph", (), {})()
+            morph.name = name
+            morph.name_english = ""
+            morph.morph_type = PmxMorphType.VertexMorph
+            morph.panel = 1
+            morph.offsets = [{"vertex_index": 1, "position_offset": (0.1, 0.0, 0.0)}]
+            morph.get_name = lambda name=name: name
+            morphs.append(morph)
+        data = type("PmxData", (), {"faces": [], "materials": [], "morphs": morphs})()
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(data, mesh)
+        self.assertEqual(result["morphs_converted"], len(names))
+        blend_shape = result["blend_shape_nodes"][0]
+        root = cmds.group(empty=True, name="reserved_alias_model")
+        controller = converter.build_morph_controller(data, root, result)
+        aliases = [cmds.aliasAttr(f"{blend_shape}.weight[{i}]", query=True) for i in range(len(names))]
+        self.assertEqual(len(set(aliases)), len(names))
+        self.assertTrue(set(aliases).isdisjoint(names))
+        expected_metadata = {str(i): {"name": name, "index": i} for i, name in enumerate(names)}
+        for i in range(len(names)):
+            cmds.setAttr(f"{controller}.inputWeight[{i}]", 0.25)
+
+        for extension, file_type in (("ma", "mayaAscii"), ("mb", "mayaBinary")):
+            with self.subTest(file_type=file_type):
+                path = self.get_temp_filename(f"reserved_alias.{extension}")
+                cmds.file(rename=path)
+                cmds.file(save=True, type=file_type, force=True)
+                cmds.file(new=True, force=True)
+                cmds.file(path, open=True, force=True)
+                self.assertEqual(cmds.getAttr(f"{blend_shape}.weight", multiIndices=True), list(range(len(names))))
+                stored = json.loads(cmds.getAttr(f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"))
+                self.assertEqual(stored, expected_metadata)
+                for i, alias in enumerate(aliases):
+                    weight = f"{blend_shape}.weight[{i}]"
+                    self.assertEqual(cmds.aliasAttr(weight, query=True), alias)
+                    self.assertTrue(cmds.isConnected(f"{controller}.outputWeight[{i}]", weight))
+                    self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.{alias}"), 0.25)
+                    cmds.setAttr(f"{controller}.inputWeight[{i}]", 0.75)
+                    self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.{alias}"), 0.75)
+                    cmds.setAttr(f"{controller}.inputWeight[{i}]", 0.25)
+
     def test_vertex_morph_does_not_store_empty_raw_name(self):
         """An unnamed PMX morph may have a usable alias but is not a VMD key."""
         mesh = self._create_test_mesh()

@@ -741,10 +741,13 @@ class MorphConverter:
         return ""
 
     def _existing_blendshape_aliases(self, blend_shape_node: str) -> Set[str]:
-        """blendShape ノードに既に割り当て済みの alias 名集合を返す。"""
+        """Return aliases and attribute names reserved by the blendShape node."""
         flat = cmds.aliasAttr(blend_shape_node, query=True) or []
         # aliasAttr -q はフラットな [alias, attr, alias, attr, ...] を返す
-        return set(flat[0::2])
+        reserved = set(flat[0::2])
+        reserved.update(cmds.listAttr(blend_shape_node) or [])
+        reserved.update(cmds.listAttr(blend_shape_node, shortNames=True) or [])
+        return reserved
 
     def _unique_blendshape_alias(self, blend_shape_node: str, base_alias: str) -> str:
         """blendShape ノード内で一意な alias を返す。
