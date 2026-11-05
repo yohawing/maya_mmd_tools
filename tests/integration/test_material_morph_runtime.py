@@ -445,7 +445,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
 
         return root, mesh, shader, material_nodes, graph
 
-    def test_standard_proxy_migration_undo_redo_and_component_edit(self):
+    def test_standard_rgb_binding_undo_redo_and_component_edit(self):
         from maya.api import OpenMaya as om
         from mmd_tools.core import maya_proxy_attribute
 
@@ -468,12 +468,12 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         finally:
             cmds.undoInfo(closeChunk=True)
         authored = shader + ".diffuse_color"
-        self.assertTrue(maya_proxy_attribute.is_proxy(authored))
+        self.assertFalse(maya_proxy_attribute.is_proxy(authored))
         self.assertTrue(cmds.isConnected(shader + ".specular_color", consumer + ".input1"))
         cmds.undo()
         self.assertFalse(maya_proxy_attribute.is_proxy(authored))
         cmds.redo()
-        self.assertTrue(maya_proxy_attribute.is_proxy(authored))
+        self.assertFalse(maya_proxy_attribute.is_proxy(authored))
         cmds.setAttr(authored, 0.2, 0.3, 0.4, type="double3")
         selection = om.MSelectionList()
         selection.add(authored)
@@ -483,7 +483,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
         self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.2)
 
-    def test_standard_proxy_animation_survives_rebuild_and_last_morph_removal(self):
+    def test_standard_rgb_animation_survives_rebuild_and_last_morph_removal(self):
         from mmd_tools.core import maya_proxy_attribute
 
         from mmd_tools.converters.mesh_converter import MeshConverter
@@ -498,10 +498,9 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertTrue(graph["success"])
         authored = shader + ".diffuse_color"
         child = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)[0]
-        base = cmds.connectionInfo(shader + "." + child, sourceFromDestination=True)
         driver = cmds.createNode("animCurveTU")
         cmds.setKeyframe(driver, time=1, value=0.25)
-        cmds.connectAttr(driver + ".output", base)
+        cmds.connectAttr(driver + ".output", shader + "." + child)
         self.assertTrue(build_material_morph_graph(root)["success"])
         self.assertAlmostEqual(cmds.getAttr(authored)[0][0], 0.25)
         cmds.delete(morphs)
@@ -529,6 +528,84 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         cmds.setAttr(morphs[0] + ".weight", 0.5)
         self.assertAlmostEqual(cmds.getAttr(shader + ".baseColorR"), 0.7)
         self.assertTrue(build_material_morph_graph(root)["success"])
+
+    def test_standard_rgb_scene_reload_preserves_edits_without_proxy_errors(self):
+        """Fresh material graphs preserve editable bases without ASCII proxy errors."""
+        import tempfile
+        from maya.api import OpenMaya as om
+        from mmd_tools.converters.mesh_converter import MeshConverter
+        from mmd_tools.converters.export_scene_collector import _collect_mmd_material_dict
+        from mmd_tools.core import maya_proxy_attribute
+        from mmd_tools.core.pmx_data.material import PmxMaterial
+
+        for extension, file_type in (("ma", "mayaAscii"), ("mb", "mayaBinary")):
+            with self.subTest(format=extension), tempfile.TemporaryDirectory() as directory:
+                cmds.file(new=True, force=True)
+                material = PmxMaterial()
+                material.diffuse = (0.2, 0.3, 0.4, 0.8)
+                converter = MeshConverter("")
+                shader = converter._create_material(material, material_index=0)
+                converter._apply_custom_attributes(shader, material, [], False, material_index=0)
+                root, _, shader, morphs, graph = self._create_scene_with_shader(
+                    shader=shader, diffuse_offset=(0.3, 0.1, 0.0, -0.2),
+                )
+                self.assertTrue(graph["success"], graph)
+                authored = shader + ".diffuse_color"
+                children = cmds.attributeQuery("diffuse_color", node=shader, listChildren=True)
+                cmds.setAttr(authored, 0.4, 0.5, 0.6, type="double3")
+                cmds.setAttr(shader + "." + children[1], 0.7)
+                cmds.setAttr(morphs[0] + ".weight", 0.5)
+                original = _collect_mmd_material_dict(shader)
+
+                def check(rgb, alpha=0.7):
+                    for actual, expected in zip(cmds.getAttr(shader + ".baseColor")[0], rgb):
+                        self.assertAlmostEqual(actual, expected, places=6)
+                    self.assertAlmostEqual(cmds.getAttr(shader + ".opacityR"), alpha, places=6)
+
+                check((0.55, 0.75, 0.6))
+                errors = []
+
+                def capture_error(message, kind, unused):
+                    if kind == om.MCommandMessage.kError:
+                        errors.append(message)
+
+                callback = om.MCommandMessage.addCommandOutputCallback(capture_error)
+                try:
+                    path = str(Path(directory) / ("standard." + extension))
+                    cmds.file(rename=path)
+                    cmds.file(save=True, type=file_type, force=True)
+                    cmds.file(path, open=True, force=True)
+                finally:
+                    om.MMessage.removeCallback(callback)
+                self.assertEqual(errors, [], "Saving or reopening a fresh material graph emitted errors")
+                check((0.55, 0.75, 0.6))
+                self.assertEqual(_collect_mmd_material_dict(shader), original)
+                self.assertFalse(maya_proxy_attribute.is_proxy(authored))
+                self.assertTrue(maya_proxy_attribute.is_proxy(shader + ".mmd_diffuse_alpha"))
+
+                # Whole-RGB and component edits still reach the evaluator after reload.
+                cmds.setAttr(authored, 0.1, 0.2, 0.3, type="double3")
+                check((0.25, 0.25, 0.3))
+                cmds.undo()
+                check((0.55, 0.75, 0.6))
+                cmds.redo()
+                check((0.25, 0.25, 0.3))
+                child = shader + "." + children[1]
+                cmds.setKeyframe(child, time=1, value=0.2)
+                cmds.setKeyframe(child, time=2, value=0.6)
+                driver = cmds.connectionInfo(child, sourceFromDestination=True)
+                cmds.currentTime(2)
+                check((0.25, 0.65, 0.3))
+                self.assertTrue(build_material_morph_graph(root)["success"])
+                self.assertTrue(cmds.isConnected(driver, child))
+                cmds.file(save=True, type=file_type, force=True)
+                cmds.file(path, open=True, force=True)
+                self.assertTrue(cmds.isConnected(driver, child))
+                check((0.25, 0.65, 0.3))
+                cmds.currentTime(1)
+                check((0.25, 0.25, 0.3))
+                cmds.setAttr(morphs[0] + ".weight", 0.0)
+                check((0.1, 0.2, 0.3), alpha=0.8)
 
     def test_standard_locked_rgb_child_keeps_legacy_binding(self):
         from mmd_tools.converters.mesh_converter import MeshConverter

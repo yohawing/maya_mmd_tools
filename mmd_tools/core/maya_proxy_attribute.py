@@ -19,24 +19,13 @@ def is_proxy(plug):
 
 
 def supports_proxy(plug):
-    """Keep customized RGB attribute definitions on their existing route."""
+    """Keep compound attributes on their ASCII-safe authored-input route."""
     selection = om.MSelectionList()
     selection.add(plug)
     root = selection.getPlug(0)
-    if not root.isCompound:
-        return True  # Scalar definitions are replayed verbatim.
-    if cmds.getAttr(plug, type=True) != "double3" or root.numChildren() != 3:
-        return False
-    # Maya infers compound proxy definitions from the source. Only migrate the
-    # ordinary authored RGB schema; retain custom defaults/limits/UI metadata.
-    for member in [root] + [root.child(index) for index in range(3)]:
-        fn = om.MFnAttribute(member.attribute())
-        command = fn.getAddAttrCmd(False)
-        if (fn.hidden or fn.usedAsColor or not (fn.readable and fn.writable and fn.storable)
-                or fn.shortName != fn.name
-                or re.search(r"\s-(?:nn|dv|min|max|smn|smx)\s", command)):
-            return False
-    return True
+    # Maya writes compound proxy parents with -uap but rejects that definition
+    # when reopening .ma files. Child-only proxies also lose whole-RGB edits.
+    return not root.isCompound
 
 
 def set_proxy(plug, enabled, source=None):
