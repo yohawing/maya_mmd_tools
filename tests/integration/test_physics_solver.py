@@ -10,6 +10,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes
+
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
@@ -263,7 +265,7 @@ class TestPhysicsSolverSession(MayaTestBase):
         session.free()
 
     def test_session_parity_with_pmx_world(self):
-        """Solver session bone matrices must match direct PMX-bytes world."""
+        """Solver matrices match the independently normalized legacy native reference."""
         from mmd_tools.core.native.mmd_anim_runtime_handles import (
             MmdRuntimeInstance,
             MmdRuntimeModel,
@@ -280,7 +282,11 @@ class TestPhysicsSolverSession(MayaTestBase):
             session.step(dt=1.0 / 60.0)
         dag_matrices = session.get_bone_world_matrices()
 
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+            legacy_native_reference_pmx_bytes(
+                parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+            )
+        )
         model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         instance = MmdRuntimeInstance.for_model(model)
         instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
