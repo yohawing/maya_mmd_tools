@@ -111,6 +111,19 @@ class ControlRigManagerWindow(QWidget):
                 arm_layout.addWidget(button, row, column)
         layout.addWidget(self.arm_group)
 
+        self.eye_group = QGroupBox()
+        eye_layout = QHBoxLayout(self.eye_group)
+        self.eye_label = QLabel()
+        eye_layout.addWidget(self.eye_label)
+        self.eye_buttons = {}
+        for action in ("ik", "fk", "restore"):
+            button = QPushButton()
+            button.setObjectName(f"EyeIK_{action}")
+            button.clicked.connect(lambda _checked=False, key=action: self.perform_eye_action(key))
+            self.eye_buttons[action] = button
+            eye_layout.addWidget(button)
+        layout.addWidget(self.eye_group)
+
         self.secondary_group = QGroupBox()
         secondary_layout = QVBoxLayout(self.secondary_group)
         self.secondary_status = QCheckBox()
@@ -152,6 +165,7 @@ class ControlRigManagerWindow(QWidget):
         self._secondary_timer.setInterval(1000)
         self._secondary_timer.timeout.connect(self._refresh_secondary_status)
         self._secondary_timer.timeout.connect(self._refresh_arm_status)
+        self._secondary_timer.timeout.connect(self._refresh_eye_status)
         self._secondary_timer.start()
 
     @staticmethod
@@ -225,6 +239,10 @@ class ControlRigManagerWindow(QWidget):
         for (_side, action), button in self.arm_buttons.items():
             button.setText(tr(f"arm_{action}"))
             button.setToolTip(tr(f"arm_{action}_tooltip"))
+        self.eye_group.setTitle(tr("eye_title"))
+        for action, button in self.eye_buttons.items():
+            button.setText(tr(f"eye_{action}"))
+            button.setToolTip(tr(f"eye_{action}_tooltip"))
         self.secondary_group.setTitle(tr("secondary_title"))
         self.secondary_visibility_label.setText(tr("secondary_visibility"))
         self.secondary_group.setToolTip(tr("secondary_title_tooltip"))
@@ -381,6 +399,56 @@ class ControlRigManagerWindow(QWidget):
             self.message_label.clear()
         self._refresh_secondary_status(rebuild_groups=True)
         self._refresh_arm_status()
+        self._refresh_eye_status()
+
+    def _refresh_eye_status(self) -> None:
+        """Show availability without constructing or switching the eye solver."""
+        if not getattr(self, "eye_buttons", None):
+            return
+        root = self.selected_model_root()
+        editing = available = active = False
+        try:
+            if root:
+                from ..core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+                from ..core import mmd_control_rig_eye_ik
+
+                cmds = self._maya_cmds()
+                metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds) or {}
+                editing = metadata.get("state") == "EDIT" and metadata.get("owner") == "CONTROL_OWNED"
+                available = "both_eyes" in metadata.get("controls", {})
+                active = bool(mmd_control_rig_eye_ik.inspect_eye_ik(root, cmds_module=cmds).get("active"))
+        except Exception as exc:
+            editing = False
+            self._set_status("status_error", error=exc)
+        self.eye_label.setText(
+            ("IK" if active else "FK") if available else self._translator.translate("eye_absent", "control_rig_manager")
+        )
+        for action, button in self.eye_buttons.items():
+            button.setEnabled(editing and available and (action == "ik" or active))
+
+    def perform_eye_action(self, action: str) -> None:
+        """Select the gaze target, match FK, or restore the previous FK inputs."""
+        root = self.selected_model_root()
+        if not root:
+            self._set_status("status_no_character")
+            return
+        try:
+            from ..core import mmd_control_rig_eye_ik
+
+            cmds = self._maya_cmds()
+            if action == "ik":
+                result = mmd_control_rig_eye_ik.enable_eye_ik(root, cmds_module=cmds)
+                cmds.select(result["target"], replace=True)
+            elif action in {"fk", "restore"}:
+                mmd_control_rig_eye_ik.disable_eye_ik(root, match_fk=action == "fk", cmds_module=cmds)
+            else:
+                raise ValueError(f"unknown eye action: {action}")
+            self._set_status("status_transition")
+            self.state_changed.emit(root, "eye_" + action)
+            self.refresh()
+        except Exception as exc:
+            logger.error("Control Rig eye action failed", exc_info=True)
+            self._set_status("status_error", error=exc)
 
     def _refresh_arm_status(self) -> None:
         """Refresh arm availability without creating helpers or changing modes."""

@@ -305,3 +305,47 @@ def test_arm_refresh_never_creates_or_switches_rig_and_disables_failed_inspectio
     core.enable_arm_ik.assert_not_called()
     core.disable_arm_ik.assert_not_called()
     manager._cmds.setAttr.assert_not_called()
+
+
+def test_eye_switch_selects_target_and_distinguishes_match_from_restore():
+    manager = _manager()
+    core = MagicMock()
+    core.enable_eye_ik.return_value = {"target": "|owned|gaze"}
+    with patch("mmd_tools.core.mmd_control_rig_eye_ik", core, create=True):
+        manager.perform_eye_action("ik")
+        core.enable_eye_ik.assert_called_once_with("|character|MMDModel", cmds_module=manager._cmds)
+        manager._cmds.select.assert_called_once_with("|owned|gaze", replace=True)
+        manager.perform_eye_action("fk")
+        core.disable_eye_ik.assert_called_with("|character|MMDModel", match_fk=True, cmds_module=manager._cmds)
+        manager.perform_eye_action("restore")
+        core.disable_eye_ik.assert_called_with("|character|MMDModel", match_fk=False, cmds_module=manager._cmds)
+
+
+def test_eye_refresh_requires_combined_eye_control_without_mutating_scene():
+    manager = _manager()
+    manager.eye_buttons = {action: MagicMock() for action in ("ik", "fk", "restore")}
+    manager.eye_label = MagicMock()
+    manager._translator = MagicMock()
+    core = MagicMock()
+    core.inspect_eye_ik.return_value = {"active": False}
+    metadata = {"state": "EDIT", "owner": "CONTROL_OWNED", "controls": {}}
+    with patch("mmd_tools.core.mmd_control_rig_eye_ik", core, create=True), patch(
+        "mmd_tools.core.mmd_control_rig_builder.read_mmd_control_rig_metadata", return_value=metadata,
+    ):
+        manager._refresh_eye_status()
+        for button in manager.eye_buttons.values():
+            button.setEnabled.assert_called_with(False)
+        metadata["controls"]["both_eyes"] = "owned-eye-uuid"
+        manager._refresh_eye_status()
+        manager.eye_buttons["ik"].setEnabled.assert_called_with(True)
+        manager.eye_buttons["fk"].setEnabled.assert_called_with(False)
+        core.inspect_eye_ik.return_value = {"active": True}
+        manager._refresh_eye_status()
+        manager.eye_buttons["fk"].setEnabled.assert_called_with(True)
+        core.inspect_eye_ik.side_effect = RuntimeError("foreign eye input")
+        manager._refresh_eye_status()
+        for button in manager.eye_buttons.values():
+            button.setEnabled.assert_called_with(False)
+    core.enable_eye_ik.assert_not_called()
+    core.disable_eye_ik.assert_not_called()
+    manager._cmds.setAttr.assert_not_called()

@@ -62,6 +62,7 @@ docs/*
 !docs/README_ja.md
 !docs/humanik_ja.md
 !docs/control-rig-arm-ik.md
+!docs/control-rig-eye-ik.md
 !docs/assets
 
 # TestData
