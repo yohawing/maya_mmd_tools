@@ -61,6 +61,7 @@ docs-dev/
 docs/*
 !docs/README_ja.md
 !docs/humanik_ja.md
+!docs/time-editor.md
 !docs/assets
 
 # TestData

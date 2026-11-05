@@ -1,4 +1,21 @@
 {
+  "time_editor": {
+    "invalid": "無法確認片段狀態",
+    "title": "MMD Time Editor",
+    "scope": "目前支援一個模型、一個骨骼剪輯。不支援與Animation Layer、Control Rig編輯或HumanIK同時使用。",
+    "refresh": "更新",
+    "create": "建立骨骼剪輯",
+    "remove": "解除剪輯",
+    "open": "開啟Time Editor",
+    "create_tooltip": "將目前骨骼動畫複製到一個剪輯。",
+    "remove_tooltip": "解除管理中的剪輯，還原原始動畫輸入。",
+    "open_tooltip": "在Maya標準Time Editor中編輯剪輯時間。",
+    "active": "剪輯使用中",
+    "inactive": "沒有管理中的剪輯",
+    "no_model": "請選取MMD模型。",
+    "created": "已建立骨骼剪輯。請在Maya Time Editor中編輯時間。",
+    "removed": "已解除剪輯並還原原始動畫輸入。"
+  },
     "animation_picker": {
         "left_eye": "左眼", "right_eye": "右眼",
         "head": "頭", "neck": "頸", "upper_body": "上半身", "upper_body_2": "上半身2", "lower_body": "下半身",
@@ -178,6 +195,7 @@
     "humanik_none": "(無)"
   },
   "tooltips": {
+    "use_animation_layers": "將一般 VMD 匯入加入動畫層。關閉後直接為輸入設定關鍵影格。不會刪除既有動畫層。",
     "morph_runtime_unsupported": "目前執行階段不支援此變形類型",
     "import_file": "匯入PMD/PMX/VMD檔案",
     "export_file": "將選取的物件匯出為PMX檔案",
@@ -381,6 +399,7 @@
     "joint_values": "關節數值"
   },
   "checkboxes": {
+    "use_animation_layers": "使用動畫層",
     "vmd_bake_export": "烘焙匯出",
     "vmd_export_camera": "相機",
     "vmd_export_light": "燈光",

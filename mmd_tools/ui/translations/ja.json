@@ -1,4 +1,21 @@
 {
+  "time_editor": {
+    "invalid": "クリップ状態を確認できません",
+    "title": "MMD Time Editor",
+    "scope": "1モデル・ボーン1クリップ用です。通常Animation Layer、Control Rig編集中、HumanIKとの併用は未対応です。",
+    "refresh": "更新",
+    "create": "ボーンをクリップ化",
+    "remove": "クリップ解除",
+    "open": "Time Editorを開く",
+    "create_tooltip": "現在のボーンアニメーションを1つのクリップへコピーします。",
+    "remove_tooltip": "管理中のクリップを解除し、元のアニメーション入力へ戻します。",
+    "open_tooltip": "Maya標準のTime Editorでクリップの時間編集を行います。",
+    "active": "クリップ使用中",
+    "inactive": "管理中のクリップなし",
+    "no_model": "MMDモデルを選択してください。",
+    "created": "ボーンをクリップ化しました。時間編集はMayaのTime Editorで行います。",
+    "removed": "クリップを解除し、元のアニメーション入力へ戻しました。"
+  },
     "animation_picker": {
         "left_eye": "左目", "right_eye": "右目",
         "head": "頭", "neck": "首", "upper_body": "上半身", "upper_body_2": "上半身2", "lower_body": "下半身",
@@ -184,6 +201,7 @@
     "humanik_none": "(なし)"
   },
   "tooltips": {
+    "use_animation_layers": "通常のVMD読み込みをアニメーションレイヤーへ追加します。オフにすると入力へ直接キーを作成します。既存レイヤーは削除しません。",
     "shader_outline_requires_dx11": "シェーダーアウトラインは旧DX11シェーダー専用です。この材質では「エッジ描画」を使用してください。",
     "morph_runtime_unsupported": "このモーフ種別は現在のランタイムでは未対応です",
     "import_file": "PMD/PMX/VMDファイルをインポートします",
@@ -481,6 +499,7 @@
     "joint_values": "ジョイントの値"
   },
   "checkboxes": {
+    "use_animation_layers": "アニメーションレイヤーを使う",
     "vmd_bake_export": "ベイク書き出し",
     "vmd_export_camera": "カメラ",
     "vmd_export_light": "ライト",

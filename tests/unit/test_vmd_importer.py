@@ -48,6 +48,7 @@ class TestVmdImporter(MayaTestBase):
 
         self.assertTrue(result)
         self.assertEqual(converter.motion_scale, 1.0)
+        self.assertTrue(converter.use_animation_layers)
         kwargs = converter.convert.call_args.kwargs
         self.assertEqual(kwargs["pmx_path"], pmx_path)
         self.assertEqual(kwargs["vmd_bytes"], b"Vocaloid Motion Data 0002\x00")
@@ -321,6 +322,17 @@ class TestVmdImporter(MayaTestBase):
         self.assertIn(15, progress)
         self.assertIn(25, progress)
         self.assertIn(35, progress)
+
+    def test_animation_layers_can_be_disabled_explicitly(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "motion.vmd"
+            path.write_bytes(b"Vocaloid Motion Data 0002\x00")
+            with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+                converter_class.return_value.convert.return_value = True
+                self.assertTrue(import_vmd_file(object(), str(path), {
+                    "scene_animation_only": True, "use_animation_layers": False,
+                }))
+                self.assertFalse(converter_class.return_value.use_animation_layers)
 
     def test_converter_failure_raises_import_exception(self):
         temp_root = Path(tempfile.mkdtemp())

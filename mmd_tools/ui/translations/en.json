@@ -1,4 +1,21 @@
 {
+  "time_editor": {
+    "invalid": "Clip state unavailable",
+    "title": "MMD Time Editor",
+    "scope": "One model, one bone clip. Animation Layers, Control Rig EDIT and HumanIK are not supported in this workflow.",
+    "refresh": "Refresh",
+    "create": "Create bone clip",
+    "remove": "Remove clip",
+    "open": "Open Time Editor",
+    "create_tooltip": "Copy the current bone animation into one clip.",
+    "remove_tooltip": "Remove the managed clip and restore the original animation inputs.",
+    "open_tooltip": "Open Maya’s standard Time Editor to move and edit the clip.",
+    "active": "Clip active",
+    "inactive": "No managed clip",
+    "no_model": "Select an MMD model.",
+    "created": "Bone clip created. Edit its timing in Maya Time Editor.",
+    "removed": "Clip removed and original animation inputs restored."
+  },
     "animation_picker": {
         "left_eye": "Left Eye", "right_eye": "Right Eye",
         "head": "Head", "neck": "Neck", "upper_body": "Upper Body", "upper_body_2": "Upper Body 2", "lower_body": "Lower Body",
@@ -184,6 +201,7 @@
     "humanik_none": "(none)"
   },
   "tooltips": {
+    "use_animation_layers": "Add normal VMD imports to animation layers. Turn off to key inputs directly. Existing layers are not deleted.",
     "shader_outline_requires_dx11": "Shader Outline is only supported by the legacy DX11 shader. Use Edge Drawing for this material.",
     "morph_runtime_unsupported": "This morph type is not supported by the current runtime",
     "import_file": "Import PMD/PMX/VMD files",
@@ -481,6 +499,7 @@
     "joint_values": "Joint Values"
   },
   "checkboxes": {
+    "use_animation_layers": "Use Animation Layers",
     "vmd_bake_export": "Bake Export",
     "vmd_export_camera": "Camera",
     "vmd_export_light": "Light",

@@ -258,6 +258,7 @@ class SettingsService:
         return {
             "start_frame": self.get(setting_keys.IMPORT_ANIMATION_START_FRAME, 1),
             "vmd_fps": self.get(setting_keys.IMPORT_ANIMATION_VMD_FPS, 30),
+            "use_animation_layers": self.get(setting_keys.IMPORT_ANIMATION_USE_ANIMATION_LAYERS, True),
             "import_bone_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_ANIMATIONS, True),
             "import_morph_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_MORPH_ANIMATION, True),
             "import_camera_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_CAMERA_ANIMATION, True),

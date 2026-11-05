@@ -324,6 +324,8 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
                 return name in items
             if kwargs.get("query") and kwargs.get("label"):
                 return items[name]["label"]
+            if name == "MMDTimeEditorMenuItem" and name in items:
+                raise RuntimeError("Time Editor menu item already exists")
             items[name] = dict(kwargs)
             return name
 
@@ -342,6 +344,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             name for name, data in items.items() if data.get("label") == "Translate MMD Names"
         ]
         self.assertEqual(translation_items, ["MMDTranslateNamesMenuItem"])
+        self.assertIn("MMDTimeEditorMenuItem", items)
 
         # Maya startup/menu rebuilding may leave the submenu without children.
         items.pop("MMDTranslateNamesMenuItem")
@@ -537,6 +540,21 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.assertTrue(window.closed)
         self.assertTrue(window.deleted)
         self.assertIsNone(self.plugin_main._main_window)
+
+    def test_time_editor_menu_dispatches_and_unload_closes_loaded_manager(self):
+        manager_module = types.ModuleType("mmd_tools.ui.time_editor_manager")
+        manager_module.TimeEditorManagerWindow = MagicMock()
+        self._inject_module("mmd_tools.ui.time_editor_manager", manager_module)
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
+        )
+        self.plugin_main.install_mmd_menu()
+        menu_call = next(call for call in self.plugin_main.cmds.menuItem.call_args_list
+                         if call[0] == ("MMDTimeEditorMenuItem",))
+        menu_call[1]["command"]("menu-click")
+        manager_module.TimeEditorManagerWindow.show_manager.assert_called_once_with()
+        self.plugin_main.uninitializePlugin(MagicMock())
+        manager_module.TimeEditorManagerWindow.close_manager.assert_called_once_with()
 
     def test_uninitialize_aborts_before_close_when_humanik_restore_fails(self):
         self.plugin_main.open_main_window(dockable=False)

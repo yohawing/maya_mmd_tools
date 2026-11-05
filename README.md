@@ -40,6 +40,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Control Rig | 🧪 | An optional Control Rig can be generated from the semi-standard bone layout. Restore and bake have known issues. |
+| Time Editor | 🧪 | One model's bone animation can be copied to one clip, shifted in time, and restored through the MMD manager. Animation Layers, HumanIK and Control Rig editing are excluded. See the [workflow and limits (Japanese)](docs/time-editor.md). |
 | Export | 🧪 | Supports VMD export for characters, cameras, and lights, as well as VPD export. Export is currently bake-only. Self-shadow is unsupported. |
 
 ## Known Limitations
