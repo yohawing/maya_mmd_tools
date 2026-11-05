@@ -828,6 +828,18 @@ def maya_scene_reload(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_pose_layers(session: nox.Session) -> None:
+    """Verify Animator Copy/Paste and animation layers in fresh Maya GUI hosts."""
+    session.run(sys.executable, "tools/maya_gui/pose_layers_e2e.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
+def maya_ik_layers(session: nox.Session) -> None:
+    """Verify native IK, animation layers, and VMD replacement in Maya GUI."""
+    session.run(sys.executable, "tools/maya_gui/ik_layers_e2e.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 
