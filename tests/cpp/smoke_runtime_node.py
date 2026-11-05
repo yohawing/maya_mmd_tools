@@ -1048,6 +1048,33 @@ def main() -> int:
         if actual_enabled is not True:
             raise RuntimeError(f"enabled default should be True, got {actual_enabled}")
 
+        # Layer membership needs readable input plugs, even for a boolean
+        # authored channel. Test real off/on keys instead of only its flags.
+        layer_solver = cmds.createNode(CCDIK_NODE_TYPE)
+        layer = cmds.animLayer("ccdikEnabledLayerSmoke", override=True)
+        previous_time = cmds.currentTime(query=True)
+        try:
+            plug = f"{layer_solver}.enabled"
+            cmds.animLayer(layer, edit=True, attribute=plug)
+            if plug not in (cmds.animLayer(layer, query=True, attribute=True) or []):
+                raise RuntimeError(f"IK enabled was not registered on animation layer: {plug}")
+            cmds.setKeyframe(plug, animLayer=layer, time=1, value=False)
+            cmds.setKeyframe(plug, animLayer=layer, time=5, value=True)
+            cmds.currentTime(1)
+            if cmds.getAttr(plug) is not False:
+                raise RuntimeError("IK enabled layer did not evaluate its OFF key")
+            cmds.currentTime(5)
+            if cmds.getAttr(plug) is not True:
+                raise RuntimeError("IK enabled layer did not evaluate its ON key")
+            cmds.currentTime(1)
+            cmds.animLayer(layer, edit=True, mute=True)
+            if cmds.getAttr(plug) is not True:
+                raise RuntimeError("Muting IK enabled layer did not restore its base value")
+        finally:
+            cmds.delete(layer, layer_solver)
+            cmds.currentTime(previous_time)
+        print("OK: mmdCcdIk enabled supports animation-layer OFF/ON keys and mute")
+
         # C++-only legacy attributes
         if cpp_registered_ccdik:
             legacy_ccdik_attrs = [

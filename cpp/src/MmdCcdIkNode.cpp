@@ -1559,7 +1559,8 @@ MStatus MmdCcdIkNode::initialize() {
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
-    nAttr.setReadable(false);
+    // Animation layers connect member plugs to dagSetMembers as sources.
+    nAttr.setReadable(true);
     addAttribute(aEnabled);
 
     // --- Legacy 入力 (hidden): iterations(int, default 1, min 1) ---
