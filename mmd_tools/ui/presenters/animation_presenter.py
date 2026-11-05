@@ -108,7 +108,6 @@ class AnimationPresenter:
         self._morph_rows: dict[str, object] = {}
         self._morph_groups = {}
         self._morph_instances = []
-        self._morph_group_titles = {}
         self._morph_group_expanded = {}
         self._morph_categorized = None
         self._morph_model_root = None
@@ -705,7 +704,7 @@ class AnimationPresenter:
         selected = set(names)
         self._morph_selected_names = [name for name in rows if name in selected]
         multi = len(self._morph_selected_names) > 1
-        for name, row in getattr(self, "_morph_instances", ()) or tuple(rows.items()):
+        for name, row in self._morph_instances:
             set_selected = getattr(row, "set_selected", None)
             if callable(set_selected):
                 set_selected(name in selected)
@@ -2148,7 +2147,6 @@ class AnimationPresenter:
         self._morph_rows.clear()
         self._morph_instances.clear()
         self._morph_groups.clear()
-        self._morph_group_titles.clear()
         layout = self.view.morph_groups_layout
         while layout.count() > 1:
             child = layout.takeAt(0)
@@ -2362,7 +2360,6 @@ class AnimationPresenter:
 
         layout = self.view.morph_groups_layout
         for category_key, cat_name, morphs in self._morph_group_specs(categorized):
-            self._morph_group_titles[category_key] = cat_name
             group = QWidget()
             group.setObjectName("MorphPickerGroup")
             group.setStyleSheet(
@@ -2391,7 +2388,7 @@ class AnimationPresenter:
             content_layout.setColumnMinimumWidth(1, 116)
             content_layout.setColumnMinimumWidth(3, 72)
             content_layout.setColumnStretch(2, 1)
-            self._morph_groups[category_key] = (group, content_layout, header)
+            self._morph_groups[category_key] = (group, content_layout, header, cat_name)
 
             for row_index, morph in enumerate(morphs):
                 language = UITranslator.instance().get_language()
@@ -2476,10 +2473,9 @@ class AnimationPresenter:
         query = field.text().casefold().strip()
         for name, row in self._morph_instances:
             row.setHidden(query not in row.label.toolTip().casefold())
-        for category, (group, layout, header) in self._morph_groups.items():
+        for group, layout, header, title in self._morph_groups.values():
             count = sum(not layout.itemAt(i).widget().isHidden() for i in range(layout.count()))
             group.setVisible(count > 0)
-            title = self._morph_group_titles[category]
             header.setText(f"{'▾' if header.isChecked() else '▸'}  {title}    {count}")
         visible = [name for name in self._morph_selected_names
                    if name in self._morph_rows and not self._morph_rows[name].isHidden()]
@@ -2499,7 +2495,7 @@ class AnimationPresenter:
         if not plugs:
             self._sync_picker_to_actual_selection()
             return
-        instances = getattr(self, "_morph_instances", ()) or tuple(self._morph_rows.items())
+        instances = self._morph_instances
         visible = [(name, row) for name, row in instances
                    if not getattr(row, "isHidden", lambda: False)() and row.plugs]
         names = [name for name, _ in visible]
@@ -2569,7 +2565,7 @@ class AnimationPresenter:
             value = max(0.0, min(1.0, float(weight)))
             for name in targets:
                 self._set_morph_weight(name, value)
-                for row_name, row in self._morph_instances or tuple(self._morph_rows.items()):
+                for row_name, row in self._morph_instances:
                     if row_name != name:
                         continue
                     set_value = getattr(row, "set_value", None)
@@ -2668,7 +2664,7 @@ class AnimationPresenter:
             current_time = None
         refresh_animation = current_time != self._last_morph_refresh_time
         self._last_morph_refresh_time = current_time
-        for morph_name, row in self._morph_instances or tuple(self._morph_rows.items()):
+        for morph_name, row in self._morph_instances:
             if not row.editor.is_editing:
                 row.set_value(self._morph_value(morph_name))
             if refresh_animation:

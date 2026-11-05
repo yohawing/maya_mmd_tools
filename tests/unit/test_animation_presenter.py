@@ -1949,6 +1949,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         for node, (_morph_type, name) in model_a_nodes.items():
             plug = f"{node}.weight"
             presenter._morph_rows = {name: _FakeMorphRow((plug,))}
+            presenter._morph_instances = list(presenter._morph_rows.items())
             presenter._on_morph_row_activated(name)
             self.assertEqual(adapter.selected, [plug])
 
@@ -1996,6 +1997,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         presenter._morph_indices["笑い"] = 19
         row = _FakeMorphRow(("morphController.inputWeight[19]",))
         presenter._morph_rows = {"笑い": row}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         presenter._joint_for_rig_control = lambda node: None
 
         presenter._on_morph_row_activated("笑い")
@@ -2009,6 +2011,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         )
         row = _FakeMorphRow(("morphController.inputWeight[19]",))
         presenter._morph_rows = {"笑い": row}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         presenter._joint_for_rig_control = lambda node: None
         adapter.alias_attr = lambda node, query=False: (
             ["Smile", "inputWeight[19]"] if node == "morphController" else []
@@ -2039,6 +2042,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
             ("bs_face.weight[0]", "bs_hair.weight[0]"),
         )
         presenter._morph_rows = {"笑い": row}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         presenter._joint_for_rig_control = lambda node: None
 
         presenter._on_morph_row_activated("笑い")
@@ -2056,6 +2060,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         row = _FakeMorphRow(("blendShape1.weight[0]",))
         row.value = 0.625
         presenter._morph_rows = {"笑い": row}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         presenter._joint_for_rig_control = lambda node: None
         row.selected = True
         adapter.selected = ["blendShape1.weight[0]", "unrelated.weight[3]"]
@@ -2072,6 +2077,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         first = _FakeMorphRow(("blendShape1.weight[0]",))
         second = _FakeMorphRow(("blendShape1.weight[1]",))
         presenter._morph_rows = {"笑い": first, "怒り": second}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         presenter._joint_for_rig_control = lambda node: None
         adapter.selected = ["blendShape1.weight[0]"]
 
@@ -2087,6 +2093,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         first = _FakeMorphRow(("face.weight[0]", "hair.weight[0]"))
         second = _FakeMorphRow(("face.weight[1]",))
         presenter._morph_rows = {"笑い": first, "怒り": second}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         presenter._joint_for_rig_control = lambda node: None
 
         adapter.selected = list(first.plugs) + list(second.plugs)
@@ -2124,6 +2131,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         second = Row(("blendShape1.weight[1]",))
         third = Row(("blendShape1.weight[2]",))
         presenter._morph_rows = {"笑い": first, "怒り": second, "まばたき": third}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         presenter._morph_selected_names = ["笑い", "怒り"]
 
         presenter._on_morph_weight_changed("笑い", 0.625)
@@ -2203,6 +2211,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
                 pass
 
         presenter._morph_rows = {"笑い": EditingRow()}
+        presenter._morph_instances = list(presenter._morph_rows.items())
         view.isVisible = lambda: True
         view.picker_tabs.setCurrentIndex(view.TAB_MORPH)
         adapter.current_time = lambda: 1.0
@@ -2233,6 +2242,7 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         row = _FakeMorphRow(("blendShape1.weight[0]",))
         row.selected = True
         presenter._morph_rows = {"笑い": row}
+        presenter._morph_instances = list(presenter._morph_rows.items())
 
         presenter._clear_morph_tab()
 
