@@ -9,7 +9,7 @@ It does not operate a user's existing Maya session.
 
 ```powershell
 uvx nox -s skirt_penetration
-# Regression check: currently expected to exit nonzero because intersections exist.
+# Regression check: fails if sampled intersections reappear.
 uvx nox -s skirt_penetration -- --out-dir build/reports/skirt-regression --assert-clear
 ```
 
@@ -77,6 +77,13 @@ poses (including append-driven leg D bones). The bypass is **not included** in
 this runner and is not a production fix: it disables all pre-physics evaluation,
 so compatibility with other input modes still requires a targeted correction.
 Local evidence is `build/reports/skirt-20261106/ab-summary.json`.
+
+The production correction removes that duplicate pre-physics evaluation from
+the live Maya solver, and converts evaluated input matrices back to base local
+channels without applying append transforms twice in mmd-anim. The regression
+also covers reset, forward stepping, same-frame pose edits, and append donors
+on either side of recipients in model order. The diagnostic bypass above is
+historical evidence; the runner uses the production implementation unchanged.
 
 `report.status=pass` means the diagnostic execution completed. Its separate
 `reproduction` field states whether intersections were observed. `--assert-clear`

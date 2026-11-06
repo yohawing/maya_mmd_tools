@@ -255,9 +255,11 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if not self._instance.evaluate_rest_pose():
             return False
         if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
+            # Maya inputs already include pre-physics IK/append evaluation.
+            # Re-evaluating them here applies append twice and moves colliders
+            # away from the skinned Maya pose. Native REST evaluation above
+            # and post-physics evaluation below retain their own boundaries.
             if not self._inject_kinematic_poses(data):
-                return False
-            if not self._instance.evaluate_current_pose_before_physics():
                 return False
         if self._world.step_runtime(self._instance, dt) is None:
             return False
@@ -276,8 +278,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
                     return False
             elif not self._apply_kinematic_pose_inputs(pose_input):
                 return False
-            if not self._instance.evaluate_current_pose_before_physics():
-                return False
+            # The supplied world pose is already evaluated by Maya, as in step.
         return self._world.reset(self._instance) is not None
 
     def _update_cached_matrices(self) -> bool:

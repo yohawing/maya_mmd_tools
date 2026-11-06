@@ -330,6 +330,36 @@ class TestPhysicsSolverNode(MayaTestBase):
         )
         self.assertGreater(mesh_delta, 0.001, "UI-enabled physics must deform the final mesh")
 
+    def test_evaluated_append_input_survives_reset_step_and_same_frame_edit(self):
+        """Already evaluated Maya append poses must reach physics unchanged."""
+        from maya.api import OpenMaya as om
+
+        pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        donor = pmx.rigid_bodies[0].related_bone_index
+        target = pmx.rigid_bodies[8].related_bone_index
+        # Use explicit pre-physics append metadata, as in the reported leg D bones.
+        pmx.bones[target].bone_flag = (pmx.bones[target].bone_flag | 0x0100) & ~0x1000
+        pmx.bones[target].grant_parent_bone_index = donor
+        pmx.bones[target].grant_rate = 1.0
+        path = self.get_temp_filename("hair_append_input.pmx")
+        pmx.write_file(path)
+        root, joints, solver = _import_payload_free_scene(path)
+        donor_joint = next(j for j in joints if cmds.getAttr(j + ".mmd_bone_index") == donor)
+        cmds.currentTime(0)
+        cmds.setAttr(donor_joint + ".rotateY", 25.0)
+        _connect_enabled_world(solver)
+        selection = om.MSelectionList()
+        selection.add(solver)
+        node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+        for frame, angle in ((0, 25.0), (1, 25.0), (1, 40.0), (0, 40.0)):
+            with self.subTest(frame=frame, angle=angle):
+                cmds.setAttr(donor_joint + ".rotateY", angle)
+                cmds.currentTime(frame)
+                self.assertTrue(cmds.getAttr(solver + ".outSolved"))
+                inputs = {entry[0]: entry[2] for entry in node._last_kinematic_pose_signature if len(entry) == 3}
+                actual = node._instance.get_world_matrices()[target]
+                self.assertLess(max(abs(a - b) for a, b in zip(inputs[target], actual)), 1e-5)
+
     def test_solver_outputs_bone_count(self):
         root, joints = self._build_scene()
         solver = self._create_solver(root)
