@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-06
+
+### Fixed
+- Prevented duplicate IK/append evaluation of Maya poses before physics, correcting leg collider alignment and skirt penetration.
+- Applied the physics world's fixed timestep and maximum substeps to the live native solver, including same-frame setting changes.
+- Removed one-substep Bullet readback latency by using the current simulated body pose.
+- Corrected compound PMX rigid-body rotations and their bone bindings in both native PMX and Maya descriptor paths; joint rotation conventions remain unchanged.
+- Initialized new physics worlds with native MMD gravity while preserving existing scene settings.
+
+### Validation
+- Passed the native physics release gate: collision checks and two deterministic Maya 2024 native physics bake runs.
+- Verified the real-model skirt fixture on the sampled frames; this is not a guarantee of collision-free clothing for every model or motion.
+- Windows binaries target Maya 2024-2027; macOS binaries remain excluded.
+
 ## [0.8.4] - 2026-11-04
 
 ### Added
