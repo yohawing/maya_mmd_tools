@@ -33,8 +33,9 @@ test motion spans frames 0–5. They cannot reproduce this skirt case unchanged.
 - No collider enlargement, mask edits, cloth replacement, or extra warm-up.
 - Record scene world settings and the runtime tick configuration separately;
   fail if `fixedTimestep` or `maxSubsteps` differs between them.
-- Native body readback is recorded separately from mesh vertices. The current
-  Bullet wrapper reads MotionState; it is not necessarily the current COM pose.
+- Native body readback is recorded separately from mesh vertices. The Bullet
+  wrapper returns the completed solver's current COM pose, not the interpolated
+  graphics MotionState (which previously lagged by one fixed substep).
 
 `report.json` stores actual settings, asset/binary/driver hashes, weighted region
 sizes, per-frame intersection coordinates and counts, solver status, native
@@ -84,6 +85,15 @@ channels without applying append transforms twice in mmd-anim. The regression
 also covers reset, forward stepping, same-frame pose edits, and append donors
 on either side of recipients in model order. The diagnostic bypass above is
 historical evidence; the runner uses the production implementation unchanged.
+
+With world tick settings honored at 1/60 second and 10 maximum substeps,
+the old MotionState readback left four crossings at frame 131. Switching
+readback to the current solver pose removes the interpolation delay; this is
+validated independently against free-fall integration as well as this fixture.
+The final bundled runtime was checked in a fresh Maya 2024 process: all 42
+samples (frame 0 and every frame from 110 through 150) had zero crossings.
+Local evidence is `build/reports/physics-fixes/verification.json`; this does not
+extend the clearance claim beyond the measured mesh regions and frames.
 
 `report.status=pass` means the diagnostic execution completed. Its separate
 `reproduction` field states whether intersections were observed. `--assert-clear`

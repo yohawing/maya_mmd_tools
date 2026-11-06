@@ -418,8 +418,8 @@ class TestPhysicsDagParity(MayaTestBase):
             pmx_model.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_scaled_import_matches_normalized_legacy_reference_scale(self):
-        """Physics reset must keep the imported character scale."""
+    def test_scaled_import_initial_and_reset_static_states_match_reference(self):
+        """Initial bodies and reset static bodies retain the imported scale."""
         from mmd_tools.io.pmx_importer import import_pmx_file
         from mmd_tools.core.physics_solver import _collect_bone_joints
 
@@ -453,26 +453,34 @@ class TestPhysicsDagParity(MayaTestBase):
         try:
             self.assertTrue(dag_instance.evaluate_rest_pose())
             self.assertTrue(pmx_instance.evaluate_rest_pose())
-            self.assertIsNotNone(dag_world.reset(dag_instance))
-            self.assertIsNotNone(pmx_world.reset(pmx_instance))
-            dag_states = dag_world.copy_rigidbody_states()
-            pmx_states = pmx_world.copy_rigidbody_states()
-            self.assertEqual(len(dag_states), len(pmx_states))
-            for body_index, ((dag_pos, dag_rot), (pmx_pos, pmx_rot)) in enumerate(
-                zip(dag_states, pmx_states)
-            ):
-                for component in range(3):
-                    self.assertAlmostEqual(
-                        dag_pos[component], pmx_pos[component] * scale,
-                        delta=0.005,
-                        msg=f"body[{body_index}] scaled position[{component}]",
-                    )
-                for component in range(4):
-                    self.assertAlmostEqual(
-                        dag_rot[component], pmx_rot[component],
-                        delta=0.005,
-                        msg=f"body[{body_index}] rotation[{component}]",
-                    )
+            # reset_runtime_physics settles for 1/60 s before dynamic readback.
+            # Equal gravity does not give scale-proportional dynamic displacement;
+            # compare all initial bodies, then only bone-driven bodies after reset.
+            # Dynamic reset replay is covered by the solver session tests.
+            for reset in (False, True):
+                if reset:
+                    self.assertIsNotNone(dag_world.reset(dag_instance))
+                    self.assertIsNotNone(pmx_world.reset(pmx_instance))
+                dag_states = dag_world.copy_rigidbody_states()
+                pmx_states = pmx_world.copy_rigidbody_states()
+                self.assertEqual(len(dag_states), len(pmx_states))
+                for body_index, ((dag_pos, dag_rot), (pmx_pos, pmx_rot)) in enumerate(
+                    zip(dag_states, pmx_states)
+                ):
+                    if reset and self.pmx.rigid_bodies[body_index].physics_mode != 0:
+                        continue
+                    for component in range(3):
+                        self.assertAlmostEqual(
+                            dag_pos[component], pmx_pos[component] * scale,
+                            delta=0.005,
+                            msg=f"body[{body_index}] scaled position[{component}]",
+                        )
+                    for component in range(4):
+                        self.assertAlmostEqual(
+                            dag_rot[component], pmx_rot[component],
+                            delta=0.005,
+                            msg=f"body[{body_index}] rotation[{component}]",
+                        )
         finally:
             dag_instance.free()
             dag_model.free()
