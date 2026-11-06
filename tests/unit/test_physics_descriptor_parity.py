@@ -1,4 +1,4 @@
-"""Parity oracle: typed descriptors vs a legacy-native-normalized PMX reference.
+"""Parity oracle: typed descriptors vs a raw PMX reference.
 
 Requires the native physics DLL with Bullet support. Skipped when unavailable.
 This is the PHS-0 exit gate: if these tests fail, Maya node implementation
@@ -8,11 +8,9 @@ must not proceed.
 from __future__ import annotations
 
 import unittest
-import hashlib
-import tempfile
 from pathlib import Path
 
-from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes, pmx_body_matrix
+from tests.common.physics_rotation_oracle import pmx_body_matrix
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.native.mmd_anim_runtime import (
@@ -51,9 +49,6 @@ class TestDescriptorWorldParity(unittest.TestCase):
     def setUpClass(cls):
         cls.pmx_bytes = _pmx_fixture_bytes()
         cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
-        cls.reference_bytes = legacy_native_reference_pmx_bytes(
-            parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-        )
         cls.desc_set = build_descriptors_from_pmx(
             cls.pmx.rigid_bodies, cls.pmx.joints, cls.pmx.bones,
         )
@@ -69,19 +64,6 @@ class TestDescriptorWorldParity(unittest.TestCase):
         for row in range(3):
             for col in range(3):
                 self.assertAlmostEqual(actual[row][col], expected[row][col], places=12)
-        # The complete writer needs the legacy parser's serialization metadata.
-        source_hash = hashlib.sha256(self.pmx_bytes).digest()
-        self.assertEqual(hashlib.sha256(FIXTURE_PATH.read_bytes()).digest(), source_hash)
-        with tempfile.TemporaryDirectory(prefix="mmd_reference_readback_") as directory:
-            path = Path(directory) / "reference.pmx"
-            path.write_bytes(self.reference_bytes)
-            reference = parse_pmx_file(str(path), require_native_pmx_parse=True)
-        self.assertEqual(len(reference.vertices), len(self.pmx.vertices))
-        self.assertEqual(reference.header.model_name, self.pmx.header.model_name)
-        self.assertEqual([(b.name, b.position, b.parent_bone_index, b.bone_flag, b.ik_target_bone_index, b.ik_loop_count, len(b.ik_links)) for b in reference.bones],
-                         [(b.name, b.position, b.parent_bone_index, b.bone_flag, b.ik_target_bone_index, b.ik_loop_count, len(b.ik_links)) for b in self.pmx.bones])
-        self.assertEqual([(j.rotation, j.position, j.rigid_body_a_index, j.rigid_body_b_index) for j in reference.joints],
-                         [(j.rotation, j.position, j.rigid_body_a_index, j.rigid_body_b_index) for j in self.pmx.joints])
 
     def test_descriptor_set_has_no_blocking_errors(self):
         blocking = [
@@ -91,7 +73,7 @@ class TestDescriptorWorldParity(unittest.TestCase):
         self.assertEqual(blocking, [])
 
     def test_both_worlds_have_same_rigidbody_count(self):
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.reference_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
         self.assertIsNotNone(pmx_world)
         desc_world = MmdRuntimePhysicsWorld.from_descriptors(
             self.desc_set.rigid_bodies, self.desc_set.joints,
@@ -109,7 +91,7 @@ class TestDescriptorWorldParity(unittest.TestCase):
         desc_world.free()
 
     def test_initial_rigidbody_states_match(self):
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.reference_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
         desc_world = MmdRuntimePhysicsWorld.from_descriptors(
             self.desc_set.rigid_bodies, self.desc_set.joints,
         )
@@ -181,7 +163,7 @@ class TestDescriptorWorldParity(unittest.TestCase):
         return states
 
     def test_multi_step_states_match(self):
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.reference_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
         desc_world = MmdRuntimePhysicsWorld.from_descriptors(
             self.desc_set.rigid_bodies, self.desc_set.joints,
         )

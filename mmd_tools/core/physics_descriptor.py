@@ -4,7 +4,7 @@ Converts PMX rigid-body / joint data into the typed descriptor structs
 expected by ``mmd_runtime_physics_world_create``.  The body_from_bone and
 bone_from_body transforms are computed here from PMX bone rest positions
 and rigid-body bind poses. PMX body orientation is adapted to Bullet's ZYX
-encoding; native direct-from-PMX currently uses different compound rotations.
+encoding, matching the native direct-from-PMX boundary.
 """
 
 from __future__ import annotations

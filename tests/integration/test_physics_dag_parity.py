@@ -1,9 +1,6 @@
-"""DAG descriptor parity against a corrected legacy native PMX reference.
+"""DAG descriptor parity against the same unmodified PMX in the native reader.
 
-Reference PMX copies normalize body rotations to the legacy native reader's
-ZYX convention using an independent matrix oracle. Original fixture bytes,
-model instances, joint frames and exported PMX metadata remain unchanged.
-The raw native reader is retained as a negative orientation control.
+Compound body orientation is also checked against a fixed independent oracle.
 Requires Maya and the native physics DLL with Bullet support.
 """
 
@@ -68,7 +65,7 @@ def _create_minimal_joints(bones, scale=1.0) -> list[str]:
 
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 class TestPhysicsDagParity(MayaTestBase):
-    """DAG world must match the independently normalized legacy native reference."""
+    """DAG world must match the raw PMX native reference."""
 
     @classmethod
     def setUpClass(cls):
@@ -83,10 +80,6 @@ class TestPhysicsDagParity(MayaTestBase):
 
         cls.pmx_bytes = FIXTURE_PATH.read_bytes()
         cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
-        from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes
-        cls.corrected_native_bytes = legacy_native_reference_pmx_bytes(
-            parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-        )
         cls.pmx_desc_set = build_descriptors_from_pmx(
             cls.pmx.rigid_bodies, cls.pmx.joints, cls.pmx.bones,
         )
@@ -441,7 +434,7 @@ class TestPhysicsDagParity(MayaTestBase):
         )
         dag_model = MmdRuntimeModel.from_descriptors(dag_model_desc)
         dag_instance = MmdRuntimeInstance.for_model(dag_model)
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
         pmx_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         pmx_instance = MmdRuntimeInstance.for_model(pmx_model)
         self.assertIsNotNone(dag_world)
@@ -498,7 +491,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
 
         self.assertEqual(dag_world.rigidbody_count(), pmx_world.rigidbody_count())
         self.assertEqual(dag_world.rigidbody_count(), 16)
@@ -507,7 +500,7 @@ class TestPhysicsDagParity(MayaTestBase):
         pmx_world.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_dag_world_initial_states_match_normalized_legacy_native_reference(self):
+    def test_dag_world_initial_states_match_raw_pmx_reference(self):
         root, maya_joints, _, _ = self._build_dag_scene()
         dag_desc_set = build_descriptors_from_dag(
             root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
@@ -515,7 +508,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
 
         # Keep each reset on an independent runtime instance.  Reusing one
         # instance can hide state leakage between the descriptor and direct
@@ -556,7 +549,7 @@ class TestPhysicsDagParity(MayaTestBase):
         pmx_world.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_dag_world_multi_step_matches_normalized_legacy_native_reference(self):
+    def test_dag_world_multi_step_matches_raw_pmx_reference(self):
         root, maya_joints, _, _ = self._build_dag_scene()
         dag_desc_set = build_descriptors_from_dag(
             root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
@@ -565,7 +558,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
 
         dag_states = self._run_steps(dag_world, num_steps=10)
         pmx_states = self._run_steps(pmx_world, num_steps=10)
@@ -589,7 +582,7 @@ class TestPhysicsDagParity(MayaTestBase):
         pmx_world.free()
 
     @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
-    def test_dag_bone_world_matrices_match_normalized_legacy_reference_after_stepping(self):
+    def test_dag_bone_world_matrices_match_raw_pmx_reference_after_stepping(self):
         """Bone world matrices must match after split-evaluation physics stepping."""
         root, maya_joints, _, _ = self._build_dag_scene()
         dag_desc_set = build_descriptors_from_dag(
@@ -598,7 +591,7 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world = MmdRuntimePhysicsWorld.from_descriptors(
             dag_desc_set.rigid_bodies, dag_desc_set.joints,
         )
-        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.corrected_native_bytes)
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
 
         dag_matrices = self._run_split_eval_steps(dag_world, num_steps=10)
         pmx_matrices = self._run_split_eval_steps(pmx_world, num_steps=10)
@@ -660,7 +653,7 @@ class TestPhysicsDagParity(MayaTestBase):
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
 class TestCompoundColliderNativeContract(MayaTestBase):
-    """Independent PMX body Ry*Rx*Rz contract, separate from legacy native parsing."""
+    """Independent PMX body Ry*Rx*Rz contract, independent of native parsing."""
 
     @classmethod
     def setUpClass(cls):
@@ -756,7 +749,7 @@ class TestCompoundColliderNativeContract(MayaTestBase):
                 cmds.file(new=True, force=True)
                 self.verify(*self.fixture(scale), scale)
 
-    def test_legacy_raw_native_is_a_negative_control_for_fixed_mmd_orientation(self):
+    def test_raw_native_and_descriptors_match_fixed_mmd_orientation(self):
         expected = (0.16635528384310905, 0.13165804153184718,
                     0.6064593322922748, 0.7662892129692844)
         pmx = parse_pmx_file(str(FIXTURE_PATH))
@@ -764,17 +757,17 @@ class TestCompoundColliderNativeContract(MayaTestBase):
                          (.09540669620037079, .41741126775741577, 1.3591997623443604))
         descriptors = build_descriptors_from_pmx(pmx.rigid_bodies, pmx.joints, pmx.bones)
         adapted = MmdRuntimePhysicsWorld.from_descriptors(descriptors.rigid_bodies, descriptors.joints)
-        legacy = MmdRuntimePhysicsWorld.from_pmx_bytes(FIXTURE_PATH.read_bytes())
+        native = MmdRuntimePhysicsWorld.from_pmx_bytes(FIXTURE_PATH.read_bytes())
         self.assertIsNotNone(adapted)
-        self.assertIsNotNone(legacy)
+        self.assertIsNotNone(native)
         try:
             actual = adapted.copy_rigidbody_states()[0][1]
-            raw = legacy.copy_rigidbody_states()[0][1]
+            raw = native.copy_rigidbody_states()[0][1]
             self.assertLess(max(abs(a-b) for a, b in zip(actual, expected)), 1e-6)
-            self.assertGreater(max(abs(a-b) for a, b in zip(raw, expected)), .1)
+            self.assertLess(max(abs(a-b) for a, b in zip(raw, expected)), 1e-6)
         finally:
             adapted.free()
-            legacy.free()
+            native.free()
 
     def test_compound_collider_undo_and_ascii_roundtrip(self):
         import tempfile

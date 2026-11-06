@@ -11,8 +11,6 @@ import math
 import unittest
 from pathlib import Path
 
-from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes
-
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
@@ -531,7 +529,7 @@ class TestPhysicsSolverNode(MayaTestBase):
         self.assertEqual(len(matrices), expected_len)
 
     def test_solver_parity_with_native_oracle(self):
-        """Solver matrices match normalized legacy native reference stepping."""
+        """Solver matrices match raw PMX native reference stepping."""
         from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
         from mmd_tools.core.native.mmd_anim_runtime_handles import (
             MmdRuntimeInstance,
@@ -556,9 +554,7 @@ class TestPhysicsSolverNode(MayaTestBase):
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
         ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
-            legacy_native_reference_pmx_bytes(
-                parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-            )
+            self.pmx_bytes
         )
         self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
@@ -953,9 +949,7 @@ class TestSolverTimeStateMachine(MayaTestBase):
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
         ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
-            legacy_native_reference_pmx_bytes(
-                parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-            )
+            self.pmx_bytes
         )
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
@@ -1000,9 +994,7 @@ class TestSolverTimeStateMachine(MayaTestBase):
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
         ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
-            legacy_native_reference_pmx_bytes(
-                parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-            )
+            self.pmx_bytes
         )
         self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
