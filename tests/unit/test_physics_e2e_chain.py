@@ -7,7 +7,7 @@ The full data flow:
   Maya keys/controllers/IK
     → solver reads kinematic bone worldMatrix (PHS-3a, cycle-safe)
     → bind correction → mmd-anim space
-    → apply_physics_world_matrices + evaluate_current_pose_before_physics
+    → apply_physics_world_matrices (Maya inputs are already evaluated)
     → step_runtime(dt) / reset (Bullet steps dynamic bodies)
     → evaluate_current_pose_after_physics
     → solver outputs outBoneMatrices (Maya space)
@@ -57,13 +57,12 @@ def _func_source(tree, lines, name, cls=None):
 class TestE2EChainStructure(unittest.TestCase):
     """Verify the complete PHS-3 chain is wired across all modules."""
 
-    def test_solver_forward_step_calls_all_five_phases(self):
-        """forward_step must call: evaluate_rest_pose → inject → pre_physics → step → post_physics."""
+    def test_solver_forward_step_calls_physics_phases(self):
+        """Forward stepping injects evaluated poses before physics and post-processing."""
         src, tree, lines = _get_source(SOLVER_NODE_PATH)
         fs = _func_source(tree, lines, "_forward_step", "MmdPhysicsSolverNode")
         self.assertIn("evaluate_rest_pose", fs)
         self.assertIn("_inject_kinematic_poses", fs)
-        self.assertIn("evaluate_current_pose_before_physics", fs)
         self.assertIn("step_runtime", fs)
         self.assertIn("evaluate_current_pose_after_physics", fs)
 
@@ -72,7 +71,6 @@ class TestE2EChainStructure(unittest.TestCase):
         rw = _func_source(tree, lines, "_reset_world", "MmdPhysicsSolverNode")
         self.assertIn("evaluate_rest_pose", rw)
         self.assertIn("_inject_kinematic_poses", rw)
-        self.assertIn("evaluate_current_pose_before_physics", rw)
         self.assertIn("reset", rw)
 
     def test_solver_outputs_bone_matrices_and_visual_cache(self):

@@ -1,4 +1,4 @@
-"""Parity oracle: typed descriptor world vs PMX direct world.
+"""Parity oracle: typed descriptors vs a raw PMX reference.
 
 Requires the native physics DLL with Bullet support. Skipped when unavailable.
 This is the PHS-0 exit gate: if these tests fail, Maya node implementation
@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+
+from tests.common.physics_rotation_oracle import pmx_body_matrix
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.native.mmd_anim_runtime import (
@@ -41,7 +43,7 @@ def _pmx_fixture_bytes() -> bytes:
 
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
 class TestDescriptorWorldParity(unittest.TestCase):
-    """Typed descriptor world must stay within explicit PMX parity gates."""
+    """Compare the same MMD body orientation across both native construction paths."""
 
     @classmethod
     def setUpClass(cls):
@@ -50,6 +52,18 @@ class TestDescriptorWorldParity(unittest.TestCase):
         cls.desc_set = build_descriptors_from_pmx(
             cls.pmx.rigid_bodies, cls.pmx.joints, cls.pmx.bones,
         )
+
+    def test_reference_matrix_matches_fixed_mmd_quaternion_oracle(self):
+        # Fixed non-reflected three-mmd-loader/Saba body orientation.
+        x, y, z, w = (.30440023509091957, .23474953511944815,
+                      -.20493821485715316, .9001297021701701)
+        expected = ((1-2*(y*y+z*z), 2*(x*y-z*w), 2*(x*z+y*w)),
+                    (2*(x*y+z*w), 1-2*(x*x+z*z), 2*(y*z-x*w)),
+                    (2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)))
+        actual = pmx_body_matrix((.7, .4, -.3))
+        for row in range(3):
+            for col in range(3):
+                self.assertAlmostEqual(actual[row][col], expected[row][col], places=12)
 
     def test_descriptor_set_has_no_blocking_errors(self):
         blocking = [

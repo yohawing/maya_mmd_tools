@@ -71,7 +71,7 @@ static bool isNodeTypeRegistered(const MTypeId& expectedId)
 MStatus initializePlugin(MObject obj)
 {
     MStatus status;
-    MFnPlugin plugin(obj, "yohawing", "0.8.4", "Any");
+    MFnPlugin plugin(obj, "yohawing", "0.8.5", "Any");
     MmdOrderedRenderOverride::setPluginLoadPath(plugin.loadPath());
 
     const uint32_t runtimeAbi = mmd::RuntimeBridge::runtimeAbiVersion();

@@ -100,6 +100,18 @@ def _solver_world_gravity(solver):
     return tuple(float(cmds.getAttr(f"{world}.gravity{axis}")) for axis in "XYZ")
 
 
+def _solver_world_tick_config(solver):
+    """Read the tick configuration owned by the connected world shape."""
+    source_plug = cmds.connectionInfo(
+        f"{solver}.inWorldSettings", sourceFromDestination=True
+    )
+    if not source_plug:
+        raise AssertionError(f"solver has no connected world: {solver}")
+    world = source_plug.rsplit(".", 1)[0]
+    return (float(cmds.getAttr(f"{world}.fixedTimestep")),
+            int(cmds.getAttr(f"{world}.maxSubsteps")))
+
+
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
 class TestPhysicsSolverNode(MayaTestBase):
@@ -137,6 +149,162 @@ class TestPhysicsSolverNode(MayaTestBase):
         root, _ = self._build_scene()
         solver = self._create_solver(root)
         self.assertEqual(cmds.nodeType(solver), "mmdPhysicsSolver")
+
+    def test_world_tick_config_controls_native_steps_and_lifecycle(self):
+        """World edits must reach the native tick before cached or fresh evaluation."""
+        import maya.api.OpenMaya as om
+        from unittest.mock import patch
+
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        world = cmds.connectionInfo(
+            f"{solver}.inWorldSettings", sourceFromDestination=True
+        ).rsplit(".", 1)[0]
+        cmds.currentUnit(time="ntsc")
+        cmds.currentTime(0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        selection = om.MSelectionList()
+        selection.add(solver)
+        node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+
+        def assert_config(dt, maximum):
+            actual = node._instance.get_physics_tick_config()
+            self.assertIsNotNone(actual)
+            self.assertAlmostEqual(actual[0], dt, places=8)
+            self.assertEqual(actual[1], maximum)
+
+        def assert_step(frame, expected):
+            reports = []
+            original = node._world.step_runtime
+
+            def capture(instance, dt):
+                report = original(instance, dt)
+                reports.append(report)
+                return report
+
+            with patch.object(node._world, "step_runtime", side_effect=capture):
+                cmds.currentTime(frame)
+                self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+            self.assertEqual(len(reports), 1)
+            self.assertIsNotNone(reports[0])
+            self.assertEqual(reports[0].tick.substeps, expected)
+
+        self.assertEqual(_solver_world_tick_config(solver), (1.0 / 60.0, 10))
+        assert_config(1.0 / 60.0, 10)
+        assert_step(1, 2)
+
+        # Same-frame edits must reset rather than serve the previous cache.
+        cmds.setAttr(f"{world}.fixedTimestep", 1.0 / 120.0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "reset")
+        assert_config(1.0 / 120.0, 10)
+        assert_step(2, 4)
+        cmds.setAttr(f"{world}.maxSubsteps", 1)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        assert_config(1.0 / 120.0, 1)
+        assert_step(3, 1)
+
+        cmds.setAttr(f"{world}.enable", False)
+        self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
+        cmds.setAttr(f"{world}.fixedTimestep", 1.0 / 60.0)
+        cmds.setAttr(f"{world}.maxSubsteps", 3)
+        cmds.setAttr(f"{world}.enable", True)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        assert_config(1.0 / 60.0, 3)
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "reset")
+        assert_step(4, 2)
+
+        # A replacement instance must receive settings even if they did not change.
+        node._free_handles()
+        self.assertIsNone(node._last_tick_config)
+        cmds.dgdirty(solver)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        assert_config(1.0 / 60.0, 3)
+        assert_step(5, 2)
+
+    def test_imported_world_gravity_matches_native_default(self):
+        """A new imported world must not slow native gravity by a factor of ten."""
+        from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimePhysicsWorld
+
+        _root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH)
+        native_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        try:
+            expected = tuple(native_world.get_gravity())
+            self.assertEqual(expected, (0.0, -98.0, 0.0))
+            self.assertEqual(_solver_world_gravity(solver), expected)
+        finally:
+            native_world.free()
+        for suffix, file_type in (("ma", "mayaAscii"), ("mb", "mayaBinary")):
+            with self.subTest(format=suffix):
+                scene = self.get_temp_filename("new_world_gravity." + suffix)
+                cmds.file(rename=scene)
+                cmds.file(save=True, type=file_type, force=True)
+                cmds.file(scene, open=True, force=True)
+                self.assertEqual(_solver_world_gravity(solver), expected)
+
+    def test_existing_world_gravity_survives_import_and_reload(self):
+        """Import reuses both legacy-default and customized scene worlds."""
+        from mmd_tools.converters.physics_scene_builder import _find_or_create_world_node
+
+        for gravity in ((0.0, -9.8, 0.0), (1.25, -3.5, 2.0)):
+            for suffix, file_type in (("ma", "mayaAscii"), ("mb", "mayaBinary")):
+                with self.subTest(gravity=gravity, format=suffix):
+                    cmds.file(new=True, force=True)
+                    world = cmds.createNode("mmdPhysicsWorldShape", name="retainedWorldShape")
+                    if gravity != (0.0, -9.8, 0.0):
+                        cmds.setAttr(f"{world}.gravity", *gravity)
+                    self.assertEqual(tuple(cmds.getAttr(f"{world}.gravity")[0]), gravity)
+                    _root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH)
+                    self.assertEqual(_solver_world_gravity(solver), gravity)
+                    self.assertEqual(len(cmds.ls(type="mmdPhysicsWorldShape") or []), 1)
+                    scene = self.get_temp_filename("retained_gravity." + suffix)
+                    cmds.file(rename=scene)
+                    cmds.file(save=True, type=file_type, force=True)
+                    cmds.file(scene, open=True, force=True)
+                    _find_or_create_world_node()
+                    worlds = cmds.ls(type="mmdPhysicsWorldShape") or []
+                    self.assertEqual(len(worlds), 1)
+                    self.assertEqual(tuple(cmds.getAttr(worlds[0] + ".gravity")[0]), gravity)
+
+    def test_new_import_gravity_drives_full_strength_free_fall(self):
+        """A fresh imported sphere falls ten times farther than legacy -9.8."""
+        import maya.api.OpenMaya as om
+        from mmd_tools.io.pmx_importer import import_pmx_file
+
+        fixture = parse_pmx_file(str(FIXTURE_PATH))
+        body = fixture.rigid_bodies[0]
+        body.related_bone_index = -1
+        body.shape_type, body.physics_mode = 0, 1
+        body.size, body.position, body.rotation = (0.5, 0.0, 0.0), (0.0, 100.0, 0.0), (0.0, 0.0, 0.0)
+        body.mass = 1.0
+        body.velocity_attenuation = body.rotation_attenuation = 0.0
+        fixture.rigid_bodies, fixture.joints = [body], []
+        drops = []
+        for gravity in (None, -9.8):
+            cmds.file(new=True, force=True)
+            cmds.currentUnit(time="ntsc")
+            root = import_pmx_file(fixture, str(FIXTURE_PATH), scale=1.0,
+                                   options={"import_physics": True, "create_mmd_shaders": False})
+            solvers = _model_physics_solvers(root)
+            self.assertEqual(len(solvers), 1)
+            solver = solvers[0]
+            world = _connect_enabled_world(solver)
+            if gravity is not None:
+                cmds.setAttr(f"{world}.gravityY", gravity)
+            cmds.currentTime(0)
+            self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+            selection = om.MSelectionList()
+            selection.add(solver)
+            native = om.MFnDependencyNode(selection.getDependNode(0)).userNode()._world
+            self.assertAlmostEqual(native.get_gravity()[1], gravity if gravity is not None else -98.0, places=5)
+            start_y = native.copy_rigidbody_states()[0][0][1]
+            for frame in range(1, 31):
+                cmds.currentTime(frame)
+                self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+            drops.append(start_y - native.copy_rigidbody_states()[0][0][1])
+        self.assertGreater(drops[0], 40.0)
+        self.assertLess(drops[0], 60.0)
+        self.assertAlmostEqual(drops[0] / drops[1], 10.0, delta=0.01)
 
     def test_ui_enable_moves_solver_joints_and_skinned_mesh(self):
         """The Physics-tab enable path must produce visible scene motion."""
@@ -244,6 +412,36 @@ class TestPhysicsSolverNode(MayaTestBase):
         )
         self.assertGreater(mesh_delta, 0.001, "UI-enabled physics must deform the final mesh")
 
+    def test_evaluated_append_input_survives_reset_step_and_same_frame_edit(self):
+        """Already evaluated Maya append poses must reach physics unchanged."""
+        from maya.api import OpenMaya as om
+
+        pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
+        donor = pmx.rigid_bodies[0].related_bone_index
+        target = pmx.rigid_bodies[8].related_bone_index
+        # Use explicit pre-physics append metadata, as in the reported leg D bones.
+        pmx.bones[target].bone_flag = (pmx.bones[target].bone_flag | 0x0100) & ~0x1000
+        pmx.bones[target].grant_parent_bone_index = donor
+        pmx.bones[target].grant_rate = 1.0
+        path = self.get_temp_filename("hair_append_input.pmx")
+        pmx.write_file(path)
+        root, joints, solver = _import_payload_free_scene(path)
+        donor_joint = next(j for j in joints if cmds.getAttr(j + ".mmd_bone_index") == donor)
+        cmds.currentTime(0)
+        cmds.setAttr(donor_joint + ".rotateY", 25.0)
+        _connect_enabled_world(solver)
+        selection = om.MSelectionList()
+        selection.add(solver)
+        node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+        for frame, angle in ((0, 25.0), (1, 25.0), (1, 40.0), (0, 40.0)):
+            with self.subTest(frame=frame, angle=angle):
+                cmds.setAttr(donor_joint + ".rotateY", angle)
+                cmds.currentTime(frame)
+                self.assertTrue(cmds.getAttr(solver + ".outSolved"))
+                inputs = {entry[0]: entry[2] for entry in node._last_kinematic_pose_signature if len(entry) == 3}
+                actual = node._instance.get_world_matrices()[target]
+                self.assertLess(max(abs(a - b) for a, b in zip(inputs[target], actual)), 1e-5)
+
     def test_solver_outputs_bone_count(self):
         root, joints = self._build_scene()
         solver = self._create_solver(root)
@@ -275,7 +473,10 @@ class TestPhysicsSolverNode(MayaTestBase):
 
         scale = 0.5
         root, _joints, solver = _import_payload_free_scene(FIXTURE_PATH, scale=scale)
-        _connect_enabled_world(solver)
+        world = _connect_enabled_world(solver)
+        # Native reset includes a settle step. Isolate the length-scale
+        # contract from gravity-induced motion rather than tolerating it.
+        cmds.setAttr(f"{world}.gravity", 0.0, 0.0, 0.0)
         cmds.currentTime(0)
         solver_flat = list(cmds.getAttr(f"{solver}.outBoneMatrices"))
 
@@ -328,7 +529,7 @@ class TestPhysicsSolverNode(MayaTestBase):
         self.assertEqual(len(matrices), expected_len)
 
     def test_solver_parity_with_native_oracle(self):
-        """Solver node bone matrices must match direct native stepping."""
+        """Solver matrices match raw PMX native reference stepping."""
         from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
         from mmd_tools.core.native.mmd_anim_runtime_handles import (
             MmdRuntimeInstance,
@@ -352,10 +553,13 @@ class TestPhysicsSolverNode(MayaTestBase):
             _ = cmds.getAttr(f"{solver}.outSolved")
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
-        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+            self.pmx_bytes
+        )
         self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
+        self.assertTrue(ref_instance.set_physics_tick_config(*_solver_world_tick_config(solver)))
         ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         ref_instance.evaluate_rest_pose()
         ref_world.reset(ref_instance)
@@ -744,7 +948,9 @@ class TestSolverTimeStateMachine(MayaTestBase):
         cmds.currentTime(0)
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
-        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+            self.pmx_bytes
+        )
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
         ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
@@ -787,10 +993,13 @@ class TestSolverTimeStateMachine(MayaTestBase):
             _ = cmds.getAttr(f"{solver}.outSolved")
         solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
 
-        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+            self.pmx_bytes
+        )
         self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
+        self.assertTrue(ref_instance.set_physics_tick_config(*_solver_world_tick_config(solver)))
         ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         ref_instance.evaluate_rest_pose()
         ref_world.reset(ref_instance)

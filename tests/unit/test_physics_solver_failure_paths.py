@@ -67,6 +67,7 @@ class _World:
 class _Instance:
     def __init__(self, *, post=True, matrices=None):
         self.post, self.matrices = post, matrices or [[float(i == j) for j in range(4) for i in range(4)]]
+    def set_physics_tick_config(self, _dt, _count): return True
     def set_physics_mode(self, _mode): return True
     def evaluate_rest_pose(self): return True
     def evaluate_current_pose_after_physics(self): return self.post
@@ -295,6 +296,8 @@ def _prepare_node(*, world, instance, time=0.0, last_time=None):
     node._initialized, node._world, node._instance = True, world, instance
     node._read_world_settings = lambda: (True, -1)
     node._read_world_gravity = lambda: (0.0, -9.8, 0.0)
+    node._read_world_tick_config = lambda: (1.0 / 60.0, 10)
+    node._last_tick_config = (1.0 / 60.0, 10)
     node._update_rigid_body_visual_cache = lambda: None
     node._last_time, node._cached_flat = last_time, [42.0]
     return node, _Data(time=time)
@@ -344,6 +347,38 @@ class TestEvaluationFailures(unittest.TestCase):
         node._try_initialize.assert_called_once_with()
         self.assertEqual(node._last_world_settings_version, 4)
         self.assertEqual(node._last_descriptor_version, 6)
+
+    def test_tick_config_setter_failure_clears_same_time_cache_and_retries(self):
+        instance = _Instance()
+        instance.set_physics_tick_config = Mock(return_value=False)
+        node, data = _prepare_node(world=_World(), instance=instance, last_time=0.0)
+        node._read_world_tick_config = lambda: (1.0 / 120.0, 4)
+        node._last_kinematic_pose_signature = ((0, "matrix", (1.0,)),)
+
+        solved, status, matrices = _compute(node, data)
+
+        self.assertFalse(solved)
+        self.assertEqual(status, "physics tick configuration update failed")
+        self.assertEqual(matrices, [])
+        self.assertIsNone(node._last_time)
+        self.assertIsNone(node._last_kinematic_pose_signature)
+        self.assertEqual(node._last_tick_config, (1.0 / 60.0, 10))
+        instance.set_physics_tick_config.assert_called_once_with(1.0 / 120.0, 4)
+
+        instance.set_physics_tick_config.return_value = True
+        solved, status, _ = _compute(node, data)
+        self.assertTrue(solved)
+        self.assertEqual(status, "reset")
+        self.assertEqual(instance.set_physics_tick_config.call_count, 2)
+        self.assertEqual(node._last_tick_config, (1.0 / 120.0, 4))
+
+    def test_invalid_tick_config_clears_cached_pose(self):
+        node, data = _prepare_node(world=_World(), instance=_Instance(), last_time=0.0)
+        node._read_world_tick_config = lambda: None
+        solved, status, matrices = _compute(node, data)
+        self.assertFalse(solved)
+        self.assertEqual(status, "invalid world tick configuration")
+        self.assertEqual(matrices, [])
 
     def test_reset_failure_clears_cache(self):
         instance = _Instance()

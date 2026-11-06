@@ -98,6 +98,9 @@ class TestMayaE2EHarness(unittest.TestCase):
                 harness.monitor_result(log, report, "DONE", 1.0, wait_report_timeout=0)
 
     def test_run_orders_cleanup_launch_send_and_close(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
         events = []
         process = mock.Mock()
         process.poll.return_value = 0
@@ -135,9 +138,9 @@ class TestMayaE2EHarness(unittest.TestCase):
             harness.maya_commandport, "close_process_logs", side_effect=record("close")
         ):
             result = harness.run_maya_e2e(
-                project_root=Path("repo"),
+                project_root=root / "repo",
                 version="2024",
-                out_dir=Path("out"),
+                out_dir=root / "out",
                 port=7788,
                 timeout=1.0,
                 log_path=Path("probe.log"),

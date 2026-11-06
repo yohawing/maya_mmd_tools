@@ -1,0 +1,12 @@
+{
+  "name": "sour-miku-rabbithole-physics",
+  "provenance": "Existing local GoldenOracle physics-coarse regression pair; assets are not redistributed.",
+  "pmx": "F:/MMD/pmx/Sour式初音ミクVer.1.02/Black.pmx",
+  "vmd": "F:/MMD/vmd/ラビットホール/ラビットホール.vmd",
+  "expected_hashes": {
+    "pmx": "04fbfe59e4ea8ef1704b32bef71516b20afbd1e4abf1880dbc4f107e225a90ea",
+    "vmd": "723e3b6309c370eea0b72c7ccd13cb623a33b827959cd4855df2d76e47534985"
+  },
+  "capture_frames": [0, 120, 139, 140, 150],
+  "camera": {"position": [12, 12, 22], "target": [-1, 10, -2], "fov": 32}
+}

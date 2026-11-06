@@ -1388,6 +1388,12 @@ def ccdik_ancestor_residual_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def skirt_penetration(session: nox.Session) -> None:
+    """Reproduce the existing real-model leg/skirt case in an isolated Maya 2024 GUI."""
+    session.run(sys.executable, "tools/maya_gui/skirt_penetration.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def yw_test_model_fixture_gate(session: nox.Session) -> None:
     """Run the checked-in YW test-model gate under Maya 2024 and 2026.
 
