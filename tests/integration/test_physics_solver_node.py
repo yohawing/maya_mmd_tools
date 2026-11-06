@@ -102,6 +102,18 @@ def _solver_world_gravity(solver):
     return tuple(float(cmds.getAttr(f"{world}.gravity{axis}")) for axis in "XYZ")
 
 
+def _solver_world_tick_config(solver):
+    """Read the tick configuration owned by the connected world shape."""
+    source_plug = cmds.connectionInfo(
+        f"{solver}.inWorldSettings", sourceFromDestination=True
+    )
+    if not source_plug:
+        raise AssertionError(f"solver has no connected world: {solver}")
+    world = source_plug.rsplit(".", 1)[0]
+    return (float(cmds.getAttr(f"{world}.fixedTimestep")),
+            int(cmds.getAttr(f"{world}.maxSubsteps")))
+
+
 @unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
 @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
 class TestPhysicsSolverNode(MayaTestBase):
@@ -139,6 +151,78 @@ class TestPhysicsSolverNode(MayaTestBase):
         root, _ = self._build_scene()
         solver = self._create_solver(root)
         self.assertEqual(cmds.nodeType(solver), "mmdPhysicsSolver")
+
+    def test_world_tick_config_controls_native_steps_and_lifecycle(self):
+        """World edits must reach the native tick before cached or fresh evaluation."""
+        import maya.api.OpenMaya as om
+        from unittest.mock import patch
+
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        world = cmds.connectionInfo(
+            f"{solver}.inWorldSettings", sourceFromDestination=True
+        ).rsplit(".", 1)[0]
+        cmds.currentUnit(time="ntsc")
+        cmds.currentTime(0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        selection = om.MSelectionList()
+        selection.add(solver)
+        node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
+
+        def assert_config(dt, maximum):
+            actual = node._instance.get_physics_tick_config()
+            self.assertIsNotNone(actual)
+            self.assertAlmostEqual(actual[0], dt, places=8)
+            self.assertEqual(actual[1], maximum)
+
+        def assert_step(frame, expected):
+            reports = []
+            original = node._world.step_runtime
+
+            def capture(instance, dt):
+                report = original(instance, dt)
+                reports.append(report)
+                return report
+
+            with patch.object(node._world, "step_runtime", side_effect=capture):
+                cmds.currentTime(frame)
+                self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+            self.assertEqual(len(reports), 1)
+            self.assertIsNotNone(reports[0])
+            self.assertEqual(reports[0].tick.substeps, expected)
+
+        self.assertEqual(_solver_world_tick_config(solver), (1.0 / 60.0, 10))
+        assert_config(1.0 / 60.0, 10)
+        assert_step(1, 2)
+
+        # Same-frame edits must reset rather than serve the previous cache.
+        cmds.setAttr(f"{world}.fixedTimestep", 1.0 / 120.0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "reset")
+        assert_config(1.0 / 120.0, 10)
+        assert_step(2, 4)
+        cmds.setAttr(f"{world}.maxSubsteps", 1)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        assert_config(1.0 / 120.0, 1)
+        assert_step(3, 1)
+
+        cmds.setAttr(f"{world}.enable", False)
+        self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
+        cmds.setAttr(f"{world}.fixedTimestep", 1.0 / 60.0)
+        cmds.setAttr(f"{world}.maxSubsteps", 3)
+        cmds.setAttr(f"{world}.enable", True)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        assert_config(1.0 / 60.0, 3)
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "reset")
+        assert_step(4, 2)
+
+        # A replacement instance must receive settings even if they did not change.
+        node._free_handles()
+        self.assertIsNone(node._last_tick_config)
+        cmds.dgdirty(solver)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+        assert_config(1.0 / 60.0, 3)
+        assert_step(5, 2)
 
     def test_imported_world_gravity_matches_native_default(self):
         """A new imported world must not slow native gravity by a factor of ten."""
@@ -479,6 +563,7 @@ class TestPhysicsSolverNode(MayaTestBase):
         self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
+        self.assertTrue(ref_instance.set_physics_tick_config(*_solver_world_tick_config(solver)))
         ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         ref_instance.evaluate_rest_pose()
         ref_world.reset(ref_instance)
@@ -922,6 +1007,7 @@ class TestSolverTimeStateMachine(MayaTestBase):
         self.assertTrue(ref_world.set_gravity(_solver_world_gravity(solver)))
         ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         ref_instance = MmdRuntimeInstance.for_model(ref_model)
+        self.assertTrue(ref_instance.set_physics_tick_config(*_solver_world_tick_config(solver)))
         ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         ref_instance.evaluate_rest_pose()
         ref_world.reset(ref_instance)

@@ -92,6 +92,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._initialized = False
         self._last_reset_generation = -1
         self._last_gravity = None
+        self._last_tick_config = None
         self._last_world_settings_version = None
         self._last_descriptor_version = None
         self._initialization_failure_signatures: set[tuple] = set()
@@ -180,6 +181,17 @@ class MmdPhysicsSolverNode(om.MPxNode):
                 return
             self._last_gravity = world_gravity
         force_reset = force_reset or gravity_changed
+
+        tick_config = self._read_world_tick_config()
+        if tick_config is None:
+            self._write_failure(data, status="invalid world tick configuration")
+            return
+        if self._last_tick_config != tick_config:
+            if not self._instance.set_physics_tick_config(*tick_config):
+                self._write_failure(data, status="physics tick configuration update failed")
+                return
+            self._last_tick_config = tick_config
+            force_reset = True
         if reset_gen != self._last_reset_generation:
             self._last_reset_generation = reset_gen
             force_reset = True
@@ -841,6 +853,22 @@ class MmdPhysicsSolverNode(om.MPxNode):
             return None
         return values if all(math.isfinite(value) for value in values) else None
 
+    def _read_world_tick_config(self):
+        """Read the connected world's fixed step and per-tick substep limit."""
+        try:
+            fn = om.MFnDependencyNode(self.thisMObject())
+            connections = fn.findPlug("inWorldSettings", False).connectedTo(True, False)
+            if not connections:
+                return None
+            world_fn = om.MFnDependencyNode(connections[0].node())
+            fixed_step = world_fn.findPlug("fixedTimestep", False).asDouble()
+            max_substeps = world_fn.findPlug("maxSubsteps", False).asInt()
+        except Exception:
+            return None
+        if not math.isfinite(fixed_step) or fixed_step <= 0.0 or max_substeps < 1:
+            return None
+        return fixed_step, max_substeps
+
     def _get_connected_model_root(self):
         try:
             fn = om.MFnDependencyNode(self.thisMObject())
@@ -905,6 +933,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._kinematic_corrections = {}
         self._kinematic_bone_indices = set()
         self._last_gravity = None
+        self._last_tick_config = None
         for path in self._rb_shape_paths.values():
             _SIMULATED_RB_CACHE.pop(path, None)
         self._rb_shape_paths = {}

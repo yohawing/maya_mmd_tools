@@ -31,8 +31,8 @@ test motion spans frames 0–5. They cannot reproduce this skirt case unchanged.
 - Fresh import and world; enable physics at frame 0; evaluate **every frame**
   from 0 to 150. Sampling starts at 110, plus the frame-0 control.
 - No collider enlargement, mask edits, cloth replacement, or extra warm-up.
-- Record the scene world settings. These are **not proof** that the runtime
-  honors them; the current Maya route does not apply the tick-config attributes.
+- Record scene world settings and the runtime tick configuration separately;
+  fail if `fixedTimestep` or `maxSubsteps` differs between them.
 - Native body readback is recorded separately from mesh vertices. The current
   Bullet wrapper reads MotionState; it is not necessarily the current COM pose.
 

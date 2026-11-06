@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -217,6 +218,12 @@ def probe(config_path):
         solver_node = om.MFnDependencyNode(selection.getDependNode(0)).userNode()
         if solver_node is None or solver_node._world is None:
             raise RuntimeError("Live solver world unavailable for diagnostic readback")
+        tick = solver_node._instance.get_physics_tick_config()
+        if tick is None:
+            raise RuntimeError("Runtime tick configuration unavailable")
+        report["runtime_tick_config"] = {"fixedTimestep": tick[0], "maxSubsteps": tick[1]}
+        if not math.isclose(tick[0], report["world"]["fixedTimestep"], rel_tol=1e-6) or tick[1] != report["world"]["maxSubsteps"]:
+            raise RuntimeError("Runtime tick configuration differs from scene world settings")
         report["body_shapes"] = dict(solver_node._rb_shape_paths)
         from mmd_tools.core.physics_dag_descriptor import build_descriptors_from_dag
         descriptors = build_descriptors_from_dag(root, bone_joints=solver_node._bone_joints,

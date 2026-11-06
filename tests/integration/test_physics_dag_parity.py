@@ -626,9 +626,11 @@ class TestPhysicsDagParity(MayaTestBase):
         model.free()
         return states
 
-    def _run_split_eval_steps(self, world, num_steps=10):
+    def _run_split_eval_steps(self, world, num_steps=10, tick_config=None):
         model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         instance = MmdRuntimeInstance.for_model(model)
+        if tick_config is not None:
+            self.assertTrue(instance.set_physics_tick_config(*tick_config))
         instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         instance.evaluate_rest_pose()
         world.reset(instance)
