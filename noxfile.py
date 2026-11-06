@@ -1388,13 +1388,9 @@ def ccdik_ancestor_residual_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def skirt_leg_fixture(session: nox.Session) -> None:
-    """Generate PMX/VMD leg/skirt contact controls and measure native penetration."""
-    mayapy = _mayapy("2024")
-    session.run(
-        str(mayapy), _mayapy_script(mayapy, "tools/probes/skirt_leg_fixture.py"),
-        *session.posargs, env=_mayapy_env(mayapy), external=True,
-    )
+def skirt_penetration(session: nox.Session) -> None:
+    """Reproduce the existing real-model leg/skirt case in an isolated Maya 2024 GUI."""
+    session.run(sys.executable, "tools/maya_gui/skirt_penetration.py", *session.posargs)
 
 
 @nox.session(venv_backend="none")

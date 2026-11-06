@@ -72,6 +72,7 @@ docs/*
 !/tests/data/for_unit_test/*.vmd
 !/tests/data/physics/
 !/tests/data/physics/test_hair_physics.pmx
+!/tests/data/physics/skirt_leg_real.fixture.json
 !/tests/data/mmt_test_model.pmx
 !/tests/data/mmt_test_model_test_motion.vmd
 !/tests/data/mmt_test_model_ik_test_motion.vmd
