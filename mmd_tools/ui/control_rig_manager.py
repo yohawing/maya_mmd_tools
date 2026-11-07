@@ -471,17 +471,20 @@ class ControlRigManagerWindow(QWidget):
                     and metadata.get("owner") == CONTROL_RIG_CONTROL_OWNED
                 )
                 for side in ("left", "right"):
-                    states[side] = mmd_control_rig_arm_ik.inspect_arm_ik(root, side, cmds_module=cmds) or {}
+                    try:
+                        states[side] = mmd_control_rig_arm_ik.inspect_arm_ik(root, side, cmds_module=cmds) or {}
+                    except Exception as exc:
+                        self._set_status("status_error", error=exc)
         except Exception as exc:
             editing = False
             self._set_status("status_error", error=exc)
         for side, label in getattr(self, "arm_labels", {}).items():
             title = self._translator.translate(f"arm_{side}", "control_rig_manager")
             mode = "IK" if states.get(side, {}).get("active") else "FK"
-            label.setText(f"{title} · {mode}" if editing else title)
+            label.setText(f"{title} · {mode}" if editing and side in states else title)
         for (side, action), button in self.arm_buttons.items():
             active = bool(states.get(side, {}).get("active"))
-            button.setEnabled(editing and (action == "ik" or active))
+            button.setEnabled(editing and side in states and (action == "ik" or active))
 
     def perform_arm_action(self, side: str, action: str) -> None:
         """Switch one arm or select its elbow control for the chosen character."""

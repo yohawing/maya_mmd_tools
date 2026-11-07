@@ -36,6 +36,7 @@ def probe(config_path, phase):
     from tests.common.maya_plugin_setup import load_mmd_tools_plugin
     from tests.integration.test_control_rig_eye import create_eye_ik_case, eye_joints, pose, append_edges, MODEL, OPTIONS
     from tests.integration.test_control_rig_arm_ik import pose_delta
+    from mmd_tools.core.mmd_control_rig_arm_ik import inspect_arm_ik
     from mmd_tools.core.mmd_control_rig_eye_ik import inspect_eye_ik
     from mmd_tools.core.mmd_control_rig_builder import read_mmd_control_rig_metadata
     from mmd_tools.ui.control_rig_manager import ControlRigManagerWindow
@@ -80,6 +81,8 @@ def probe(config_path, phase):
             manager.show()
             manager.refresh()
             check('manager_model', cmds.ls(manager.selected_model_root(), uuid=True) == cmds.ls(root, uuid=True))
+            manager.arm_buttons['right', 'ik'].click()
+            check('arm_ik_active', inspect_arm_ik(root, 'right')['active'])
             original = pose(joints)
             edges = append_edges(joints[1:])
             manager.eye_buttons['ik'].click()
@@ -109,6 +112,7 @@ def probe(config_path, phase):
             manager.eye_buttons['ik'].click()
             check('reenable', inspect_eye_ik(root)['active'])
             check('reenable_pose', pose_delta(before, pose(joints)) < 1e-4)
+            check('arm_still_active_after_eye_switch', inspect_arm_ik(root, 'right')['active'])
             expected = sample(joints)
             cmds.file(rename=str(output/'eye.ma'))
             cmds.file(save=True, type='mayaAscii', force=True)
@@ -131,6 +135,7 @@ def probe(config_path, phase):
             cmds.file(str(output/'eye.ma'), open=True, force=True)
             root, joints = saved['root'], saved['joints']
             check('reload_fps', cmds.currentUnit(query=True, time=True) == 'ntsc')
+            check('reload_arm_active', inspect_arm_ik(root, 'right')['active'])
             check('reload_active', inspect_eye_ik(root)['active'])
             compare('fresh_reload_pose', joints, saved['expected'])
             check('reload_append_edges', append_edges(joints[1:]) == saved['edges'])

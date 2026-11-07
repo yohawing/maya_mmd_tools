@@ -298,10 +298,10 @@ def test_arm_refresh_never_creates_or_switches_rig_and_disables_failed_inspectio
         manager.arm_buttons[("left", "fk")].setEnabled.assert_called_with(True)
         manager.arm_buttons[("right", "fk")].setEnabled.assert_called_with(False)
         manager.arm_buttons[("right", "ik")].setEnabled.assert_called_with(True)
-        core.inspect_arm_ik.side_effect = RuntimeError("foreign arm input")
+        core.inspect_arm_ik.side_effect = [RuntimeError("foreign arm input"), {"active": True}]
         manager._refresh_arm_status()
-        for button in manager.arm_buttons.values():
-            button.setEnabled.assert_called_with(False)
+        for (side, _action), button in manager.arm_buttons.items():
+            button.setEnabled.assert_called_with(side == "right")
     core.enable_arm_ik.assert_not_called()
     core.disable_arm_ik.assert_not_called()
     manager._cmds.setAttr.assert_not_called()
