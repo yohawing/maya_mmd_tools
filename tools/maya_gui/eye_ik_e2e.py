@@ -18,7 +18,7 @@ def _write(path, data):
 
 
 def _source_hashes():
-    sources = list((ROOT/'mmd_tools/core').glob('mmd_control_rig*.py')) + [ROOT/'mmd_tools/ui/control_rig_manager.py']
+    sources = list((ROOT/'mmd_tools/core').glob('mmd_control_rig*.py')) + [ROOT/'mmd_tools/ui'/name for name in ('control_rig_manager.py', 'animator_toolset_window.py', 'tabs/animation_tab.py')]
     return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
 
 
@@ -50,7 +50,7 @@ def probe(config_path, phase):
     callback = om.MCommandMessage.addCommandOutputCallback(
         lambda msg, kind, unused: report['messages'].append({'kind': int(kind), 'text': msg})
         if kind in (om.MCommandMessage.kWarning, om.MCommandMessage.kError) else None)
-    manager = None
+    manager = animator = None
     try:
         require_requested_plugin(cmds, config['plugin'], print)
         load_mmd_tools_plugin(ROOT, cmds_module=cmds)
@@ -142,20 +142,43 @@ def probe(config_path, phase):
             manager = ControlRigManagerWindow(cmds_module=cmds)
             manager.show()
             manager.refresh()
+            from mmd_tools.ui.animator_toolset_window import AnimatorToolsetWindow
+            from mmd_tools.ui.qt_compat import QAction
+            animator = AnimatorToolsetWindow()
+            animator.show()
+            animator.app_state.current_model_root = root
+
+            def picker_action(part, key):
+                menu = animator.animation_tab.ik_switch_button.menu()
+                menu.aboutToShow.emit()
+                action = menu.findChild(QAction, f"AnimatorIK_{part}_{key}")
+                check(f"picker_enabled_{part}_{key}", action.isEnabled())
+                action.trigger()
+
             before = pose(joints)
-            manager.eye_buttons['fk'].click()
+            picker_action('eye', 'fk')
             check('reload_match_fk', not inspect_eye_ik(root)['active'])
             check('reload_match_pose', pose_delta(before, pose(joints)) < 1e-4)
-            manager.eye_buttons['ik'].click()
+            picker_action('eye', 'ik')
             check('reload_reenable', inspect_eye_ik(root)['active'])
-            manager.eye_buttons['restore'].click()
+            picker_action('eye', 'restore')
             check('reload_original_fk_restore', not inspect_eye_ik(root)['active'])
+            picker_action('right', 'pole')
+            check('picker_select_pole', cmds.ls(selection=True, long=True) == [inspect_arm_ik(root, 'right')['pole']])
+            picker_action('right', 'fk')
+            check('picker_arm_fk', not inspect_arm_ik(root, 'right')['active'])
+            picker_action('left', 'ik')
+            check('picker_other_arm_ik', inspect_arm_ik(root, 'left')['active'])
+            picker_action('left', 'restore')
+            check('picker_other_arm_restore', not inspect_arm_ik(root, 'left')['active'])
             manager.action_buttons['restore'].click()
             check('manager_restore_attached', read_mmd_control_rig_metadata(root)['state'] == 'ATTACHED')
         report['status'] = 'pass'
     except Exception:
         report['error'] = traceback.format_exc()
     finally:
+        if animator:
+            animator.close()
         if manager:
             manager.close()
         om.MMessage.removeCallback(callback)

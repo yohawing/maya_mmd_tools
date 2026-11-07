@@ -12,6 +12,7 @@
     },
     "ik_enable_side_tooltip": "Toggle leg IK for this side",
   "control_rig_manager": {
+    "ik_requires_edit": "Enter Control Rig Edit mode to switch IK / FK.",
     "eye_title": "Gaze IK / FK",
     "eye_absent": "No combined-eye control",
     "eye_ik": "Gaze target",

@@ -11,6 +11,7 @@ from ..qt_compat import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QTabWidget,
@@ -177,6 +178,11 @@ class AnimationTab(BaseTab):
             common_layout.addWidget(button)
             self.common_action_buttons[key] = button
         common_layout.addStretch(1)
+        self.ik_switch_button = QPushButton("IK / FK")
+        self.ik_switch_button.setObjectName("AnimatorIkFk")
+        self.ik_switch_menu = QMenu(self.ik_switch_button)
+        self.ik_switch_button.setMenu(self.ik_switch_menu)
+        common_layout.addWidget(self.ik_switch_button)
         main_layout.addWidget(self.common_action_bar)
 
         # --- Status bar ---

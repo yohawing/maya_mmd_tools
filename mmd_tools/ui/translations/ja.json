@@ -12,6 +12,7 @@
     },
     "ik_enable_side_tooltip": "片側の脚IK Enableを切り替え",
   "control_rig_manager": {
+    "ik_requires_edit": "コントロールリグを編集状態にすると切り替えられます。",
     "eye_title": "視線 IK / FK",
     "eye_absent": "両目コントローラなし",
     "eye_ik": "視線ターゲット",

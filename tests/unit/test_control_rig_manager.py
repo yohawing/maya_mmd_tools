@@ -349,3 +349,13 @@ def test_eye_refresh_requires_combined_eye_control_without_mutating_scene():
     core.enable_eye_ik.assert_not_called()
     core.disable_eye_ik.assert_not_called()
     manager._cmds.setAttr.assert_not_called()
+
+def test_animator_ik_menu_rejects_a_changed_picker_character():
+    window = AnimatorToolsetWindow.__new__(AnimatorToolsetWindow)
+    window.app_state = MagicMock(current_model_root="|second")
+    with patch("mmd_tools.ui.animator_toolset_window.cmds") as cmds, patch(
+        "mmd_tools.ui.control_rig_manager.perform_arm_ik_action"
+    ) as switch:
+        cmds.ls.return_value = ["second-uuid"]
+        window._switch_ik("first-uuid", "left", "ik")
+        switch.assert_not_called()

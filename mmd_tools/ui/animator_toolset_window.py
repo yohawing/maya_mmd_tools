@@ -62,6 +62,7 @@ class AnimatorToolsetWindow(QWidget):
         self.animation_tab.control_rig_manager_btn.clicked.connect(
             self.open_control_rig_manager
         )
+        self.animation_tab.ik_switch_menu.aboutToShow.connect(self._populate_ik_menu)
         layout.addWidget(self.animation_tab)
         self._control_rig_manager = None
         self._control_rig_state_callback = None
@@ -73,6 +74,71 @@ class AnimatorToolsetWindow(QWidget):
         self.destroyed.connect(self._on_destroyed)
 
         self.app_state.refresh_model_list()
+
+    def _populate_ik_menu(self):
+        """Re-read IK state for the picker character when the menu opens."""
+        from ..core import mmd_control_rig_arm_ik, mmd_control_rig_eye_ik
+        from ..core.mmd_control_rig_builder import read_mmd_control_rig_metadata
+
+        menu = self.animation_tab.ik_switch_menu
+        menu.clear()
+        def tr(key):
+            return UITranslator.instance().translate(key, "control_rig_manager")
+
+        root = self.app_state.current_model_root
+        try:
+            ids = cmds.ls(root, uuid=True) if root else []
+            metadata = read_mmd_control_rig_metadata(root) if len(ids) == 1 else {}
+            if not metadata or metadata.get("state") != "EDIT" or metadata.get("owner") != "CONTROL_OWNED":
+                menu.addAction(tr("ik_requires_edit") if ids else tr("status_no_character")).setEnabled(False)
+                return
+        except Exception as exc:
+            menu.addAction(tr("status_error").format(error=exc)).setEnabled(False)
+            return
+
+        for part in ("left", "right", "eye"):
+            eye = part == "eye"
+            title = tr("eye_title" if eye else "arm_" + part)
+            try:
+                if eye and "both_eyes" not in metadata.get("controls", {}):
+                    menu.addSection(title)
+                    menu.addAction(tr("eye_absent")).setEnabled(False)
+                    continue
+                state = (mmd_control_rig_eye_ik.inspect_eye_ik(root) if eye
+                         else mmd_control_rig_arm_ik.inspect_arm_ik(root, part))
+                active = bool(state and state.get("active"))
+            except Exception as exc:
+                menu.addSection(title)
+                menu.addAction(tr("status_error").format(error=exc)).setEnabled(False)
+                continue
+            menu.addSection(f"{title} · {'IK' if active else 'FK'}")
+            for key in (("ik", "fk", "restore") if eye else ("ik", "fk", "pole", "restore")):
+                label = ("eye_" if eye else "arm_") + key
+                action = menu.addAction(tr(label))
+                action.setObjectName(f"AnimatorIK_{part}_{key}")
+                action.setToolTip(tr(label + "_tooltip"))
+                action.setEnabled(key == "ik" or active)
+                action.triggered.connect(
+                    lambda _checked=False, limb=part, command=key: self._switch_ik(ids[0], limb, command)
+                )
+
+    def _switch_ik(self, model_uuid, part, action):
+        from .control_rig_manager import ControlRigManagerWindow, perform_arm_ik_action, perform_eye_ik_action
+
+        root = self.app_state.current_model_root
+        if not root or cmds.ls(root, uuid=True) != [model_uuid]:
+            return
+        try:
+            if part == "eye":
+                perform_eye_ik_action(cmds, root, action)
+            else:
+                perform_arm_ik_action(cmds, root, part, action)
+            manager = ControlRigManagerWindow._instance
+            if manager is not None and manager.isVisible():
+                manager.refresh()
+        except Exception as exc:
+            message = UITranslator.instance().translate("status_error", "control_rig_manager")
+            self.animation_tab.status_label.setText(message.format(error=exc))
 
     def open_control_rig_manager(self, *_args):
         """Open the modeless UUID-authoritative Control Rig Manager."""

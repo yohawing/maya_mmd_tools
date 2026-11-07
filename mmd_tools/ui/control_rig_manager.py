@@ -33,6 +33,37 @@ from .translations import UITranslator
 logger = get_logger(__name__)
 
 
+def perform_eye_ik_action(cmds, root, action):
+    """Apply an explicit eye IK action to the supplied character."""
+    from ..core import mmd_control_rig_eye_ik
+
+    if action == "ik":
+        result = mmd_control_rig_eye_ik.enable_eye_ik(root, cmds_module=cmds)
+        cmds.select(result["target"], replace=True)
+    elif action in {"fk", "restore"}:
+        mmd_control_rig_eye_ik.disable_eye_ik(root, match_fk=action == "fk", cmds_module=cmds)
+    else:
+        raise ValueError(f"unknown eye action: {action}")
+
+
+def perform_arm_ik_action(cmds, root, side, action):
+    """Apply an explicit arm IK action to the supplied character."""
+    from ..core import mmd_control_rig_arm_ik
+
+    if action == "ik":
+        result = mmd_control_rig_arm_ik.enable_arm_ik(root, side, cmds_module=cmds)
+        cmds.select(result["target"], replace=True)
+    elif action in {"fk", "restore"}:
+        mmd_control_rig_arm_ik.disable_arm_ik(root, side, match_fk=action == "fk", cmds_module=cmds)
+    elif action == "pole":
+        result = mmd_control_rig_arm_ik.inspect_arm_ik(root, side, cmds_module=cmds)
+        if not result or not result.get("active"):
+            raise RuntimeError("Arm IK is not active")
+        cmds.select(result["pole"], replace=True)
+    else:
+        raise ValueError(f"unknown arm action: {action}")
+
+
 class ControlRigManagerWindow(QWidget):
     """Single-instance modeless Control Rig lifecycle manager."""
 
@@ -433,16 +464,7 @@ class ControlRigManagerWindow(QWidget):
             self._set_status("status_no_character")
             return
         try:
-            from ..core import mmd_control_rig_eye_ik
-
-            cmds = self._maya_cmds()
-            if action == "ik":
-                result = mmd_control_rig_eye_ik.enable_eye_ik(root, cmds_module=cmds)
-                cmds.select(result["target"], replace=True)
-            elif action in {"fk", "restore"}:
-                mmd_control_rig_eye_ik.disable_eye_ik(root, match_fk=action == "fk", cmds_module=cmds)
-            else:
-                raise ValueError(f"unknown eye action: {action}")
+            perform_eye_ik_action(self._maya_cmds(), root, action)
             self._set_status("status_transition")
             self.state_changed.emit(root, "eye_" + action)
             self.refresh()
@@ -493,21 +515,7 @@ class ControlRigManagerWindow(QWidget):
             self._set_status("status_no_character")
             return
         try:
-            from ..core import mmd_control_rig_arm_ik
-
-            cmds = self._maya_cmds()
-            if action == "ik":
-                result = mmd_control_rig_arm_ik.enable_arm_ik(root, side, cmds_module=cmds)
-                cmds.select(result["target"], replace=True)
-            elif action in {"fk", "restore"}:
-                mmd_control_rig_arm_ik.disable_arm_ik(root, side, match_fk=action == "fk", cmds_module=cmds)
-            elif action == "pole":
-                result = mmd_control_rig_arm_ik.inspect_arm_ik(root, side, cmds_module=cmds)
-                if not result or not result.get("active"):
-                    raise RuntimeError("Arm IK is not active")
-                cmds.select(result["pole"], replace=True)
-            else:
-                raise ValueError(f"unknown arm action: {action}")
+            perform_arm_ik_action(self._maya_cmds(), root, side, action)
             self._set_status("status_transition")
             self.state_changed.emit(root, "arm_" + action)
             self.refresh()

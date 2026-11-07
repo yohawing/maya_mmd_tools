@@ -12,6 +12,7 @@
     },
     "ik_enable_side_tooltip": "切换单侧腿部IK解算器",
   "control_rig_manager": {
+    "ik_requires_edit": "进入控制绑定编辑模式以切换 IK / FK。",
     "eye_title": "视线 IK / FK",
     "eye_absent": "没有双眼控制器",
     "eye_ik": "视线目标",
