@@ -344,10 +344,21 @@ class TestControlRigArmIk(MayaTestBase):
         from mmd_tools.core.mmd_control_rig_motion import bake_mmd_control_rig
         cmds.currentUnit(time='ntsc')
         root, _controls, joints = create_arm_case()
-        row = enable_arm_ik(root, 'right')
-        cmds.setKeyframe(row['target'], attribute='translate', time=1)
-        move_target(row, joints)
-        cmds.setKeyframe(row['target'], attribute='translate', time=10)
+        metadata = read_mmd_control_rig_metadata(root)
+        for role, values in (("right_arm_twist", (20, 50)), ("right_wrist_twist", (-15, -35))):
+            control = cmds.ls(metadata["controls"][role], long=True)[0]
+            for frame, value in zip((1, 10), values):
+                cmds.setKeyframe(control + ".rotateZ", time=frame, value=value)
+        cmds.currentTime(5, update=True)
+        row = enable_arm_ik(root, "right")
+        start = cmds.xform(row["target"], query=True, worldSpace=True, translation=True)
+        end = move_target(row, joints)
+        self.assertGreater(max(abs(a-b) for a, b in zip(start, end)), 0.01)
+        for frame, position in ((1, start), (10, end)):
+            for axis, value in zip("XYZ", position):
+                cmds.setKeyframe(row["target"], attribute="translate" + axis, time=frame, value=value)
+        for role in ("right_arm_twist", "right_wrist_twist"):
+            joints.append(cmds.ls(metadata["bindings"][role]["jointUuid"], long=True)[0])
         expected = {}
         for frame in range(1, 11):
             cmds.currentTime(frame, edit=True, update=True)
