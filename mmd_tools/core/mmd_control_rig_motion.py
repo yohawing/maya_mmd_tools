@@ -4237,7 +4237,7 @@ def _sample_control_rotation_group_to_bone(
             times = [float(cmds.currentTime(query=True))]
         except Exception:
             times = [0.0]
-    elif not quaternion_interpolation:
+    elif not quaternion_interpolation or not _rotation_group_uses_quaternion(cmds, rows, control_sources):
         times = _dense_sample_times(times, frame_range)
     elif frame_range is not None:
         start, end = _normalize_dense_frame_range(frame_range)
