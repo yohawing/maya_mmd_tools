@@ -1523,6 +1523,14 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
                 row = controls[control]
                 row["controlSource"] = staged_source
                 row["controlSourceRef"] = _plug_reference(cmds, staged_source) if staged_source else None
+            if bake:
+                # The wrist solver supplies poses on the bake grid. Interpolate
+                # each arm rotation along the same shortest arc used by VMD.
+                for side in active:
+                    plugs = [resolve_arm_plug(cmds, item["controlRef"])
+                             for item in metadata["armIk"][side]["inputs"]]
+                    for control in dict.fromkeys(plug.rsplit(".", 1)[0] for plug in plugs):
+                        _apply_quaternion_interpolation_to_plugs(cmds, [control + ".rotate" + axis for axis in "XYZ"])
             for arm in arms:
                 arm["active"] = False
             # These curves are discarded by this context on failure, so the
