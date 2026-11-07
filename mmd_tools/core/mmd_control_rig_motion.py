@@ -1454,6 +1454,13 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
             if plug:
                 times.update(cmds.keyframe(plug, query=True, timeChange=True) or [])
     for arm in arms:
+        # A grant or morph can animate the required base compensation even
+        # while the wrist target and pole have no keys of their own.
+        for uuid in arm.get("contributionUuids", ()):
+            grant = cmds.ls(uuid, long=True)[0]
+            curves = cmds.ls(cmds.listHistory(grant) or [], type="animCurve") or []
+            if curves:
+                times.update(cmds.keyframe(curves, query=True, timeChange=True) or [])
         for key in ("targetUuid", "poleUuid"):
             if key not in arm:
                 continue

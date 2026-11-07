@@ -121,16 +121,37 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             item.get("layerRoute") or item.get("twistController") or item.get("fixedAxisTwist")
         ):
             raise MmdControlRigBuildError("arm IK does not support layered or twist control routes")
+    composers = {}
     scale_nodes = set()
     for control in controls:
         if cmds.listConnections(control + ".rotateOrder", source=True, destination=False):
             raise MmdControlRigBuildError("arm IK requires static rotation order")
-    for role, joint in zip(roles, joints):
+    for role, joint, control in zip(roles, joints, controls):
         for attribute in ("jointOrient", "rotateAxis", "rotateOrder"):
             if cmds.listConnections(joint + "." + attribute, source=True, destination=False):
                 raise MmdControlRigBuildError("arm IK requires static joint orientation")
-        if metadata["bindings"][role]["inputKind"] != "direct_channel":
-            raise MmdControlRigBuildError("arm IK currently requires direct bone input routes")
+        kind = metadata["bindings"][role]["inputKind"]
+        if kind in {"append_base", "bone_morph_base"}:
+            rotations = {control + ".rotate" + axis for axis in "XYZ"}
+            targets = {item["target"] for item in journal if item["control"] in rotations}
+            source = cmds.connectionInfo(joint + ".rotateX", sourceFromDestination=True)
+            composer = source.partition(".")[0]
+            expected_type = "mmdAppend" if kind == "append_base" else "mmdBoneMorphAccum"
+            if (not composer or cmds.nodeType(composer) != expected_type
+                    or targets != {composer + ".baseRotate" + axis for axis in "XYZ"}
+                    or cmds.getAttr(joint + ".rotateOrder") != 0):
+                raise MmdControlRigBuildError("arm IK requires one XYZ rotation composer directly on " + joint)
+            if not cmds.isConnected(composer + ".outputRotate", joint + ".rotate") and not all(
+                cmds.isConnected(composer + ".outputRotate" + axis, joint + ".rotate" + axis) for axis in "XYZ"
+            ):
+                raise MmdControlRigBuildError("arm IK requires all three rotation axes from " + composer)
+            if kind == "append_base" and cmds.getAttr(composer + ".schemaMode") != 2:
+                raise MmdControlRigBuildError("arm IK requires the base/source append schema")
+            if kind == "bone_morph_base" and cmds.getAttr(composer + ".rotateOrder") != 0:
+                raise MmdControlRigBuildError("arm IK requires XYZ bone morph rotation order")
+            composers[role] = composer
+        elif kind != "direct_channel":
+            raise MmdControlRigBuildError("arm IK does not support bone input route: " + kind)
         ancestors = [joint]
         while cmds.listRelatives(ancestors[-1], parent=True, fullPath=True):
             ancestors.append(cmds.listRelatives(ancestors[-1], parent=True, fullPath=True)[0])
@@ -163,6 +184,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                     "value": cmds.getAttr(plug),
                 }
             )
+    previous_cycles = set(cmds.cycleCheck(all=True, list=True) or []) if composers else set()
     with _transaction(cmds, "Enable Arm IK"):
         group = cmds.createNode("transform", name=side + "_arm_IK", parent=_node(cmds, metadata["controlGroupUuid"]))
         # Wrist/pole remain in world space while only the shoulder anchor follows torso.
@@ -231,9 +253,15 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         cmds.setAttr(helpers[0] + ".visibility", False)
         cmds.setAttr(handle + ".visibility", False)
         edges = []
+        grants = []
         converters = [anchor_matrix] + segment_nodes
         for role, joint, control, helper in zip(roles, joints, controls, helpers):
             basis = om.MMatrix(matrix_from_quaternion(metadata["authoringBases"][role]["quaternion"]))
+
+            composer = composers.get(role)
+            if composer and metadata["bindings"][role]["inputKind"] == "append_base":
+                # EDIT connects ordinary append base axes in bone space.
+                basis = om.MMatrix()
 
             def orientation(attribute):
                 return om.MEulerRotation(
@@ -244,7 +272,33 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             decomp = cmds.createNode("decomposeMatrix", name=role + "_IK_rotation")
             converters.extend((mult, decomp))
             cmds.setAttr(mult + ".matrixIn[0]", *list(basis * orientation("rotateAxis").inverse()), type="matrix")
-            cmds.setAttr(mult + ".matrixIn[3]", *list(orientation("jointOrient").inverse() * basis.inverse()), type="matrix")
+            cmds.setAttr(mult + ".matrixIn[3]", *list(orientation("jointOrient").inverse()), type="matrix")
+            if composer:
+                # Evaluate the imported composer with identity base and the same
+                # upstream animation. Remove that contribution from the solved
+                # rotation before the original composer applies it.
+                grant = cmds.duplicate(composer, inputConnections=True, name=role + "_IK_contribution")[0]
+                for attr in ("baseRotate", "baseTranslate"):
+                    for suffix in ("", "X", "Y", "Z"):
+                        dest = grant + "." + attr + suffix
+                        if cmds.connectionInfo(dest, isExactDestination=True):
+                            cmds.disconnectAttr(cmds.connectionInfo(dest, sourceFromDestination=True), dest)
+                    cmds.setAttr(grant + "." + attr, 0, 0, 0)
+                # Follow edits to the animator-facing contribution even when
+                # its first key is added after enabling IK.
+                if cmds.nodeType(composer) == "mmdBoneMorphAccum":
+                    attributes = ["contribution[%d]" % index for index in
+                                  cmds.getAttr(composer + ".contribution", multiIndices=True) or []]
+                else:
+                    attributes = ["sourceRotate" + axis for axis in "XYZ"]
+                for attr in attributes:
+                    cmds.connectAttr(composer + "." + attr, grant + "." + attr, force=True)
+                offset = cmds.createNode("transform", name=role + "_IK_grant", parent=group)
+                cmds.connectAttr(grant + ".outputRotate", offset + ".rotate")
+                cmds.connectAttr(offset + ".inverseMatrix", mult + ".matrixIn[4]")
+                grants.append(_uuid(cmds, grant))
+                converters.append(grant)
+            cmds.setAttr(mult + ".matrixIn[5]", *list(basis.inverse()), type="matrix")
             parent = cmds.listRelatives(joint, parent=True, fullPath=True)[0]
             for src, dst in (
                 (helper + ".worldMatrix[0]", mult + ".matrixIn[1]"),
@@ -261,6 +315,8 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                     if item["sourceRef"]:
                         cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
                     cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
+        if composers and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
+            raise MmdControlRigBuildError("arm IK contribution depends on its own solved arm")
         owned = [
             _uuid(cmds, node)
             for node in [group] + (cmds.listRelatives(group, allDescendents=True, fullPath=True) or []) + converters
@@ -275,6 +331,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             "nodes": owned,
             "inputs": inputs,
             "edges": edges,
+            "contributionUuids": grants,
             "static": static,
             "targetUuid": _uuid(cmds, target),
             "poleUuid": _uuid(cmds, pole),

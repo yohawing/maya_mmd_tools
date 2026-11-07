@@ -181,6 +181,53 @@ class TestControlRigArmIk(MayaTestBase):
                 remove_mmd_control_rig(root)
                 self.assertTrue(all(not cmds.ls(uid, long=True) for uid in owned))
 
+    def test_animated_append_and_morph_keep_wrist_on_target(self):
+        """Two independent contributions on the same arm remain live through bake."""
+        from mmd_tools.io.mmd_importer import import_mmd_file
+        from mmd_tools.core.mmd_control_rig_motion import bake_mmd_control_rig
+
+        root = import_mmd_file(str(ROOT / "tests/data/mmt_test_model.pmx"), options={
+            "setup_rig": True, "setup_bone_orientation": True, "import_physics": False, "use_namespace": True,
+        })
+        bones = {cmds.getAttr(j + ".mmd_bone_name"): j for j in
+                 cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True)}
+        joints = [bones[name] for name in ("右腕", "右ひじ", "右手首")]
+        append = cmds.createNode("mmdAppend")
+        cmds.setAttr(append + ".schemaMode", 2)
+        cmds.setAttr(append + ".ratio", 0.5)
+        morph = cmds.createNode("mmdBoneMorphAccum")
+        weight = morph + ".contribution[0].weight"
+        cmds.setAttr(morph + ".contribution[0].rotateOffsetQuat", 0, 0.5, 0, 0.8660254038)
+        for time, rotation, value in ((1, 12, 0.25), (10, 35, 0.8)):
+            cmds.setKeyframe(append + ".sourceRotateZ", time=time, value=rotation)
+            cmds.setKeyframe(weight, time=time, value=value)
+        cmds.connectAttr(append + ".outputRotate", joints[0] + ".rotate", force=True)
+        cmds.connectAttr(morph + ".outputRotate", joints[1] + ".rotate", force=True)
+        build_mmd_control_rig(root)
+        enter_mmd_control_rig_edit(root)
+        cmds.currentTime(5, update=True)
+        before = arm_pose(joints)
+        row = enable_arm_ik(root, "right")
+        self.assertLess(pose_delta(before, arm_pose(joints)), 1e-4)
+        target = move_target(row, joints)
+        expected = {}
+        for time in range(1, 11):
+            cmds.currentTime(time, update=True)
+            expected[time] = arm_pose(joints)
+            self.assertLess(max(abs(a-b) for a,b in zip(expected[time][-1][12:15], target)), 1e-4)
+        scene = self.get_temp_filename("composed_arm.ma")
+        cmds.file(rename=scene)
+        cmds.file(save=True, type="mayaAscii", force=True)
+        cmds.file(scene, open=True, force=True)
+        self.assertTrue(inspect_arm_ik(root, "right")["active"])
+        disable_arm_ik(root, "right", match_fk=True)
+        self.assertLess(pose_delta(expected[10], arm_pose(joints)), 1e-4)
+        enable_arm_ik(root, "right")
+        bake_mmd_control_rig(root)
+        for time, matrices in expected.items():
+            cmds.currentTime(time, update=True)
+            self.assertLess(pose_delta(matrices, arm_pose(joints)), 1e-4)
+
     def test_intermediate_append_feedback_is_rejected_without_scene_changes(self):
         """A main-arm grant on an intermediate twist would feed IK back into itself."""
         from mmd_tools.io.mmd_importer import import_mmd_file
