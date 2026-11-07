@@ -12,6 +12,7 @@ from .mmd_control_rig_builder import (
     _color_control,
     read_mmd_control_rig_metadata,
 )
+from .mmd_control_rig_analyzer import rotation_composer_source
 from .mmd_control_rig_basis import matrix_from_quaternion
 
 
@@ -98,6 +99,25 @@ def validate_arm_ik(cmds, metadata, side):
     return row
 
 
+def _rotation_composers(cmds, joint, targets):
+    """Walk the verified XYZ path from the joint back to the EDIT journal."""
+    destination = joint + ".rotate"
+    chain = []
+    while True:
+        node = rotation_composer_source(cmds, destination)
+        if not node or node in chain:
+            raise MmdControlRigBuildError("arm IK requires a supported XYZ rotation composer on " + destination)
+        kind = cmds.nodeType(node)
+        if kind == "mmdAppend" and cmds.getAttr(node + ".schemaMode") != 2:
+            raise MmdControlRigBuildError("arm IK requires the base/source append schema")
+        if kind == "mmdBoneMorphAccum" and cmds.getAttr(node + ".rotateOrder") != 0:
+            raise MmdControlRigBuildError("arm IK requires XYZ bone morph rotation order")
+        chain.append(node)
+        destination = node + ".baseRotate"
+        if targets == {destination + axis for axis in "XYZ"}:
+            return list(reversed(chain))
+
+
 def enable_arm_ik(model_root, side, *, cmds_module=None):
     """Match an independent wrist/pole solver to the current FK pose in EDIT."""
     from maya import cmds as maya_cmds
@@ -134,22 +154,9 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         if kind in {"append_base", "bone_morph_base"}:
             rotations = {control + ".rotate" + axis for axis in "XYZ"}
             targets = {item["target"] for item in journal if item["control"] in rotations}
-            source = cmds.connectionInfo(joint + ".rotateX", sourceFromDestination=True)
-            composer = source.partition(".")[0]
-            expected_type = "mmdAppend" if kind == "append_base" else "mmdBoneMorphAccum"
-            if (not composer or cmds.nodeType(composer) != expected_type
-                    or targets != {composer + ".baseRotate" + axis for axis in "XYZ"}
-                    or cmds.getAttr(joint + ".rotateOrder") != 0):
-                raise MmdControlRigBuildError("arm IK requires one XYZ rotation composer directly on " + joint)
-            if not cmds.isConnected(composer + ".outputRotate", joint + ".rotate") and not all(
-                cmds.isConnected(composer + ".outputRotate" + axis, joint + ".rotate" + axis) for axis in "XYZ"
-            ):
-                raise MmdControlRigBuildError("arm IK requires all three rotation axes from " + composer)
-            if kind == "append_base" and cmds.getAttr(composer + ".schemaMode") != 2:
-                raise MmdControlRigBuildError("arm IK requires the base/source append schema")
-            if kind == "bone_morph_base" and cmds.getAttr(composer + ".rotateOrder") != 0:
-                raise MmdControlRigBuildError("arm IK requires XYZ bone morph rotation order")
-            composers[role] = composer
+            if cmds.getAttr(joint + ".rotateOrder") != 0:
+                raise MmdControlRigBuildError("arm IK requires XYZ composed bone rotation")
+            composers[role] = _rotation_composers(cmds, joint, targets)
         elif kind != "direct_channel":
             raise MmdControlRigBuildError("arm IK does not support bone input route: " + kind)
         ancestors = [joint]
@@ -161,7 +168,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                 raise MmdControlRigBuildError("arm IK requires static unit scale")
             if any(abs(value - 1) > 1e-8 for value in cmds.getAttr(node + ".scale")[0]):
                 raise MmdControlRigBuildError("arm IK currently requires unit scale")
-    segments = _segment_intermediates(cmds, metadata, joints)
+    segments, driven = _segment_intermediates(cmds, metadata, joints)
     positions = [om.MVector(cmds.xform(node, q=True, ws=True, t=True)) for node in joints]
     shoulder, elbow, wrist = positions
     axis = wrist - shoulder
@@ -184,7 +191,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                     "value": cmds.getAttr(plug),
                 }
             )
-    previous_cycles = set(cmds.cycleCheck(all=True, list=True) or []) if composers else set()
+    previous_cycles = set(cmds.cycleCheck(all=True, list=True) or []) if composers or driven else set()
     with _transaction(cmds, "Enable Arm IK"):
         group = cmds.createNode("transform", name=side + "_arm_IK", parent=_node(cmds, metadata["controlGroupUuid"]))
         # Wrist/pole remain in world space while only the shoulder anchor follows torso.
@@ -253,13 +260,13 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         cmds.setAttr(helpers[0] + ".visibility", False)
         cmds.setAttr(handle + ".visibility", False)
         edges = []
-        grants = []
+        grants = list(driven)
         converters = [anchor_matrix] + segment_nodes
         for role, joint, control, helper in zip(roles, joints, controls, helpers):
             basis = om.MMatrix(matrix_from_quaternion(metadata["authoringBases"][role]["quaternion"]))
 
-            composer = composers.get(role)
-            if composer and metadata["bindings"][role]["inputKind"] == "append_base":
+            chain = composers.get(role, ())
+            if chain and metadata["bindings"][role]["inputKind"] == "append_base":
                 # EDIT connects ordinary append base axes in bone space.
                 basis = om.MMatrix()
 
@@ -273,7 +280,8 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             converters.extend((mult, decomp))
             cmds.setAttr(mult + ".matrixIn[0]", *list(basis * orientation("rotateAxis").inverse()), type="matrix")
             cmds.setAttr(mult + ".matrixIn[3]", *list(orientation("jointOrient").inverse()), type="matrix")
-            if composer:
+            previous = None
+            for composer in chain:
                 # Evaluate the imported composer with identity base and the same
                 # upstream animation. Remove that contribution from the solved
                 # rotation before the original composer applies it.
@@ -293,11 +301,15 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                     attributes = ["sourceRotate" + axis for axis in "XYZ"]
                 for attr in attributes:
                     cmds.connectAttr(composer + "." + attr, grant + "." + attr, force=True)
-                offset = cmds.createNode("transform", name=role + "_IK_grant", parent=group)
-                cmds.connectAttr(grant + ".outputRotate", offset + ".rotate")
-                cmds.connectAttr(offset + ".inverseMatrix", mult + ".matrixIn[4]")
+                if previous:
+                    cmds.connectAttr(previous + ".outputRotate", grant + ".baseRotate")
+                previous = grant
                 grants.append(_uuid(cmds, grant))
                 converters.append(grant)
+            if previous:
+                offset = cmds.createNode("transform", name=role + "_IK_grant", parent=group)
+                cmds.connectAttr(previous + ".outputRotate", offset + ".rotate")
+                cmds.connectAttr(offset + ".inverseMatrix", mult + ".matrixIn[4]")
             cmds.setAttr(mult + ".matrixIn[5]", *list(basis.inverse()), type="matrix")
             parent = cmds.listRelatives(joint, parent=True, fullPath=True)[0]
             for src, dst in (
@@ -315,8 +327,8 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                     if item["sourceRef"]:
                         cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
                     cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
-        if composers and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
-            raise MmdControlRigBuildError("arm IK contribution depends on its own solved arm")
+        if (composers or driven) and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
+            raise MmdControlRigBuildError("arm IK intermediate or contribution depends on a solved arm rotation")
         owned = [
             _uuid(cmds, node)
             for node in [group] + (cmds.listRelatives(group, allDescendents=True, fullPath=True) or []) + converters
@@ -394,7 +406,7 @@ def _reenable(cmds, root, metadata, side):
 
     row = validate_arm_ik(cmds, metadata, side)
     joints = [_node(cmds, uuid) for uuid in row["jointUuids"]]
-    _segment_intermediates(cmds, metadata, joints)
+    _, driven = _segment_intermediates(cmds, metadata, joints)
     if row["active"]:
         return inspect_arm_ik(root, side, cmds_module=cmds)
     helper = [_node(cmds, uuid) for uuid in row["helperUuids"]]
@@ -414,6 +426,7 @@ def _reenable(cmds, root, metadata, side):
     bend = elbow - (shoulder + axis * (((elbow - shoulder) * axis) / (axis * axis)))
     if bend.length() < 1e-5:
         bend = _straight_pole_direction(cmds, joints[0], axis)
+    previous_cycles = set(cmds.cycleCheck(all=True, list=True) or []) if driven else set()
     with _transaction(cmds, "Enable Arm IK"):
         handle = _node(cmds, row["handleUuid"])
         cmds.setAttr(handle + ".ikBlend", 0)
@@ -434,6 +447,8 @@ def _reenable(cmds, root, metadata, side):
             if item["sourceRef"]:
                 cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
             cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
+        if driven and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
+            raise MmdControlRigBuildError("arm IK intermediate or contribution depends on a solved arm rotation")
         row["inputs"] = fresh
         row["active"] = True
         _write_metadata(cmds, root, metadata)
@@ -572,6 +587,10 @@ def _segment_intermediates(cmds, metadata, joints):
     root = _node(cmds, metadata["modelRootUuid"])
     live = {_uuid(cmds, bone.joint): bone for bone in analyze_mmd_control_rig(root, cmds_module=cmds).bones}
     owned = {node["uuid"] for node in metadata["nodes"]}
+    solved = {_uuid(cmds, joint) for joint in joints}
+    solved.update(metadata["controls"][role] for role, binding in metadata["bindings"].items()
+                  if binding["jointUuid"] in solved)
+    driven = []
     segments = []
     for start, end in zip(joints, joints[1:]):
         parent = cmds.listRelatives(end, parent=True, fullPath=True)[0]
@@ -586,14 +605,19 @@ def _segment_intermediates(cmds, metadata, joints):
                     and current.incoming and all(_uuid(cmds, edge.source_plug.split(".", 1)[0]) in owned
                                                  for edge in current.incoming)):
                 kind = "direct_channel"
-            if (binding and binding["inputKind"] != "direct_channel") or kind != "direct_channel":
-                # Reading append/morph output here can feed the solved main arm
-                # back into its own helper offsets. Those routes are not supported.
-                raise MmdControlRigBuildError("arm IK requires direct intermediate bone routes: " + parent)
+            if kind in {"append_base", "bone_morph_base"}:
+                for edge in current.incoming:
+                    source = edge.source_plug.split(".", 1)[0]
+                    upstream = cmds.listHistory(source, allConnections=True) or []
+                    if solved.intersection(cmds.ls(upstream, uuid=True) or []):
+                        raise MmdControlRigBuildError("arm IK intermediate depends on a solved arm rotation: " + parent)
+                driven.append(uuid)
+            elif kind != "direct_channel" or (binding and binding["inputKind"] != kind):
+                raise MmdControlRigBuildError("arm IK unsupported intermediate bone route: " + parent)
             intermediates.append(parent)
             parents = cmds.listRelatives(parent, parent=True, fullPath=True) or []
             if not parents:
                 raise MmdControlRigBuildError("arm IK roles must form one ancestor chain")
             parent = parents[0]
         segments.append(intermediates)
-    return segments
+    return segments, driven

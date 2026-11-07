@@ -182,7 +182,13 @@ class TestControlRigArmIk(MayaTestBase):
                 self.assertTrue(all(not cmds.ls(uid, long=True) for uid in owned))
 
     def test_animated_append_and_morph_keep_wrist_on_target(self):
-        """Two independent contributions on the same arm remain live through bake."""
+        """Both stack orders and independently driven twists survive save and bake."""
+        for route in ("morph_then_append", "append_then_morph", "separate"):
+            with self.subTest(route=route):
+                cmds.file(new=True, force=True)
+                self._check_composed_arm(route)
+
+    def _check_composed_arm(self, route):
         from mmd_tools.io.mmd_importer import import_mmd_file
         from mmd_tools.core.mmd_control_rig_motion import bake_mmd_control_rig
 
@@ -201,32 +207,57 @@ class TestControlRigArmIk(MayaTestBase):
         for time, rotation, value in ((1, 12, 0.25), (10, 35, 0.8)):
             cmds.setKeyframe(append + ".sourceRotateZ", time=time, value=rotation)
             cmds.setKeyframe(weight, time=time, value=value)
-        cmds.connectAttr(append + ".outputRotate", joints[0] + ".rotate", force=True)
-        cmds.connectAttr(morph + ".outputRotate", joints[1] + ".rotate", force=True)
+        twists = [bones["右腕捩"], bones["右手捩"]]
+        for twist, source in zip(twists, (append, morph)):
+            twist_driver = cmds.duplicate(source, inputConnections=True)[0]
+            if source == append:
+                # The last motion comes only from the intermediate bone.
+                cmds.disconnectAttr(cmds.connectionInfo(twist_driver + ".sourceRotateZ", sourceFromDestination=True),
+                                    twist_driver + ".sourceRotateZ")
+                for frame, value in ((1, 5), (15, 30)):
+                    cmds.setKeyframe(twist_driver + ".sourceRotateZ", time=frame, value=value)
+            cmds.connectAttr(twist_driver + ".outputRotate", twist + ".rotate", force=True)
+        if route == "separate":
+            cmds.connectAttr(morph + ".outputRotate", joints[1] + ".rotate", force=True)
+            outer = append
+        else:
+            inner, outer = (morph, append) if route == "morph_then_append" else (append, morph)
+            cmds.connectAttr(inner + ".outputRotate", outer + ".baseRotate")
+        cmds.connectAttr(outer + ".outputRotate", joints[0] + ".rotate", force=True)
         build_mmd_control_rig(root)
         enter_mmd_control_rig_edit(root)
         cmds.currentTime(5, update=True)
-        before = arm_pose(joints)
+        before = arm_pose(joints + twists)
         row = enable_arm_ik(root, "right")
-        self.assertLess(pose_delta(before, arm_pose(joints)), 1e-4)
+        self.assertLess(pose_delta(before, arm_pose(joints + twists)), 1e-4)
         target = move_target(row, joints)
         expected = {}
-        for time in range(1, 11):
+        for time in range(1, 16):
             cmds.currentTime(time, update=True)
-            expected[time] = arm_pose(joints)
-            self.assertLess(max(abs(a-b) for a,b in zip(expected[time][-1][12:15], target)), 1e-4)
+            expected[time] = arm_pose(joints + twists)
+            self.assertLess(max(abs(a-b) for a,b in zip(expected[time][2][12:15], target)), 1e-4)
+        for twist_index in (3, 4):
+            self.assertGreater(pose_delta([expected[1][twist_index]], [expected[15][twist_index]]), 1e-3)
         scene = self.get_temp_filename("composed_arm.ma")
         cmds.file(rename=scene)
         cmds.file(save=True, type="mayaAscii", force=True)
         cmds.file(scene, open=True, force=True)
         self.assertTrue(inspect_arm_ik(root, "right")["active"])
+        self.assertLess(pose_delta(expected[15], arm_pose(joints + twists)), 1e-4)
+        # Match inside the range: the key at 15 belongs only to the twist driver.
+        cmds.currentTime(5, update=True)
         disable_arm_ik(root, "right", match_fk=True)
-        self.assertLess(pose_delta(expected[10], arm_pose(joints)), 1e-4)
+        self.assertLess(pose_delta(expected[5], arm_pose(joints + twists)), 1e-4)
         enable_arm_ik(root, "right")
+        self.assertLess(pose_delta(expected[5], arm_pose(joints + twists)), 1e-4)
+        # Rematching sets the pole from the current bend; bake that live motion.
+        for time in expected:
+            cmds.currentTime(time, update=True)
+            expected[time] = arm_pose(joints + twists)
         bake_mmd_control_rig(root)
         for time, matrices in expected.items():
             cmds.currentTime(time, update=True)
-            self.assertLess(pose_delta(matrices, arm_pose(joints)), 1e-4)
+            self.assertLess(pose_delta(matrices, arm_pose(joints + twists)), 1e-4)
 
     def test_intermediate_append_feedback_is_rejected_without_scene_changes(self):
         """A main-arm grant on an intermediate twist would feed IK back into itself."""
@@ -262,7 +293,7 @@ class TestControlRigArmIk(MayaTestBase):
                     "curves": curve_snapshot(),
                 }
             before = snapshot()
-            with self.assertRaisesRegex(MmdControlRigBuildError, "direct intermediate bone routes"):
+            with self.assertRaisesRegex(MmdControlRigBuildError, "depends on a solved arm rotation"):
                 enable_arm_ik(root, "right")
             self.assertEqual(snapshot(), before)
 
@@ -289,7 +320,7 @@ class TestControlRigArmIk(MayaTestBase):
         metadata = read_mmd_control_rig_metadata(root)
         nodes = set(cmds.ls(uuid=True))
         pose = arm_pose(joints)
-        with self.assertRaisesRegex(MmdControlRigBuildError, "direct intermediate bone routes"):
+        with self.assertRaisesRegex(MmdControlRigBuildError, "depends on a solved arm rotation"):
             enable_arm_ik(root, "right")
         self.assertEqual(read_mmd_control_rig_metadata(root), metadata)
         self.assertEqual(set(cmds.ls(uuid=True)), nodes)

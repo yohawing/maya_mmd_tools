@@ -813,7 +813,35 @@ def _bone_morph_base_plugs(
         input_compound = target.rsplit(".inputRotateElement", 1)[0]
         plugs.extend(_accum_bases_from_destination(cmds, input_compound))
 
-    return tuple(_unique_sorted(plugs))
+    return tuple(_unique_sorted(_innermost_rotation_base(cmds, plug) for plug in plugs))
+
+
+def _innermost_rotation_base(cmds, plug: str) -> str:
+    """Keep both composers connected when EDIT takes over their base rotation."""
+    visited = set()
+    while plug.endswith(".baseRotate") and plug not in visited:
+        visited.add(plug)
+        node = rotation_composer_source(cmds, plug)
+        if not node:
+            break
+        plug = node + ".baseRotate"
+    return plug
+
+
+def rotation_composer_source(cmds, destination: str) -> Optional[str]:
+    """Find one supported composer driving the complete XYZ compound."""
+    sources = cmds.listConnections(destination, source=True, destination=False, plugs=True) or []
+    if not sources:
+        return None
+    node = sources[0].partition(".")[0]
+    if cmds.nodeType(node) not in {"mmdAppend", "mmdBoneMorphAccum"}:
+        return None
+    output = node + ".outputRotate"
+    if cmds.isConnected(output, destination) or all(
+        cmds.isConnected(output + axis, destination + axis) for axis in "XYZ"
+    ):
+        return node
+    return None
 
 
 def _accum_base_from_output(node: str, source_attr: str) -> Optional[str]:
