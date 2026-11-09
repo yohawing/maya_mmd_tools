@@ -257,6 +257,7 @@ class TestControlRigArmIk(MayaTestBase):
         cmds.setAttr(append + ".schemaMode", 2)
         cmds.setAttr(append + ".ratio", 0.5)
         morph = cmds.createNode("mmdBoneMorphAccum")
+        cmds.addAttr(morph, longName="mmd_bone_morph_accum", attributeType="bool", defaultValue=True)
         weight = morph + ".contribution[0].weight"
         cmds.setAttr(morph + ".contribution[0].rotateOffsetQuat", 0, 0.5, 0, 0.8660254038)
         for time, rotation, value in ((1, 12, 0.25), (10, 35, 0.8)):
@@ -290,6 +291,14 @@ class TestControlRigArmIk(MayaTestBase):
         cmds.currentTime(5, update=True)
         before = arm_pose(joints + twists)
         row = enable_arm_ik(root, "right")
+        copies = [cmds.ls(uid)[0] for uid in row["nodes"] if cmds.ls(uid, type="mmdBoneMorphAccum")]
+        self.assertTrue(copies)
+        from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
+        export_joints = VmdSceneCollector()._find_joints(root)
+        self.assertTrue(set(joints).issubset(export_joints))
+        self.assertTrue(set(cmds.ls(row["helperUuids"], long=True)).isdisjoint(export_joints))
+        self.assertTrue(cmds.getAttr(morph + ".mmd_bone_morph_accum"))
+        self.assertTrue(all(not cmds.getAttr(node + ".mmd_bone_morph_accum") for node in copies))
         self.assertLess(pose_delta(before, arm_pose(joints + twists)), 1e-4)
         target = move_target(row, joints)
         expected = {}

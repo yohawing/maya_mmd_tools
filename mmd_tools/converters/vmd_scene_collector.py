@@ -27,6 +27,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_CAMERA,
+    ATTR_MMD_CONTROL_RIG_JSON,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_ROOT,
     ATTR_MMD_MODEL_NAME,
@@ -4945,6 +4946,12 @@ class VmdSceneCollector:
             nodes = cmds.listRelatives(target_model, allDescendents=True, type="joint", fullPath=True) or []
             if cmds.nodeType(target_model) == "joint":
                 nodes.insert(0, target_model)
+            if _has_attr(target_model, ATTR_MMD_CONTROL_RIG_JSON):
+                metadata = read_mmd_control_rig_metadata(target_model) or {}
+                helper_ids = [uid for arm in metadata.get("armIk", {}).values() for uid in arm["helperUuids"]]
+                if helper_ids:
+                    helpers = set(cmds.ls(helper_ids, long=True) or [])
+                    nodes = [node for node in nodes if node not in helpers]
         return [node for node in nodes if not (
             _has_attr(node, "mmdSecondaryControl")
             and cmds.getAttr(f"{node}.mmdSecondaryControl")

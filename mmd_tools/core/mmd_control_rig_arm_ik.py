@@ -299,6 +299,9 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                 # Follow edits to the animator-facing contribution even when
                 # its first key is added after enabling IK.
                 if cmds.nodeType(composer) == "mmdBoneMorphAccum":
+                    # Only the imported accumulator owns the VMD authoring channels.
+                    if cmds.attributeQuery("mmd_bone_morph_accum", node=grant, exists=True):
+                        cmds.setAttr(grant + ".mmd_bone_morph_accum", False)
                     attributes = ["contribution[%d]" % index for index in
                                   cmds.getAttr(composer + ".contribution", multiIndices=True) or []]
                 else:
