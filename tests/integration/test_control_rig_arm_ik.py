@@ -14,11 +14,17 @@ from tests.integration.test_pose_layers import curve_snapshot
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def create_arm_case(side='right'):
+def create_arm_case(side='right', *, straight=False):
     from mmd_tools.io.mmd_importer import import_mmd_file
     root = import_mmd_file(str(ROOT/'tests/data/mmt_test_model.pmx'), options={
         'setup_rig': True, 'setup_bone_orientation': True, 'import_physics': False, 'use_namespace': True,
     })
+    if straight:
+        names = {cmds.getAttr(j + '.mmd_bone_name'): j for j in
+                 cmds.listRelatives(root, allDescendents=True, type='joint', fullPath=True)}
+        arm, elbow, wrist = [names[n] for n in ('右腕', '右ひじ', '右手首')]
+        start, mid = [cmds.xform(j, query=True, worldSpace=True, translation=True) for j in (arm, elbow)]
+        cmds.xform(wrist, worldSpace=True, translation=[b + 0.85 * (b - a) for a, b in zip(start, mid)])
     build_mmd_control_rig(root)
     enter_mmd_control_rig_edit(root)
     metadata = read_mmd_control_rig_metadata(root)
@@ -121,6 +127,31 @@ class TestControlRigArmIk(MayaTestBase):
         enable_arm_ik(root, 'right')
         self.assertLess(pose_delta(expected, arm_pose(joints)), 1e-4)
         self.assertEqual(endpoints(), original_keys)
+
+    def test_extended_arm_matches_fk_and_tracks_after_reload(self):
+        for reuse in (False, True):
+            with self.subTest(reuse_native_handle=reuse):
+                cmds.file(new=True, force=True)
+                root, controls, joints = create_arm_case(straight=True)
+                if reuse:
+                    enable_arm_ik(root, 'right')
+                    disable_arm_ik(root, 'right')
+                cmds.setKeyframe(controls[1] + '.rotateZ', time=5, value=0)
+                cmds.currentTime(5, update=True)
+                before = arm_pose(joints)
+                row = enable_arm_ik(root, 'right')
+                self.assertLess(pose_delta(before, arm_pose(joints)), 1e-6)
+                target = move_target(row, joints)
+                self.assertLess(max(abs(a-b) for a,b in zip(target, arm_pose(joints)[2][12:15])), 1e-5)
+                moved = arm_pose(joints)
+                scene = self.get_temp_filename('extended_arm.ma')
+                cmds.file(rename=scene)
+                cmds.file(save=True, type='mayaAscii', force=True)
+                cmds.file(scene, open=True, force=True)
+                self.assertTrue(inspect_arm_ik(root, 'right')['active'])
+                self.assertLess(pose_delta(moved, arm_pose(joints)), 1e-5)
+                disable_arm_ik(root, 'right')
+                self.assertLess(pose_delta(before, arm_pose(joints)), 1e-6)
 
     def test_animated_intermediate_twists_preserve_segments_and_lifecycle(self):
         """Off-axis intermediate twists must move helper offsets without a world cycle."""

@@ -110,25 +110,29 @@ class MmdBoneMorphAccumNode(om.MPxNode):
         if not is_translate_plug and not is_rotate_plug:
             return None
 
-        base_tx = data.inputValue(N.aBaseTranslateX).asDouble()
-        base_ty = data.inputValue(N.aBaseTranslateY).asDouble()
-        base_tz = data.inputValue(N.aBaseTranslateZ).asDouble()
+        # The arm's segment length can feed back into its solved rotation.
+        # Evaluate only the requested output, as declared by attributeAffects.
+        contributions = self._read_contributions(data)
+        if is_translate_plug:
+            tx = data.inputValue(N.aBaseTranslateX).asDouble()
+            ty = data.inputValue(N.aBaseTranslateY).asDouble()
+            tz = data.inputValue(N.aBaseTranslateZ).asDouble()
+            for contribution in contributions:
+                weight = contribution["weight"]
+                dx, dy, dz = contribution["translate"]
+                tx += weight * dx
+                ty += weight * dy
+                tz += weight * dz
+            handle = data.outputValue(N.aOutputTranslate)
+            handle.set3Double(tx, ty, tz)
+            handle.setClean()
+            data.setClean(plug)
+            return
+
         base_rx = data.inputValue(N.aBaseRotateX).asDouble()
         base_ry = data.inputValue(N.aBaseRotateY).asDouble()
         base_rz = data.inputValue(N.aBaseRotateZ).asDouble()
         rotate_order = self._rotate_order_from_data(data)
-
-        tx, ty, tz = base_tx, base_ty, base_tz
-        contributions = self._read_contributions(data)
-        for contribution in contributions:
-            weight = contribution["weight"]
-            tx += weight * contribution["translate"][0]
-            ty += weight * contribution["translate"][1]
-            tz += weight * contribution["translate"][2]
-
-        out_trans_handle = data.outputValue(N.aOutputTranslate)
-        out_trans_handle.set3Double(tx, ty, tz)
-        out_trans_handle.setClean()
 
         base_euler = om.MEulerRotation(base_rx, base_ry, base_rz, rotate_order)
         final_quat = base_euler.asQuaternion()

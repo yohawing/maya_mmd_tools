@@ -174,9 +174,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
     axis = wrist - shoulder
     if axis.length() < 1e-6:
         raise MmdControlRigBuildError("arm IK chain has zero reach")
-    bend = elbow - (shoulder + axis * (((elbow - shoulder) * axis) / (axis * axis)))
-    if bend.length() < 1e-5:
-        bend = _straight_pole_direction(cmds, joints[0], axis)
+    bend, straight = _bend_plane(cmds, joints[0], shoulder, elbow, wrist)
     inputs = []
     for control in controls:
         for axis_name in "XYZ":
@@ -250,15 +248,21 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         cmds.xform(
             pole, ws=True, translation=list(elbow + bend.normal() * ((elbow - shoulder).length() + (wrist - elbow).length()))
         )
-        cmds.joint(helpers[0], edit=True, setPreferredAngles=True, children=True)
-        handle, _ = cmds.ikHandle(
-            startJoint=helpers[0], endEffector=helpers[-1], solver="ikRPsolver", name=side + "_arm_IK_handle"
-        )
-        cmds.parent(handle, target, absolute=True)
-        cmds.poleVectorConstraint(pole, handle)
+        references = []
+        handle = None
+        if straight:
+            references, extra = _straight_solver(cmds, joints, helpers, target, pole, side)
+            segment_nodes.extend(extra)
+        else:
+            cmds.joint(helpers[0], edit=True, setPreferredAngles=True, children=True)
+            handle, _ = cmds.ikHandle(
+                startJoint=helpers[0], endEffector=helpers[-1], solver="ikRPsolver", name=side + "_arm_IK_handle"
+            )
+            cmds.parent(handle, target, absolute=True)
+            cmds.poleVectorConstraint(pole, handle)
+            cmds.setAttr(handle + ".visibility", False)
         cmds.orientConstraint(target, helpers[-1], maintainOffset=False)
         cmds.setAttr(helpers[0] + ".visibility", False)
-        cmds.setAttr(handle + ".visibility", False)
         edges = []
         grants = list(driven)
         converters = [anchor_matrix] + segment_nodes
@@ -349,8 +353,11 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             "poleUuid": _uuid(cmds, pole),
             "helperUuids": [_uuid(cmds, node) for node in helpers],
             "jointUuids": [_uuid(cmds, node) for node in joints],
-            "handleUuid": _uuid(cmds, handle),
         }
+        if handle:
+            row["handleUuid"] = _uuid(cmds, handle)
+        if references:
+            row["straightReferenceUuids"] = [_uuid(cmds, node) for node in references]
         row["graph"] = _graph_snapshot(cmds, row)
         metadata.setdefault("armIk", {})[side] = row
         _write_metadata(cmds, model_root, metadata)
@@ -423,25 +430,36 @@ def _reenable(cmds, root, metadata, side):
     axis = wrist - shoulder
     if axis.length() < 1e-6:
         raise MmdControlRigBuildError("arm IK chain has zero reach")
-    bend = elbow - (shoulder + axis * (((elbow - shoulder) * axis) / (axis * axis)))
-    if bend.length() < 1e-5:
-        bend = _straight_pole_direction(cmds, joints[0], axis)
+    bend, straight = _bend_plane(cmds, joints[0], shoulder, elbow, wrist)
     previous_cycles = set(cmds.cycleCheck(all=True, list=True) or []) if driven else set()
     with _transaction(cmds, "Enable Arm IK"):
-        handle = _node(cmds, row["handleUuid"])
-        cmds.setAttr(handle + ".ikBlend", 0)
-        for solved, joint in zip(helper, joints):
-            # Wrist rotation remains owned by its orientation constraint.
-            if solved != helper[-1]:
-                # Segment translations are driven by intermediate local matrices.
+        handle = _node(cmds, row["handleUuid"]) if row.get("handleUuid") else None
+        if handle:
+            cmds.setAttr(handle + ".ikBlend", 0)
+        references = [_node(cmds, uid) for uid in row.get("straightReferenceUuids", ())]
+        if not references and not straight:
+            for solved, joint in zip(helper[:-1], joints):
                 cmds.xform(solved, ws=True, rotation=cmds.xform(joint, q=True, ws=True, rotation=True))
         _match_world_pose(cmds, target, cmds.xform(joints[-1], q=True, ws=True, matrix=True))
         pole_matrix = cmds.xform(pole, q=True, ws=True, matrix=True)
         pole_matrix[12:15] = list(elbow + bend.normal() * ((elbow - shoulder).length() + (wrist - elbow).length()))
         _match_world_pose(cmds, pole, pole_matrix)
-        cmds.joint(helper[0], edit=True, setPreferredAngles=True, children=True)
-        cmds.setAttr(handle + ".ikBlend", 1)
-        _rebind_handle(cmds, metadata, row, handle, helper)
+        if references:
+            _match_straight_references(cmds, references, joints)
+        elif straight:
+            references, extra = _straight_solver(cmds, joints, helper, target, pole, side)
+            row["straightReferenceUuids"] = [_uuid(cmds, node) for node in references]
+            for node in references + extra:
+                uid = _uuid(cmds, node)
+                row["nodes"].append(uid)
+                metadata["nodes"].append({"uuid": uid, "name": node})
+                if not cmds.objectType(node, isAType="dagNode"):
+                    metadata["helperNodes"].append(uid)
+            row["graph"] = _graph_snapshot(cmds, row)
+        else:
+            cmds.joint(helper[0], edit=True, setPreferredAngles=True, children=True)
+            cmds.setAttr(handle + ".ikBlend", 1)
+            _rebind_handle(cmds, metadata, row, handle, helper)
         for item in fresh:
             plug = resolve_arm_plug(cmds, item["controlRef"])
             if item["sourceRef"]:
@@ -517,6 +535,111 @@ def _match_world_pose(cmds, node, matrix):
             else:
                 cmds.setAttr(plug, value)
     cmds.currentTime(cmds.currentTime(q=True), update=True)
+
+
+def _bend_plane(cmds, joint, shoulder, elbow, wrist):
+    """Distinguish a nearly extended two-link chain from a folded arm."""
+    axis = wrist - shoulder
+    bend = elbow - shoulder - axis * (((elbow - shoulder) * axis) / (axis * axis))
+    upper, lower = elbow - shoulder, wrist - elbow
+    straight = upper.normal() * lower.normal() > math.cos(math.radians(2))
+    if bend.length() < axis.length() * 1e-10:
+        bend = _straight_pole_direction(cmds, joint, axis)
+    return bend, straight
+
+
+def _match_straight_references(cmds, references, joints):
+    """Keep FK roll in the shoulder-parent and upper-arm coordinate frames."""
+    from maya.api import OpenMaya as om
+
+    shoulder_parent = cmds.listRelatives(joints[0], parent=True, fullPath=True)[0]
+    for ref, joint, parent in zip(references, joints, (shoulder_parent, joints[0])):
+        world = om.MMatrix(cmds.xform(joint, q=True, ws=True, matrix=True))
+        parent_world = om.MMatrix(cmds.xform(parent, q=True, ws=True, matrix=True))
+        rotation = om.MTransformationMatrix(world * parent_world.inverse()).rotation()
+        cmds.setAttr(ref + ".rotate", *(math.degrees(value) for value in (rotation.x, rotation.y, rotation.z)))
+
+
+def _straight_solver(cmds, joints, helpers, target, pole, side):
+    """Solve the elbow triangle without asking the native RP solver to infer a rest plane."""
+    nodes = []
+
+    def create(kind, suffix):
+        node = cmds.createNode(kind, name=side + "_arm_IK_" + suffix)
+        nodes.append(node)
+        return node
+
+    # Use the same live segment offsets for lengths, aim axes and joint positions.
+    offsets = [cmds.connectionInfo(child + ".translate", sourceFromDestination=True) for child in helpers[1:]]
+    references = []
+    for helper, part, offset in zip(helpers, ("upper", "lower"), (None, offsets[0])):
+        parent = cmds.listRelatives(helper, parent=True, fullPath=True)[0]
+        ref = cmds.createNode("transform", name=side + "_arm_IK_" + part + "Rest", parent=parent)
+        if offset:
+            cmds.connectAttr(offset, ref + ".translate")
+        else:
+            cmds.setAttr(ref + ".translate", *cmds.getAttr(helper + ".translate")[0])
+        references.append(ref)
+    _match_straight_references(cmds, references, joints)
+    def position(node, name):
+        decompose = create("decomposeMatrix", name)
+        cmds.connectAttr(node + ".worldMatrix[0]", decompose + ".inputMatrix")
+        return "<<" + ", ".join(decompose + ".outputTranslate" + axis for axis in "XYZ") + ">>"
+
+    shoulder_position = position(references[0], "origin")
+    target_position = position(target, "targetPosition")
+    pole_position = position(pole, "polePosition")
+    lengths = []
+    for offset in offsets:
+        length = create("distanceBetween", "length")
+        cmds.connectAttr(offset, length + ".point1")
+        lengths.append(length)
+    goal = create("composeMatrix", "elbowGoal")
+
+    # Project the pole into the bend plane. Clamp distances at either end of
+    # the reachable interval, including the equal-length, fully folded pose.
+    expression = f"""
+vector $s = {shoulder_position};
+vector $t = {target_position} - $s;
+vector $p = {pole_position} - $s;
+float $a = {lengths[0]}.distance, $b = {lengths[1]}.distance;
+float $len = mag($t);
+vector $axis = <<1,0,0>>;
+if ($len > 1e-12) $axis = unit($t);
+vector $bend = $p - dot($p, $axis) * $axis;
+if (mag($bend) < 1e-12) {{
+    vector $alt = <<0,1,0>>;
+    if (abs($axis.y) > 0.9) $alt = <<0,0,1>>;
+    $bend = $alt - dot($alt, $axis) * $axis;
+}}
+float $d = clamp(abs($a - $b), $a + $b, $len);
+float $x = 0;
+if ($d > 1e-12) $x = clamp(-$a, $a, 0.5 * ($d + ($a - $b) * ($a + $b) / $d));
+vector $e = $s + $x * $axis + sqrt(max(0, ($a - $x) * ($a + $x))) * unit($bend);
+{goal}.inputTranslateX = $e.x;
+{goal}.inputTranslateY = $e.y;
+{goal}.inputTranslateZ = $e.z;
+"""
+    nodes.append(cmds.expression(string=expression, name=side + "_arm_IK_triangle",
+                                 alwaysEvaluate=False, unitConversion="none"))
+    for ref, helper, offset, world_goal in zip(references, helpers, offsets,
+                                               (goal + ".outputMatrix", target + ".worldMatrix[0]")):
+        # Work in parent space so a torso rotation carries the FK rest roll.
+        parent = cmds.listRelatives(helper, parent=True, fullPath=True)[0]
+        local = create("multMatrix", "localGoal")
+        cmds.connectAttr(world_goal, local + ".matrixIn[0]")
+        cmds.connectAttr(parent + ".worldInverseMatrix[0]", local + ".matrixIn[1]")
+        aim = create("aimMatrix", "aim")
+        cmds.connectAttr(ref + ".matrix", aim + ".inputMatrix")
+        cmds.connectAttr(offset, aim + ".primaryInputAxis")
+        cmds.connectAttr(local + ".matrixSum", aim + ".primaryTargetMatrix")
+        rotation = create("decomposeMatrix", "aimRotation")
+        cmds.connectAttr(aim + ".outputMatrix", rotation + ".inputMatrix")
+        cmds.setAttr(rotation + ".inputRotateOrder", cmds.getAttr(helper + ".rotateOrder"))
+        for attr in ("jointOrient", "rotateAxis"):
+            cmds.setAttr(helper + "." + attr, 0, 0, 0)
+        cmds.connectAttr(rotation + ".outputRotate", helper + ".rotate")
+    return references, nodes
 
 
 def _straight_pole_direction(cmds, joint, axis):
