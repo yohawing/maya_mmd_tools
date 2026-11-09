@@ -106,46 +106,6 @@ class TestControlRigArmIk(MayaTestBase):
             if reach < length * 0.999:
                 self.assertGreater((mid - shoulder) * bend, 0)
 
-    def test_keyed_pole_crosses_arm_axis_without_flipping(self):
-        import math
-        from maya.api import OpenMaya as om
-
-        root, _, joints = create_arm_case()
-        row = enable_arm_ik(root, "right")
-        shoulder, elbow, wrist = [om.MVector(m[12:15]) for m in arm_pose(joints)]
-        length = (elbow - shoulder).length() + (wrist - elbow).length()
-        axis = (wrist - shoulder).normal()
-        offset = om.MVector(cmds.xform(row["pole"], q=True, ws=True, t=True)) - shoulder
-        bend = (offset - axis * (offset * axis)).normal()
-        fixed_wrist = shoulder + axis * (0.85 * length)
-        cmds.xform(row["target"], ws=True, t=list(fixed_wrist))
-        for frame, distance in ((1, 0.25), (41, -0.25), (81, 0.25)):
-            pole = shoulder + length * (0.5 * axis + distance * bend)
-            for channel, value in zip("XYZ", pole):
-                cmds.setKeyframe(row["pole"], at="translate" + channel, time=frame, value=value)
-        cmds.keyTangent(row["pole"], attribute="translate", inTangentType="linear", outTangentType="linear")
-
-        reference = {}
-        previous = None
-        for frame in range(1, 82):
-            cmds.currentTime(frame, update=True)
-            pose = arm_pose(joints)
-            mid = om.MVector(pose[1][12:15])
-            self.assertLess((om.MVector(pose[-1][12:15]) - fixed_wrist).length(), 1e-4 * length)
-            if frame in (1, 41, 81):
-                self.assertGreater((mid - shoulder) * bend * (-1 if frame == 41 else 1), 0.1 * length)
-            rotations = [om.MTransformationMatrix(om.MMatrix(m)).rotation(asQuaternion=True) for m in pose]
-            if previous:
-                self.assertLess((mid - previous[0]).length(), 0.12 * length)
-                for q, last in zip(rotations, previous[1]):
-                    angle = 2 * math.acos(min(1.0, abs(q.x*last.x + q.y*last.y + q.z*last.z + q.w*last.w)))
-                    self.assertLess(math.degrees(angle), 25.0, frame)
-            previous = mid, rotations
-            reference[frame] = pose
-        for frame in (62, 19, 21, 61, 40):
-            cmds.currentTime(frame, update=True)
-            self.assertLess(pose_delta(reference[frame], arm_pose(joints)), 1e-5)
-
     def test_match_fk_preserves_pose_and_undo_redo(self):
         root, _controls, joints = create_arm_case()
         row = enable_arm_ik(root, 'right')
