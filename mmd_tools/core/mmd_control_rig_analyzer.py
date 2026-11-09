@@ -225,8 +225,6 @@ _MVP_ROLE_DEFINITIONS = (
     _RoleDefinition("master", ("全ての親",), fallback_model_root=True),
     _RoleDefinition("center", ("センター",)),
     _RoleDefinition("groove", ("グルーブ",), fallback_role="center"),
-    _RoleDefinition("left_foot_ik", ("左足IK",), requires_ik_solver=True),
-    _RoleDefinition("right_foot_ik", ("右足IK",), requires_ik_solver=True),
 )
 _MVP_ROLE_NAMES = frozenset(definition.role for definition in _MVP_ROLE_DEFINITIONS)
 
@@ -248,6 +246,8 @@ _FINGER_ROLE_DEFINITIONS = tuple(
 )
 
 _OPTIONAL_FK_ROLE_DEFINITIONS = (
+    _RoleDefinition("left_foot_ik", ("左足IK",), requires_ik_solver=True),
+    _RoleDefinition("right_foot_ik", ("右足IK",), requires_ik_solver=True),
     _RoleDefinition("waist", ("腰",)),
     _RoleDefinition("left_foot_ik_parent", ("左足IK親",)),
     _RoleDefinition("right_foot_ik_parent", ("右足IK親",)),

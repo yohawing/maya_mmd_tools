@@ -1323,7 +1323,10 @@ class TestMmdControlRigAnalyzer(unittest.TestCase):
         self.assertEqual(left.status, STATUS_BLOCKED)
         self.assertIn("duplicate MMD bone candidates", left.warnings[0])
         self.assertIn("no owned mmdCcdIk solver", left.blockers[0])
-        self.assertFalse(spec.can_build_mvp)
+        self.assertTrue(spec.can_build_mvp)
+        self.assertEqual(spec.roles_by_name["right_foot_ik"].status, STATUS_READY)
+        self.assertFalse(_should_build_role_control(left))
+        self.assertTrue(_should_build_role_control(spec.roles_by_name["right_foot_ik"]))
         self.assertEqual(spec.to_dict()["schema"], "mmd_tools.mmd_control_rig_spec")
 
 

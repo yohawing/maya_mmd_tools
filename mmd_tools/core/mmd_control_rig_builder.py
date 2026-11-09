@@ -34,6 +34,7 @@ from mmd_tools.core.mmd_control_rig_analyzer import (
     MmdControlRigRoleBinding,
     MmdControlRigSpec,
     STATUS_FALLBACK,
+    STATUS_READY,
     analyze_mmd_control_rig,
 )
 from mmd_tools.core.mmd_control_rig_channels import (
@@ -1538,7 +1539,7 @@ def _should_build_role_control(role_binding: MmdControlRigRoleBinding) -> bool:
         return False
     if role_binding.status == STATUS_FALLBACK:
         return role_binding.fallback == "model_root"
-    return True
+    return role_binding.status == STATUS_READY
 
 
 def _control_group_parent(spec: MmdControlRigSpec, root: str) -> Optional[str]:
