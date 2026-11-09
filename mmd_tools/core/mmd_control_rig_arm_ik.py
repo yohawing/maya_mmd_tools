@@ -718,7 +718,7 @@ def _depends_on_solved_arm(cmds, source_plug, solved):
         if cmds.objectType(node, isAType="transform"):
             if attr in ("rotate", "translate"):
                 inputs = [plug] + [plug + axis for axis in "XYZ"]
-            elif attr in ("rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"):
+            elif attr in ("rotateOrder", "rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"):
                 inputs = [plug]
             else:
                 # Matrix and other transform outputs may include parent motion.

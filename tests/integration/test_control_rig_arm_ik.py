@@ -247,6 +247,8 @@ class TestControlRigArmIk(MayaTestBase):
                                     twist_driver + ".sourceRotateZ")
                 for frame, value in ((1, 5), (15, 30)):
                     cmds.setKeyframe(twist_driver + ".sourceRotateZ", time=frame, value=value)
+            else:
+                cmds.connectAttr(twist + ".rotateOrder", twist_driver + ".rotateOrder")
             cmds.connectAttr(twist_driver + ".outputRotate", twist + ".rotate", force=True)
         if route == "separate":
             cmds.connectAttr(morph + ".outputRotate", joints[1] + ".rotate", force=True)
