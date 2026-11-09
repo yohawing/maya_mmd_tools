@@ -830,10 +830,11 @@ def _innermost_rotation_base(cmds, plug: str) -> str:
 
 def rotation_composer_source(cmds, destination: str) -> Optional[str]:
     """Find one supported composer driving the complete XYZ compound."""
-    sources = cmds.listConnections(destination, source=True, destination=False, plugs=True) or []
-    if not sources:
+    # Maya can return no connection on the compound when XYZ are wired separately.
+    source = cmds.connectionInfo(destination + "X", sourceFromDestination=True)
+    if not source:
         return None
-    node = sources[0].partition(".")[0]
+    node = source.partition(".")[0]
     if cmds.nodeType(node) not in {"mmdAppend", "mmdBoneMorphAccum"}:
         return None
     output = node + ".outputRotate"

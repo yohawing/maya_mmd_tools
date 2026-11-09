@@ -223,7 +223,11 @@ class TestControlRigArmIk(MayaTestBase):
         else:
             inner, outer = (morph, append) if route == "morph_then_append" else (append, morph)
             cmds.connectAttr(inner + ".outputRotate", outer + ".baseRotate")
-        cmds.connectAttr(outer + ".outputRotate", joints[0] + ".rotate", force=True)
+        if route == "separate":
+            for axis in "XYZ":
+                cmds.connectAttr(outer + ".outputRotate" + axis, joints[0] + ".rotate" + axis, force=True)
+        else:
+            cmds.connectAttr(outer + ".outputRotate", joints[0] + ".rotate", force=True)
         build_mmd_control_rig(root)
         enter_mmd_control_rig_edit(root)
         cmds.currentTime(5, update=True)
