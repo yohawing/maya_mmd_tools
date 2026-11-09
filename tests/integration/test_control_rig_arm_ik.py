@@ -332,6 +332,17 @@ class TestControlRigArmIk(MayaTestBase):
                 enable_arm_ik(root, "right")
             self.assertEqual(snapshot(), before)
 
+            # A sibling twist under the solved arm can supply its local rotation.
+            sibling = cmds.createNode("joint", parent=by_name["右腕"], name="independentTwist")
+            cmds.connectAttr(sibling + ".rotate", append + ".sourceRotate", force=True)
+            arm = [by_name[name] for name in ("右腕", "右ひじ", "右手首")]
+            before_pose = arm_pose(arm)
+            row = enable_arm_ik(root, "right")
+            self.assertLess(pose_delta(before_pose, arm_pose(arm)), 1e-4)
+            target = move_target(row, arm)
+            self.assertLess(max(abs(a - b) for a, b in zip(target, arm_pose(arm)[-1][12:15])), 1e-4)
+
+
     def test_custom_static_intermediate_accepts_then_rejects_append_route_change(self):
         from mmd_tools.io.mmd_importer import import_mmd_file
         root = import_mmd_file(str(ROOT / "tests/data/mmt_test_model.pmx"), options={

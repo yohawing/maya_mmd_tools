@@ -703,6 +703,38 @@ def _create_segment_offsets(cmds, joints, helpers, side, segments):
     return nodes
 
 
+def _depends_on_solved_arm(cmds, source_plug, solved):
+    """A local rotation input follows its channel drivers, not its DAG parent."""
+    pending = [source_plug]
+    visited = set()
+    while pending:
+        plug = pending.pop()
+        if plug in visited:
+            continue
+        visited.add(plug)
+        node, attr = plug.split(".", 1)
+        if _uuid(cmds, node) in solved:
+            return True
+        if cmds.objectType(node, isAType="transform"):
+            if attr in ("rotate", "translate"):
+                inputs = [plug] + [plug + axis for axis in "XYZ"]
+            elif attr in ("rotateX", "rotateY", "rotateZ", "translateX", "translateY", "translateZ"):
+                inputs = [plug]
+            else:
+                # Matrix and other transform outputs may include parent motion.
+                upstream = cmds.listHistory(node, allConnections=True) or []
+                if solved.intersection(cmds.ls(upstream, uuid=True) or []):
+                    return True
+                continue
+            for channel in inputs:
+                source = cmds.connectionInfo(channel, sourceFromDestination=True)
+                if source:
+                    pending.append(source)
+        else:
+            pending.extend(cmds.listConnections(node, source=True, destination=False, plugs=True) or [])
+    return False
+
+
 def _segment_intermediates(cmds, metadata, joints):
     """Check current intermediate routes, including bones without a named control role."""
     from .mmd_control_rig_analyzer import analyze_mmd_control_rig
@@ -729,11 +761,8 @@ def _segment_intermediates(cmds, metadata, joints):
                                                  for edge in current.incoming)):
                 kind = "direct_channel"
             if kind in {"append_base", "bone_morph_base"}:
-                for edge in current.incoming:
-                    source = edge.source_plug.split(".", 1)[0]
-                    upstream = cmds.listHistory(source, allConnections=True) or []
-                    if solved.intersection(cmds.ls(upstream, uuid=True) or []):
-                        raise MmdControlRigBuildError("arm IK intermediate depends on a solved arm rotation: " + parent)
+                if any(_depends_on_solved_arm(cmds, edge.source_plug, solved) for edge in current.incoming):
+                    raise MmdControlRigBuildError("arm IK intermediate depends on a solved arm rotation: " + parent)
                 driven.append(uuid)
             elif kind != "direct_channel" or (binding and binding["inputKind"] != kind):
                 raise MmdControlRigBuildError("arm IK unsupported intermediate bone route: " + parent)
