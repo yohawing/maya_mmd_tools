@@ -248,10 +248,12 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         cmds.xform(
             pole, ws=True, translation=list(elbow + bend.normal() * ((elbow - shoulder).length() + (wrist - elbow).length()))
         )
+        guide, pole_nodes = _pole_guide(cmds, anchor, target, pole, side, positions, bend)
+        segment_nodes.extend(pole_nodes)
         references = []
         handle = None
         if straight:
-            references, extra = _straight_solver(cmds, joints, helpers, target, pole, side)
+            references, extra = _straight_solver(cmds, joints, helpers, target, guide, side)
             segment_nodes.extend(extra)
         else:
             cmds.joint(helpers[0], edit=True, setPreferredAngles=True, children=True)
@@ -259,7 +261,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                 startJoint=helpers[0], endEffector=helpers[-1], solver="ikRPsolver", name=side + "_arm_IK_handle"
             )
             cmds.parent(handle, target, absolute=True)
-            cmds.poleVectorConstraint(pole, handle)
+            cmds.poleVectorConstraint(guide, handle)
             cmds.setAttr(handle + ".visibility", False)
         cmds.orientConstraint(target, helpers[-1], maintainOffset=False)
         cmds.setAttr(helpers[0] + ".visibility", False)
@@ -351,6 +353,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             "static": static,
             "targetUuid": _uuid(cmds, target),
             "poleUuid": _uuid(cmds, pole),
+            "poleGuideUuid": _uuid(cmds, guide),
             "helperUuids": [_uuid(cmds, node) for node in helpers],
             "jointUuids": [_uuid(cmds, node) for node in joints],
         }
@@ -444,18 +447,28 @@ def _reenable(cmds, root, metadata, side):
         pole_matrix = cmds.xform(pole, q=True, ws=True, matrix=True)
         pole_matrix[12:15] = list(elbow + bend.normal() * ((elbow - shoulder).length() + (wrist - elbow).length()))
         _match_world_pose(cmds, pole, pole_matrix)
+        if row.get("poleGuideUuid"):
+            guide = _node(cmds, row["poleGuideUuid"])
+            frame = cmds.listRelatives(guide, parent=True, fullPath=True)[0]
+            _match_pole_frame(cmds, frame, positions, bend)
+        else:
+            # Old saved rigs connect the visible pole directly to the solver.
+            anchor = cmds.listRelatives(helper[0], parent=True, fullPath=True)[0]
+            consumers = cmds.listConnections(pole, source=False, destination=True, connections=True, plugs=True) or []
+            guide, extra = _pole_guide(cmds, anchor, target, pole, side, positions, bend)
+            for src, dst in zip(consumers[::2], consumers[1::2]):
+                dest = dst.split(".", 1)[0]
+                if (_uuid(cmds, dest) in row["nodes"]
+                        and cmds.nodeType(dest) in ("poleVectorConstraint", "decomposeMatrix")):
+                    cmds.connectAttr(guide + "." + src.split(".", 1)[1], dst, force=True)
+            row["poleGuideUuid"] = _uuid(cmds, guide)
+            _register_solver_nodes(cmds, metadata, row, [guide, cmds.listRelatives(guide, parent=True)[0]] + extra)
         if references:
             _match_straight_references(cmds, references, joints)
         elif straight:
-            references, extra = _straight_solver(cmds, joints, helper, target, pole, side)
+            references, extra = _straight_solver(cmds, joints, helper, target, guide, side)
             row["straightReferenceUuids"] = [_uuid(cmds, node) for node in references]
-            for node in references + extra:
-                uid = _uuid(cmds, node)
-                row["nodes"].append(uid)
-                metadata["nodes"].append({"uuid": uid, "name": node})
-                if not cmds.objectType(node, isAType="dagNode"):
-                    metadata["helperNodes"].append(uid)
-            row["graph"] = _graph_snapshot(cmds, row)
+            _register_solver_nodes(cmds, metadata, row, references + extra)
         else:
             cmds.joint(helper[0], edit=True, setPreferredAngles=True, children=True)
             cmds.setAttr(handle + ".ikBlend", 1)
@@ -467,6 +480,7 @@ def _reenable(cmds, root, metadata, side):
             cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
         if driven and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
             raise MmdControlRigBuildError("arm IK intermediate or contribution depends on a solved arm rotation")
+        row["graph"] = _graph_snapshot(cmds, row)
         row["inputs"] = fresh
         row["active"] = True
         _write_metadata(cmds, root, metadata)
@@ -546,6 +560,90 @@ def _bend_plane(cmds, joint, shoulder, elbow, wrist):
     if bend.length() < axis.length() * 1e-10:
         bend = _straight_pole_direction(cmds, joint, axis)
     return bend, straight
+
+
+def _register_solver_nodes(cmds, metadata, row, nodes):
+    for node in nodes:
+        uid = _uuid(cmds, node)
+        row["nodes"].append(uid)
+        metadata["nodes"].append({"uuid": uid, "name": node})
+        if not cmds.objectType(node, isAType="dagNode"):
+            metadata["helperNodes"].append(uid)
+
+
+def _match_pole_frame(cmds, frame, positions, bend):
+    shoulder, _, wrist = positions
+    x = (wrist - shoulder).normal()
+    z = (x ^ bend).normal()
+    y = z ^ x
+    cmds.xform(frame, ws=True, matrix=[*x, 0, *y, 0, *z, 0, *shoulder, 1])
+
+
+def _pole_guide(cmds, anchor, target, pole, side, positions, bend):
+    """Filter keyed pole direction near the axis, in the matched shoulder space."""
+    frame = cmds.createNode("transform", name=side + "_poleFrame", parent=anchor)
+    _match_pole_frame(cmds, frame, positions, bend)
+    guide = cmds.createNode("transform", name=side + "_poleGuide", parent=frame)
+    nodes = []
+    vectors = []
+    for control in (target, pole):
+        # Both controls are parented to the locked identity world-space IK group.
+        point = cmds.createNode("pointMatrixMult", name=side + "_poleLocal")
+        cmds.connectAttr(control + ".translate", point + ".inPoint")
+        cmds.connectAttr(frame + ".worldInverseMatrix[0]", point + ".inMatrix")
+        nodes.append(point)
+        vectors.append("<<" + ",".join(point + ".output" + axis for axis in "XYZ") + ">>")
+    shoulder, elbow, wrist = positions
+    # A scale-relative transition; outside this cylinder both solvers see the actual pole.
+    radius = 0.15 * ((elbow - shoulder).length() + (wrist - elbow).length())
+    # Sample only the pole angle. Unwrapping before averaging keeps a circular
+    # pole orbit continuous across +/-pi and spreads an axial crossing over frames.
+    phase = cmds.createNode("frameCache", name=side + "_polePhase")
+    basis = f"""
+vector $target = {vectors[0]}, $pole = {vectors[1]};
+vector $axis = <<1,0,0>>;
+if (mag($target) > 1e-12) $axis = unit($target);
+vector $offset = $pole - dot($pole,$axis)*$axis;
+// Swing the matched Y axis with the target direction, keeping its rest roll.
+vector $ref = <<0,1,0>>;
+if (1+$axis.x > 1e-8) $ref -= ($axis.y/(1+$axis.x))*($axis+<<1,0,0>>);
+vector $normal = unit(cross($axis,$ref));
+$ref = cross($normal,$axis);
+"""
+    angle = basis + f"""
+float $x = dot($offset,$ref), $y = dot($offset,$normal);
+if (abs($y) < 1e-9*{radius:.17g}) $y = 0;
+{phase}.stream = (mag($offset) > 1e-9*{radius:.17g}) ? atan2($y,$x) : 0;
+"""
+    nodes.extend((phase, cmds.expression(string=angle, name=side + "_poleAzimuth",
+                                         alwaysEvaluate=False, unitConversion="none")))
+    half_window = 8
+    samples = ([f"{phase}.past[{i}]" for i in range(half_window, 0, -1)] + [phase + ".past[0]"]
+               + [f"{phase}.future[{i}]" for i in range(1, half_window + 1)])
+    expr = basis + f"""
+float $r = mag($offset);
+if ($r < {radius:.17g}) {{
+    float $samples[] = {{{", ".join(samples)}}};
+    float $phase = $samples[0], $sum = $phase, $center = 0;
+    for ($i = 1; $i < size($samples); $i++) {{
+        float $step = $samples[$i] - $samples[$i-1];
+        if ($step > 3.14159266) $step -= 6.28318530718;
+        if ($step < -3.14159266) $step += 6.28318530718;
+        $phase += $step;
+        if ($i == {half_window}) $center = $phase;
+        $sum += $phase;
+    }}
+    float $t = $r/{radius:.17g};
+    float $angle = $center + (1-$t*$t*(3-2*$t))*($sum/size($samples)-$center);
+    $pole = dot($pole,$axis)*$axis + {radius:.17g}*(cos($angle)*$ref + sin($angle)*$normal);
+}}
+{guide}.translateX = $pole.x;
+{guide}.translateY = $pole.y;
+{guide}.translateZ = $pole.z;
+"""
+    nodes.append(cmds.expression(string=expr, name=side + "_poleDirection",
+                                 alwaysEvaluate=False, unitConversion="none"))
+    return guide, nodes
 
 
 def _match_straight_references(cmds, references, joints):
