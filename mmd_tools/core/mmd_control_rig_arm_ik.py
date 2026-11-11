@@ -415,20 +415,13 @@ def _reenable(cmds, root, metadata, side):
     from maya.api import OpenMaya as om
 
     row = validate_arm_ik(cmds, metadata, side)
+    if row.get("poleGuideUuid"):
+        raise MmdControlRigBuildError(
+            "arm IK with a temporal pole filter is no longer supported; "
+            "restore the MMD rig and rebuild the Control Rig"
+        )
     joints = [_node(cmds, uuid) for uuid in row["jointUuids"]]
     _, driven = _segment_intermediates(cmds, metadata, joints)
-    if row.get("poleGuideUuid"):
-        # Scenes saved with the temporal pole filter keep their owned nodes
-        # until rig removal. Reconnect only its validated solver consumers.
-        with _transaction(cmds, "Restore Direct Arm IK Pole"):
-            pole = _node(cmds, row["poleUuid"])
-            guide = row["graph"][row.pop("poleGuideUuid")]
-            for source, destination in guide["outgoing"]:
-                consumer = row["graph"].get(destination["nodeUuid"], {})
-                if consumer.get("type") in ("poleVectorConstraint", "decomposeMatrix"):
-                    cmds.connectAttr(pole + "." + source["attribute"], resolve_arm_plug(cmds, destination), force=True)
-            row["graph"] = _graph_snapshot(cmds, row)
-            _write_metadata(cmds, root, metadata)
     if row["active"]:
         return inspect_arm_ik(root, side, cmds_module=cmds)
     helper = [_node(cmds, uuid) for uuid in row["helperUuids"]]

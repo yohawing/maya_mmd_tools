@@ -456,6 +456,26 @@ class TestControlRigArmIk(MayaTestBase):
             self.assertTrue(cmds.isConnected(source, destination))
             self.assertEqual(read_mmd_control_rig_metadata(root), metadata)
 
+    def test_retired_pole_filter_requires_rebuild_without_rewiring_and_can_restore(self):
+        """Retired experimental rigs retain the normal restore/delete path."""
+        from mmd_tools.core.mmd_control_rig_builder import _write_metadata, remove_mmd_control_rig
+        from mmd_tools.core.mmd_control_rig_motion import restore_mmd_control_rig_attached
+        root, _controls, joints = create_arm_case()
+        row = enable_arm_ik(root, 'right')
+        metadata = read_mmd_control_rig_metadata(root)
+        # Presence of this saved schema marker is sufficient to require rebuild.
+        metadata['armIk']['right']['poleGuideUuid'] = row['poleUuid']
+        _write_metadata(cmds, root, metadata)
+        before = arm_pose(joints)
+        with self.assertRaisesRegex(MmdControlRigBuildError, 'temporal pole filter'):
+            enable_arm_ik(root, 'right')
+        self.assertEqual(read_mmd_control_rig_metadata(root), metadata)
+        self.assertLess(pose_delta(before, arm_pose(joints)), 1e-8)
+        disable_arm_ik(root, 'right')
+        restore_mmd_control_rig_attached(root)
+        remove_mmd_control_rig(root)
+        self.assertTrue(all(not cmds.ls(uid) for uid in row['nodes']))
+
     def test_all_created_constraints_are_owned_and_removed(self):
         from mmd_tools.core.mmd_control_rig_motion import restore_mmd_control_rig_attached
         from mmd_tools.core.mmd_control_rig_builder import remove_mmd_control_rig
