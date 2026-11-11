@@ -49,9 +49,22 @@ def move_target(row, joints):
     shoulder = cmds.xform(joints[0], query=True, worldSpace=True, translation=True)
     wrist = cmds.xform(row['target'], query=True, worldSpace=True, translation=True)
     target = [w+(s-w)*.1 for s,w in zip(shoulder,wrist)]
+    # CCD takes an authored upper-arm pose; give an extended arm a bend direction.
+    cmds.rotate(10, 15, 0, row['direction'], relative=True, objectSpace=True)
     cmds.xform(row['target'], worldSpace=True, translation=target)
     cmds.currentTime(cmds.currentTime(query=True), edit=True, update=True)
     return target
+
+
+def ccd_position_tolerance(joints):
+    """Stock MMD CCD stops on direction alignment as well as point distance.
+
+    Its authoring contract is approximate reach, not the former analytic pole
+    solver's exact intersection. Lifecycle/pose and VMD assertions stay strict.
+    """
+    import math
+    points = [cmds.xform(joint, q=True, ws=True, t=True) for joint in joints[:3]]
+    return 0.005 * sum(math.dist(a, b) for a, b in zip(points, points[1:]))
 
 
 class TestControlRigArmIk(MayaTestBase):
@@ -70,9 +83,9 @@ class TestControlRigArmIk(MayaTestBase):
         self.assertLess(pose_delta(before, arm_pose(joints)), 1e-4)
         target = move_target(row, joints)
         actual = cmds.xform(joints[2], query=True, worldSpace=True, translation=True)
-        self.assertLess(max(abs(a-b) for a,b in zip(actual,target)), 1e-4)
+        self.assertLess(max(abs(a-b) for a,b in zip(actual,target)), ccd_position_tolerance(joints))
         elbow = cmds.xform(joints[1], query=True, worldSpace=True, translation=True)
-        cmds.move(0, 0, 1, row['pole'], relative=True, worldSpace=True)
+        cmds.rotate(15, 0, 0, row['direction'], relative=True, objectSpace=True)
         cmds.currentTime(5, edit=True, update=True)
         moved = cmds.xform(joints[1], query=True, worldSpace=True, translation=True)
         self.assertGreater(max(abs(a-b) for a,b in zip(elbow,moved)), 1e-4)
@@ -82,16 +95,17 @@ class TestControlRigArmIk(MayaTestBase):
         self.assertEqual(cmds.connectionInfo(controls[1]+'.rotateZ', sourceFromDestination=True), writer)
         self.assertEqual(curve_snapshot(), curves)
 
-    def test_wrist_returns_from_full_extension_in_the_same_bend_plane(self):
+    def test_ccd_returns_from_reach_limit_with_authored_upper_arm_direction(self):
         from maya.api import OpenMaya as om
 
         root, _, joints = create_arm_case()
         row = enable_arm_ik(root, "right")
+        cmds.rotate(10, 15, 0, row['direction'], relative=True, objectSpace=True)
         shoulder, elbow, wrist = [om.MVector(m[12:15]) for m in arm_pose(joints)]
         axis = (wrist - shoulder).normal()
         upper, lower = (elbow - shoulder).length(), (wrist - elbow).length()
         length = upper + lower
-        bend = (elbow - shoulder - axis * ((elbow - shoulder) * axis)).normal()
+        bend = None
         for frame, reach in ((1, 0.9), (21, 1.0), (41, 1.1), (61, 1.0), (81, 0.9)):
             for channel, value in zip("XYZ", shoulder + axis * (length * reach)):
                 cmds.setKeyframe(row["target"], at="translate" + channel, time=frame, value=value)
@@ -100,10 +114,15 @@ class TestControlRigArmIk(MayaTestBase):
             cmds.currentTime(frame, update=True)
             _, mid, end = [om.MVector(m[12:15]) for m in arm_pose(joints)]
             reach = (om.MVector(cmds.xform(row["target"], q=True, ws=True, t=True)) - shoulder).length()
-            self.assertLess((end - shoulder - axis * min(reach, length)).length(), 1e-4 * length)
+            # Near the reach boundary, stock CCD does not promise the analytic
+            # solver's exact closest point. Require tracking again after return.
+            if reach < length * 0.98:
+                self.assertLess((end - shoulder - axis * reach).length(), ccd_position_tolerance(joints))
             self.assertAlmostEqual((mid - shoulder).length(), upper, delta=1e-5 * length)
             self.assertAlmostEqual((end - mid).length(), lower, delta=1e-5 * length)
             if reach < length * 0.999:
+                if bend is None:
+                    bend = (mid - shoulder - axis * ((mid - shoulder) * axis)).normal()
                 self.assertGreater((mid - shoulder) * bend, 0)
 
     def test_match_fk_preserves_pose_and_undo_redo(self):
@@ -122,6 +141,23 @@ class TestControlRigArmIk(MayaTestBase):
         self.assertFalse(inspect_arm_ik(root, 'right')['active'])
         self.assertLess(pose_delta(expected, arm_pose(joints)), 1e-4)
 
+    def test_straight_ccd_uses_upper_arm_rotation_to_start_bending(self):
+        """A collinear inward target needs an authored bend input in stock CCD."""
+        import math
+        root, controls, joints = create_arm_case(straight=True)
+        cmds.setKeyframe(controls[1] + '.rotateZ', time=5, value=0)
+        cmds.currentTime(5, update=True)
+        before = arm_pose(joints)
+        row = enable_arm_ik(root, 'right')
+        self.assertEqual(cmds.nodeType(cmds.ls(row['solverUuid'])[0]), 'mmdCcdIk')
+        self.assertLess(pose_delta(before, arm_pose(joints)), 1e-6)
+        shoulder, wrist = before[0][12:15], before[2][12:15]
+        target = [a + .8 * (b - a) for a, b in zip(shoulder, wrist)]
+        cmds.xform(row['target'], ws=True, translation=target)
+        self.assertGreater(math.dist(arm_pose(joints)[2][12:15], target), .1 * math.dist(shoulder, wrist))
+        cmds.rotate(10, 15, 0, row['direction'], relative=True, objectSpace=True)
+        self.assertLess(math.dist(arm_pose(joints)[2][12:15], target), ccd_position_tolerance(joints))
+
     def test_straight_fk_and_animated_target_rematch_preserve_other_keys(self):
         root, controls, joints = create_arm_case()
         cmds.cutKey(controls[1]+'.rotateZ', clear=True)
@@ -130,9 +166,9 @@ class TestControlRigArmIk(MayaTestBase):
         straight = arm_pose(joints)
         row = enable_arm_ik(root, 'right')
         self.assertLess(pose_delta(straight, arm_pose(joints)), 1e-4)
-        for node in (row['target'], row['pole']):
+        for node, channel in ((row['target'], 'translate'), (row['direction'], 'rotate')):
             for frame in (1, 10):
-                cmds.setKeyframe(node, attribute='translate', time=frame)
+                cmds.setKeyframe(node, attribute=channel, time=frame)
         target = move_target(row, joints)
         for axis, value in zip('XYZ', target):
             cmds.setKeyframe(row['target'], attribute='translate'+axis, time=5, value=value)
@@ -143,9 +179,10 @@ class TestControlRigArmIk(MayaTestBase):
         self.assertLess(pose_delta(expected, arm_pose(joints)), 1e-4, 'animated target match FK')
 
         def endpoints():
-            return {(node, axis, frame): cmds.keyframe(node, attribute='translate'+axis,
+            return {(node, axis, frame): cmds.keyframe(node, attribute=channel+axis,
                     query=True, time=(frame, frame), valueChange=True)
-                    for node in (row['target'], row['pole']) for axis in 'XYZ' for frame in (1, 10)}
+                    for node, channel in ((row['target'], 'translate'), (row['direction'], 'rotate'))
+                    for axis in 'XYZ' for frame in (1, 10)}
 
         original_keys = endpoints()
         enable_arm_ik(root, 'right')
@@ -166,7 +203,7 @@ class TestControlRigArmIk(MayaTestBase):
                 row = enable_arm_ik(root, 'right')
                 self.assertLess(pose_delta(before, arm_pose(joints)), 1e-6)
                 target = move_target(row, joints)
-                self.assertLess(max(abs(a-b) for a,b in zip(target, arm_pose(joints)[2][12:15])), 1e-5)
+                self.assertLess(max(abs(a-b) for a,b in zip(target, arm_pose(joints)[2][12:15])), ccd_position_tolerance(joints))
                 moved = arm_pose(joints)
                 scene = self.get_temp_filename('extended_arm.ma')
                 cmds.file(rename=scene)
@@ -220,7 +257,7 @@ class TestControlRigArmIk(MayaTestBase):
                     frames[frame] = arm_pose(joints)
                     self.assertLess(pose_delta(frames[frame], arm_pose(helpers)), 1e-4, "helper frame " + str(frame))
                     wrist = cmds.xform(joints[-1], query=True, worldSpace=True, translation=True)
-                    self.assertLess(max(abs(a-b) for a,b in zip(target, wrist)), 1e-4, "target frame " + str(frame))
+                    self.assertLess(max(abs(a-b) for a,b in zip(target, wrist)), ccd_position_tolerance(joints), "target frame " + str(frame))
                 self.assertEqual(set(cmds.cycleCheck(all=True, list=True) or []) - cycles, set())
                 with tempfile.TemporaryDirectory() as directory:
                     scene = str(Path(directory) / "twisted_arm.ma")
@@ -305,7 +342,7 @@ class TestControlRigArmIk(MayaTestBase):
         for time in range(1, 16):
             cmds.currentTime(time, update=True)
             expected[time] = arm_pose(joints + twists)
-            self.assertLess(max(abs(a-b) for a,b in zip(expected[time][2][12:15], target)), 1e-4)
+            self.assertLess(max(abs(a-b) for a,b in zip(expected[time][2][12:15], target)), ccd_position_tolerance(joints))
         for twist_index in (3, 4):
             self.assertGreater(pose_delta([expected[1][twist_index]], [expected[15][twist_index]]), 1e-3)
         scene = self.get_temp_filename("composed_arm.ma")
@@ -375,7 +412,7 @@ class TestControlRigArmIk(MayaTestBase):
             row = enable_arm_ik(root, "right")
             self.assertLess(pose_delta(before_pose, arm_pose(arm)), 1e-4)
             target = move_target(row, arm)
-            self.assertLess(max(abs(a - b) for a, b in zip(target, arm_pose(arm)[-1][12:15])), 1e-4)
+            self.assertLess(max(abs(a - b) for a, b in zip(target, arm_pose(arm)[-1][12:15])), ccd_position_tolerance(arm))
 
 
     def test_custom_static_intermediate_accepts_then_rejects_append_route_change(self):
@@ -506,7 +543,7 @@ class TestControlRigArmIk(MayaTestBase):
         cmds.currentTime(5, edit=True, update=True)
         target = cmds.xform(row['target'], query=True, worldSpace=True, translation=True)
         wrist = cmds.xform(joints[2], query=True, worldSpace=True, translation=True)
-        self.assertLess(max(abs(a-b) for a,b in zip(target,wrist)), 1e-4)
+        self.assertLess(max(abs(a-b) for a,b in zip(target,wrist)), ccd_position_tolerance(joints))
         expected = arm_pose(joints)
         with tempfile.TemporaryDirectory() as directory:
             scene = str(Path(directory)/'arm.ma')
