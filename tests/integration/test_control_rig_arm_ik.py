@@ -95,6 +95,69 @@ class TestControlRigArmIk(MayaTestBase):
         self.assertEqual(cmds.connectionInfo(controls[1]+'.rotateZ', sourceFromDestination=True), writer)
         self.assertEqual(curve_snapshot(), curves)
 
+    def test_auto_twist_uses_input_roll_without_double_upper_rotation(self):
+        from maya.api import OpenMaya as om
+        import math
+        from mmd_tools.core.mmd_control_rig_arm_ik import resolve_arm_plug
+
+        for side in ("left", "right"):
+            with self.subTest(side=side):
+                cmds.file(new=True, force=True)
+                root, _, joints = create_arm_case(side)
+                metadata = read_mmd_control_rig_metadata(root)
+                twists = [cmds.ls(metadata["controls"][side + suffix], long=True)[0]
+                          for suffix in ("_arm_twist", "_wrist_twist")]
+                for control, value in zip(twists, (20, -15)):
+                    cmds.setKeyframe(control + ".rotateZ", time=5, value=value)
+                cmds.currentTime(5, update=True)
+                before = arm_pose(joints)
+                curves = curve_snapshot()
+                row = enable_arm_ik(root, side)
+                self.assertLess(pose_delta(before, arm_pose(joints)), 1e-5)
+                solver = cmds.ls(row["solverUuid"])[0]
+                seed = cmds.getAttr(solver + ".inputRotate[1]")[0]
+                for index, degrees in ((0, 60), (1, 45)):
+                    reference = row["autoTwist"][index]
+                    mult = resolve_arm_plug(cmds, reference["reference"]).split(".")[0]
+                    axis = om.MVector(0, 0, 1) * om.MMatrix(cmds.getAttr(mult + ".matrixIn[0]"))
+                    node = row["direction"] if index == 0 else row["target"]
+                    world = index == 1
+                    original = om.MMatrix(cmds.xform(node, q=True, ws=world, os=not world, matrix=True))
+                    rotated = om.MQuaternion(math.radians(degrees), axis).asMatrix() * original
+                    euler = om.MTransformationMatrix(rotated).rotation()
+                    cmds.xform(node, ws=world, os=not world, rotation=[math.degrees(v) for v in euler])
+                    self.assertAlmostEqual(cmds.getAttr(twists[index] + ".rotateZ"),
+                                           (20, -15)[index] + degrees, delta=1e-4)
+                    if index == 0:
+                        current = cmds.getAttr(solver + ".inputRotate[1]")[0]
+                        self.assertLess(max(abs(a-b) for a,b in zip(seed,current)), 1e-5)
+                    self.assertLess(math.dist(arm_pose(joints)[2][12:15],
+                                             cmds.xform(row["target"], q=True, ws=True, t=True)),
+                                    ccd_position_tolerance(joints))
+                    euler = om.MTransformationMatrix(original).rotation()
+                    cmds.xform(node, ws=world, os=not world, rotation=[math.degrees(v) for v in euler])
+                # At a pure 180-degree swing the projected roll is undefined;
+                # the fallback must keep all evaluated transforms finite.
+                reference = row["autoTwist"][0]
+                mult = resolve_arm_plug(cmds, reference["reference"]).split(".")[0]
+                alignment = om.MMatrix(cmds.getAttr(mult + ".matrixIn[0]"))
+                swing_axis = om.MVector(1, 0, 0) * alignment
+                original = om.MMatrix(cmds.xform(row["direction"], q=True, os=True, matrix=True))
+                swung = om.MQuaternion(math.pi, swing_axis).asMatrix() * original
+                euler = om.MTransformationMatrix(swung).rotation()
+                cmds.xform(row["direction"], os=True, rotation=[math.degrees(v) for v in euler])
+                self.assertTrue(all(math.isfinite(v) for matrix in arm_pose(joints) for v in matrix))
+                self.assertAlmostEqual(cmds.getAttr(twists[0] + ".rotateZ"), 20, delta=1e-4)
+                for control in twists:
+                    for shape in cmds.listRelatives(control, shapes=True, fullPath=True):
+                        self.assertFalse(cmds.getAttr(shape + ".visibility"))
+                disable_arm_ik(root, side)
+                self.assertLess(pose_delta(before, arm_pose(joints)), 1e-5)
+                self.assertEqual(curves, curve_snapshot())
+                for control in twists:
+                    for shape in cmds.listRelatives(control, shapes=True, fullPath=True):
+                        self.assertTrue(cmds.getAttr(shape + ".visibility"))
+
     def test_ccd_returns_from_reach_limit_with_authored_upper_arm_direction(self):
         from maya.api import OpenMaya as om
 

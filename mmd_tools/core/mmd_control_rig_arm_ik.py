@@ -188,7 +188,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                     "value": cmds.getAttr(plug),
                 }
             )
-    previous_cycles = set(cmds.cycleCheck(all=True, list=True) or []) if composers or driven else set()
+    previous_cycles = set(cmds.cycleCheck(all=True, list=True) or [])
     with _transaction(cmds, "Enable Arm IK"):
         group = cmds.createNode("transform", name=side + "_arm_IK", parent=_node(cmds, metadata["controlGroupUuid"]))
         # The wrist is world-space; the upper-arm input follows the shoulder anchor.
@@ -318,7 +318,12 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                     if item["sourceRef"]:
                         cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
                     cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
-        if (composers or driven) and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
+        from .mmd_control_rig_arm_twist import create_auto_twist
+        twist_nodes, twist_inputs, twist_refs, lower_ref, visibility_ref = create_auto_twist(
+            cmds, metadata, side, group, joints, pole, target, solver)
+        converters.extend(twist_nodes)
+        inputs.extend(twist_inputs)
+        if (composers or driven or twist_inputs) and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
             raise MmdControlRigBuildError("arm IK intermediate or contribution depends on a solved arm rotation")
         owned = [
             _uuid(cmds, node)
@@ -341,6 +346,9 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             "helperUuids": [_uuid(cmds, node) for node in helpers],
             "jointUuids": [_uuid(cmds, node) for node in joints],
             "solverUuid": _uuid(cmds, solver),
+            "lowerInputRef": lower_ref,
+            "autoTwist": twist_refs,
+            "twistVisibilityRef": visibility_ref,
         }
         row["graph"] = _graph_snapshot(cmds, row)
         metadata.setdefault("armIk", {})[side] = row
@@ -374,6 +382,9 @@ def disable_arm_ik(model_root, side, *, match_fk=False, cmds_module=None):
             for item in row["inputs"]:
                 cmds.dgdirty(resolve_arm_plug(cmds, item["controlRef"]))
             cmds.currentTime(cmds.currentTime(query=True), update=True)
+        from .mmd_control_rig_arm_twist import release_auto_twist
+        release_auto_twist(cmds, row)
+        row["graph"] = _graph_snapshot(cmds, row)
         row["active"] = False
         _write_metadata(cmds, model_root, metadata)
     return row
@@ -423,10 +434,14 @@ def _reenable(cmds, root, metadata, side):
     with _transaction(cmds, "Enable Arm IK"):
         arm_world, elbow_world = [om.MMatrix(cmds.xform(joint, q=True, ws=True, matrix=True)) for joint in joints[:2]]
         lower = om.MTransformationMatrix(elbow_world * arm_world.inverse()).rotation()
-        lower_input = cmds.connectionInfo(_node(cmds, row["solverUuid"]) + ".inputRotate[2]", sourceFromDestination=True)
+        lower_input = (resolve_arm_plug(cmds, row["lowerInputRef"]) if row.get("lowerInputRef") else
+                       cmds.connectionInfo(_node(cmds, row["solverUuid"]) + ".inputRotate[2]", sourceFromDestination=True))
         cmds.setAttr(lower_input, *[math.degrees(value) for value in lower])
         _match_world_pose(cmds, target, cmds.xform(joints[-1], q=True, ws=True, matrix=True))
         _match_world_pose(cmds, pole, list(arm_world), rotate_only=True)
+        from .mmd_control_rig_arm_twist import rematch_auto_twist, set_twist_controls_visible
+        rematch_auto_twist(cmds, row, fresh)
+        set_twist_controls_visible(cmds, row, False)
         for item in fresh:
             plug = resolve_arm_plug(cmds, item["controlRef"])
             if item["sourceRef"]:
@@ -435,6 +450,7 @@ def _reenable(cmds, root, metadata, side):
         if driven and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
             raise MmdControlRigBuildError("arm IK intermediate or contribution depends on a solved arm rotation")
         row["inputs"] = fresh
+        row["graph"] = _graph_snapshot(cmds, row)
         row["active"] = True
         _write_metadata(cmds, root, metadata)
     return inspect_arm_ik(root, side, cmds_module=cmds)

@@ -1504,7 +1504,11 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
                     samples[control].append((time, float(cmds.getAttr(control))))
         finally:
             cmds.currentTime(current_time, update=True)
-    states = _capture_plug_states(cmds, [control for _, control, _, _ in inputs])
+    twist_plugs = [resolve_arm_plug(cmds, item["baselineRef"])
+                   for item, _, _, _ in inputs if item.get("baselineRef")]
+    twist_plugs.extend(resolve_arm_plug(cmds, arm["twistVisibilityRef"])
+                       for arm in arms if arm.get("twistVisibilityRef"))
+    states = _capture_plug_states(cmds, [control for _, control, _, _ in inputs] + twist_plugs)
     raw_metadata = _raw_metadata(cmds, root)
     created = []
     with _undo_chunk(cmds, "Stage Arm IK Exit"):
@@ -1538,8 +1542,13 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
                              for item in metadata["armIk"][side]["inputs"]]
                     for control in dict.fromkeys(plug.rsplit(".", 1)[0] for plug in plugs):
                         _apply_quaternion_interpolation_to_plugs(cmds, [control + ".rotate" + axis for axis in "XYZ"])
+            from .mmd_control_rig_arm_twist import release_auto_twist
+            from .mmd_control_rig_arm_ik import _graph_snapshot
             for arm in arms:
                 arm["active"] = False
+                if arm.get("autoTwist"):
+                    release_auto_twist(cmds, arm)
+                    arm["graph"] = _graph_snapshot(cmds, arm)
             # These curves are discarded by this context on failure, so the
             # inner transaction need not duplicate them for curve snapshots.
             yield tuple(created)
