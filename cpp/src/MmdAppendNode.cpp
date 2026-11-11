@@ -304,6 +304,7 @@ MObject MmdAppendNode::aSourceJointOrientY;
 MObject MmdAppendNode::aSourceJointOrientZ;
 MObject MmdAppendNode::aSourceMmdLinkQuaternions;
 MObject MmdAppendNode::aSourceMmdLinkIndex;
+MObject MmdAppendNode::aAppendMmdQuaternion;
 MObject MmdAppendNode::aUseTargetBindMatrices;
 MObject MmdAppendNode::aTargetMayaBindWorldMatrix;
 MObject MmdAppendNode::aTargetNoOrientBindWorldMatrix;
@@ -705,6 +706,15 @@ MStatus MmdAppendNode::initialize() {
     markAngle3Output(aAppendRotate, aAppendRotateX, aAppendRotateY, aAppendRotateZ);
     addAttribute(aAppendRotate);
 
+    MFnDoubleArrayData emptyQuaternion;
+    aAppendMmdQuaternion = tAttr.create(
+        "appendMmdQuaternion", "amq", MFnData::kDoubleArray,
+        emptyQuaternion.create(MDoubleArray()), &status);
+    tAttr.setWritable(false);
+    tAttr.setReadable(true);
+    tAttr.setStorable(false);
+    addAttribute(aAppendMmdQuaternion);
+
     // --- attributeAffects ---
     // すべての入力を output に接続
     attributeAffects(aInputTranslateX, aOutputTranslateX);
@@ -764,6 +774,7 @@ MStatus MmdAppendNode::initialize() {
         attributeAffects(input, aAppendRotateX);
         attributeAffects(input, aAppendRotateY);
         attributeAffects(input, aAppendRotateZ);
+        attributeAffects(input, aAppendMmdQuaternion);
     }
 
     return MS::kSuccess;
@@ -789,8 +800,9 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
                            plug == aAppendRotateX ||
                            plug == aAppendRotateY ||
                            plug == aAppendRotateZ);
+    const bool isAppendMmdQuaternion = (plug == aAppendMmdQuaternion);
 
-    if (!isTranslate && !isRotate && !isAppendTranslate && !isAppendRotate) {
+    if (!isTranslate && !isRotate && !isAppendTranslate && !isAppendRotate && !isAppendMmdQuaternion) {
         return MS::kUnknownParameter;
     }
 
@@ -804,7 +816,7 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
     bool affectRot = data.inputValue(aAffectRotation, &status).asBool();
     bool affectTrans = data.inputValue(aAffectTranslation, &status).asBool();
     short schemaMode = data.inputValue(aSchemaMode, &status).asShort();
-    bool autoCompatInputsActive = isAppendTranslate || isAppendRotate ||
+    bool autoCompatInputsActive = isAppendTranslate || isAppendRotate || isAppendMmdQuaternion ||
                                   isVectorNonZero(baseT) || isVectorNonZero(sourceT) ||
                                   isVectorNonZero(baseR) || isVectorNonZero(sourceR) ||
                                   isVectorNonZero(sourceJo) || isVectorNonZero(targetJo) ||
@@ -812,7 +824,7 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
                                   affectTrans || !affectRot;
     bool useCompatSchema = autoCompatInputsActive;
     if (schemaMode == kSchemaModeLegacy) {
-        useCompatSchema = isAppendTranslate || isAppendRotate;
+        useCompatSchema = isAppendTranslate || isAppendRotate || isAppendMmdQuaternion;
     } else if (schemaMode == kSchemaModeCompat) {
         useCompatSchema = true;
     }
@@ -903,6 +915,19 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
             static_cast<double>(outRotation[1]),
             static_cast<double>(outRotation[2]),
             static_cast<double>(outRotation[3]));
+        if (isAppendMmdQuaternion) {
+            MDoubleArray values;
+            if (hasNativeMmdQuaternion) {
+                values.append(grantQuat.x);
+                values.append(grantQuat.y);
+                values.append(grantQuat.z);
+                values.append(grantQuat.w);
+            }
+            MFnDoubleArrayData quaternionData;
+            data.outputValue(aAppendMmdQuaternion).setMObject(quaternionData.create(values));
+            data.setClean(plug);
+            return MS::kSuccess;
+        }
         MEulerRotation appendEuler = grantQuat.asEulerRotation();
         double appendRx = appendEuler.x * 180.0 / kPi;
         double appendRy = appendEuler.y * 180.0 / kPi;

@@ -139,6 +139,10 @@ public:
     static MObject aAppendRotateY;
     static MObject aAppendRotateZ;
 
+    // Native MMD-space grant only (without base animation). Empty for the
+    // legacy Euler path so downstream grants retain their existing semantics.
+    static MObject aAppendMmdQuaternion;
+
 private:
     // double3 compound 作成のヘルパー
     static MObject createDouble3Attribute(

@@ -1042,6 +1042,11 @@ class RigConverter:
                 # MMD runtime uses the source append contribution for non-local append chains.
                 if affect_rotation and source_append_node and not local_append:
                     cmds.connectAttr(f"{source_append_node}.appendRotate", f"{node}.sourceRotate")
+                    # Preserve the native MMD basis across grants. The array is
+                    # empty on legacy sources, leaving the Euler fallback intact.
+                    if cmds.attributeQuery("appendMmdQuaternion", node=source_append_node, exists=True):
+                        cmds.connectAttr(f"{source_append_node}.appendMmdQuaternion", f"{node}.sourceMmdLinkQuaternions")
+                        cmds.setAttr(f"{node}.sourceMmdLinkIndex", 0)
                     source_jo = (0.0, 0.0, 0.0)
                 else:
                     cmds.connectAttr(f"{source_joint}.rotate", f"{node}.sourceRotate")

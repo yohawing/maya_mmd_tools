@@ -261,6 +261,62 @@ class TestMmdAppendJointOrient(MayaTestBase):
         )
         _assert_angles_close(self, actual, expected, msg="large multi-axis JO")
 
+    def test_native_quaternion_survives_chained_grants(self):
+        """IK-derived grants keep their MMD basis through multiple append nodes."""
+        from mmd_tools.converters.rig_converter import RigConverter
+
+        parent = cmds.createNode("joint")
+        cmds.setAttr(parent + ".jointOrient", 21, -13, 32)
+        upstream = cmds.createNode("mmdAppend")
+        if not cmds.attributeQuery("sourceMmdLinkQuaternions", node=upstream, exists=True):
+            self.skipTest("C++ mmdAppend is not loaded")
+        cmds.setAttr(upstream + ".schemaMode", 2)
+        cmds.setAttr(upstream + ".ratio", .7)
+        # An upstream authored rotation must not leak into non-local grants.
+        cmds.setAttr(upstream + ".baseRotate", 17, 23, -11)
+        cmds.setAttr(upstream + ".sourceMmdLinkIndex", 0)
+        nodes = [upstream]
+        ratio = .7
+        targets = []
+        for weight in (.6, -.4):
+            joint = cmds.createNode("joint", parent=parent)
+            cmds.setAttr(joint + ".jointOrient", 17, -11, 23)
+            node = cmds.createNode("mmdAppend")
+            cmds.setAttr(node + ".schemaMode", 2)
+            cmds.setAttr(node + ".ratio", weight)
+            cmds.setAttr(node + ".targetJointOrient", 17, -11, 23)
+            RigConverter._configure_append_bind_space(node, joint)
+            cmds.connectAttr(nodes[-1] + ".appendRotate", node + ".sourceRotate")
+            if cmds.attributeQuery("appendMmdQuaternion", node=nodes[-1], exists=True):
+                cmds.connectAttr(nodes[-1] + ".appendMmdQuaternion", node + ".sourceMmdLinkQuaternions")
+                cmds.setAttr(node + ".sourceMmdLinkIndex", 0)
+            cmds.connectAttr(node + ".outputRotate", joint + ".rotate")
+            ratio *= weight
+            targets.append((node, ratio))
+            nodes.append(node)
+
+        for source in ((19, -13, 8), (-31, 24, 17)):
+            q = _degrees_to_quat(*source)
+            cmds.setAttr(upstream + ".sourceMmdLinkQuaternions", [q.x, q.y, q.z, q.w], type="doubleArray")
+            for node, weight in targets:
+                grant = om.MQuaternion.slerp(om.MQuaternion(), q, weight)
+                expected = _native_bind_space_output(
+                    (0, 0, 0), _degrees_to_quat(17, -11, 23), grant,
+                    *[om.MMatrix(cmds.getAttr(node + "." + attr)) for attr in (
+                        "targetMayaBindWorldMatrix", "targetNoOrientBindWorldMatrix",
+                        "parentMayaBindWorldMatrix", "parentNoOrientBindWorldMatrix",
+                    )],
+                )
+                _assert_angles_close(self, cmds.getAttr(node + ".outputRotate")[0],
+                                     _quat_to_degrees(expected), tol=1e-4, msg="chained native grant")
+
+        # Removing native input must clear every cached quaternion in the chain.
+        cmds.setAttr(upstream + ".sourceMmdLinkIndex", -1)
+        for node in nodes:
+            self.assertEqual(_double_array_values(cmds.getAttr(node + ".appendMmdQuaternion")), ())
+        for node, _ in targets:
+            _assert_angles_close(self, cmds.getAttr(node + ".outputRotate")[0], (0, 0, 0))
+
     def test_native_foot_d_quaternion_bind_and_jo_aware_skin_contract(self):
         """IK link quaternion → 足D local → JO-aware skin の契約を固定する。
 
