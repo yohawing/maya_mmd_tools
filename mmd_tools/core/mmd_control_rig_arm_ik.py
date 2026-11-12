@@ -251,6 +251,12 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         grants = list(driven)
         converters = [anchor_matrix] + segment_nodes
         for role, joint, control, helper in zip(roles, joints, controls, helpers):
+            # Maya saves detached quaternion XYZ curves without their shared W.
+            # Keep the original FK rotation grouped while IK owns the control.
+            storage = cmds.createNode("transform", name=role + "_FK_storage", parent=group)
+            order = cmds.getAttr(control + ".rotateOrder")
+            cmds.setAttr(storage + ".rotateOrder", order)
+            static.append({"uuid": _uuid(cmds, storage), "values": {"rotateOrder": order}})
             basis = om.MMatrix(matrix_from_quaternion(metadata["authoringBases"][role]["quaternion"]))
 
             chain = composers.get(role, ())
@@ -315,8 +321,12 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
                 if item["controlRef"]["nodeUuid"] == _uuid(cmds, control):
                     item["outputRef"] = _ref(cmds, decomp + ".outputRotate" + item["controlRef"]["attribute"][-1])
                     plug = resolve_arm_plug(cmds, item["controlRef"])
+                    storage_plug = storage + "." + item["controlRef"]["attribute"]
+                    item["storageRef"] = _ref(cmds, storage_plug)
                     if item["sourceRef"]:
-                        cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
+                        source = resolve_arm_plug(cmds, item["sourceRef"])
+                        cmds.connectAttr(source, storage_plug)
+                        cmds.disconnectAttr(source, plug)
                     cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
         from .mmd_control_rig_arm_twist import create_auto_twist
         twist_nodes, twist_inputs, twist_refs, lower_ref, visibility_ref = create_auto_twist(
@@ -383,11 +393,22 @@ def disable_arm_ik(model_root, side, *, match_fk=False, cmds_module=None):
                 cmds.dgdirty(resolve_arm_plug(cmds, item["controlRef"]))
             cmds.currentTime(cmds.currentTime(query=True), update=True)
         from .mmd_control_rig_arm_twist import release_auto_twist
+        release_fk_storage(cmds, row)
         release_auto_twist(cmds, row)
         row["graph"] = _graph_snapshot(cmds, row)
         row["active"] = False
         _write_metadata(cmds, model_root, metadata)
     return row
+
+
+def release_fk_storage(cmds, row):
+    """Release the saved FK curve taps after control ownership is restored."""
+    for item in row["inputs"]:
+        if item.get("storageRef"):
+            plug = resolve_arm_plug(cmds, item["storageRef"])
+            source = cmds.connectionInfo(plug, sourceFromDestination=True)
+            if source:
+                cmds.disconnectAttr(source, plug)
 
 
 def inspect_arm_ik(model_root, side, *, cmds_module=None):
@@ -411,6 +432,11 @@ def _reenable(cmds, root, metadata, side):
     if row.get("poleGuideUuid") or not row.get("solverUuid"):
         raise MmdControlRigBuildError(
             "arm IK with a legacy RP solver or temporal pole filter requires rebuilding; "
+            "restore the MMD rig and rebuild the Control Rig"
+        )
+    if any("storageRef" not in item for item in row["inputs"] if "baselineRef" not in item):
+        raise MmdControlRigBuildError(
+            "arm IK without FK rotation storage requires rebuilding; "
             "restore the MMD rig and rebuild the Control Rig"
         )
     joints = [_node(cmds, uuid) for uuid in row["jointUuids"]]
@@ -445,7 +471,10 @@ def _reenable(cmds, root, metadata, side):
         for item in fresh:
             plug = resolve_arm_plug(cmds, item["controlRef"])
             if item["sourceRef"]:
-                cmds.disconnectAttr(resolve_arm_plug(cmds, item["sourceRef"]), plug)
+                source = resolve_arm_plug(cmds, item["sourceRef"])
+                if item.get("storageRef"):
+                    cmds.connectAttr(source, resolve_arm_plug(cmds, item["storageRef"]))
+                cmds.disconnectAttr(source, plug)
             cmds.connectAttr(resolve_arm_plug(cmds, item["outputRef"]), plug)
         if driven and set(cmds.cycleCheck(all=True, list=True) or []) - previous_cycles:
             raise MmdControlRigBuildError("arm IK intermediate or contribution depends on a solved arm rotation")

@@ -73,6 +73,48 @@ class TestControlRigArmIk(MayaTestBase):
         super().setUpClass()
         cls.load_plugin(str(ROOT/'mmd_tools/plugin_main.py'))
 
+    def test_quaternion_fk_curves_survive_active_ik_scene_reload(self):
+        """Disconnected quaternion XYZ curves lose their W component on Maya save."""
+        for side in ('left', 'right'):
+            with self.subTest(side=side):
+                cmds.file(new=True, force=True)
+                root, controls, joints = create_arm_case(side)
+                for index, control in enumerate(controls):
+                    for frame, angles in ((1, (25, -35, 15)), (10, (75, 40, -65))):
+                        for axis, value in zip('XYZ', angles):
+                            cmds.setKeyframe(control, attribute='rotate'+axis, time=frame, value=value/(index+1))
+                    sources = [cmds.connectionInfo(control+'.rotate'+axis, sourceFromDestination=True)
+                               for axis in 'XYZ']
+                    cmds.rotationInterpolation(*(source.split('.')[0] for source in sources),
+                                               convert='quaternionSlerp')
+                    self.assertEqual(cmds.rotationInterpolation(sources[0].split('.')[0], query=True),
+                                     'quaternionSlerp')
+                frames = (1, 3.5, 5, 8.5, 10)
+                expected = {}
+                for frame in frames:
+                    cmds.currentTime(frame, update=True)
+                    expected[frame] = arm_pose(joints)
+                curves = curve_snapshot()
+                scene = self.get_temp_filename(side+'_quaternion_arm.ma')
+                for cycle in range(2):
+                    cmds.currentTime(5, update=True)
+                    row = enable_arm_ik(root, side)
+                    move_target(row, joints)
+                    cmds.file(rename=scene)
+                    cmds.file(save=True, type='mayaAscii', force=True)
+                    cmds.file(scene, open=True, force=True)
+                    disable_arm_ik(root, side, match_fk=False)
+                    for frame in frames:
+                        cmds.currentTime(frame, update=True)
+                        self.assertLess(pose_delta(expected[frame], arm_pose(joints)), 1e-4,
+                                        f'{side} cycle {cycle} frame {frame}')
+                    actual = curve_snapshot()
+                    for name, curve in curves.items():
+                        self.assertEqual(curve['times'], actual[name]['times'])
+                        self.assertEqual(curve['destinations'], actual[name]['destinations'])
+                        for before, after in zip(curve['values'], actual[name]['values']):
+                            self.assertAlmostEqual(before, after, delta=1e-5)
+
     def test_enable_live_target_pole_and_disable_restore_fk(self):
         root, controls, joints = create_arm_case()
         before = arm_pose(joints)
