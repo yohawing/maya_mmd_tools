@@ -1,5 +1,4 @@
 """Owned, head-space parallel gaze target for the combined-eye FK control."""
-import json
 import math
 
 from .mmd_control_rig_builder import (
@@ -7,40 +6,14 @@ from .mmd_control_rig_builder import (
     _create_control_curve, _color_control,
 )
 from .mmd_control_rig_basis import matrix_from_quaternion
-from .mmd_control_rig_arm_ik import (
+from .mmd_control_rig_ik_common import (
     _node, _uuid, _ref, _transaction, _numeric_equal, _match_world_pose,
+    resolve_ik_plug as _plug, snapshot_ik_graph,
 )
 
 
-def _plug(cmds, ref):
-    return _node(cmds, ref["nodeUuid"]) + "." + ref["attribute"]
-
-
 def _graph(cmds, row):
-    """Inventory exact helper edges, permitting only target TR animation."""
-    result = {}
-    for uuid in row["nodes"]:
-        node = _node(cmds, uuid)
-        incoming, outgoing = [], []
-        pairs = cmds.listConnections(node, source=True, destination=False, plugs=True, connections=True) or []
-        for destination, source in zip(pairs[::2], pairs[1::2]):
-            attr = cmds.attributeName(destination, long=True)
-            if uuid == row["targetUuid"] and attr.startswith(("translate", "rotate")):
-                continue
-            incoming.append([_ref(cmds, source), _ref(cmds, destination)])
-        pairs = cmds.listConnections(node, source=False, destination=True, plugs=True, connections=True) or []
-        for source, destination in zip(pairs[::2], pairs[1::2]):
-            edge = [_ref(cmds, source), _ref(cmds, destination)]
-            if not any(edge == [item["outputRef"], item["controlRef"]] for item in row["inputs"]):
-                outgoing.append(edge)
-        parents = cmds.listRelatives(node, parent=True, fullPath=True) or [] if cmds.objectType(node, isAType="dagNode") else []
-        result[uuid] = {
-            "type": cmds.nodeType(node), "parents": [_uuid(cmds, n) for n in parents],
-            "incoming": sorted(incoming, key=lambda edge: json.dumps(edge, sort_keys=True)),
-            "outgoing": sorted(outgoing, key=lambda edge: json.dumps(edge, sort_keys=True)),
-        }
-    return result
-
+    return snapshot_ik_graph(cmds, row, (row["targetUuid"],))
 
 def _curve_input(cmds, plug):
     writer = cmds.connectionInfo(plug, sourceFromDestination=True)

@@ -1,9 +1,7 @@
 """Owned three-joint arm IK with MMD CCD and an upper-arm rotation input."""
 
 import math
-from uuid import uuid4
 import json
-from contextlib import contextmanager
 
 from .mmd_control_rig_builder import (
     MmdControlRigBuildError,
@@ -14,44 +12,10 @@ from .mmd_control_rig_builder import (
 )
 from .mmd_control_rig_analyzer import rotation_composer_source
 from .mmd_control_rig_basis import matrix_from_quaternion
-
-
-def _node(cmds, uuid):
-    nodes = cmds.ls(uuid, long=True) or []
-    if len(nodes) != 1:
-        raise MmdControlRigBuildError("IK owned node is missing or ambiguous: " + uuid)
-    return nodes[0]
-
-
-def _uuid(cmds, node):
-    return cmds.ls(node, uuid=True)[0]
-
-
-def _ref(cmds, plug):
-    node, attribute = plug.split(".", 1)
-    return {"nodeUuid": _uuid(cmds, node), "attribute": attribute}
-
-
-def resolve_arm_plug(cmds, ref):
-    """Resolve a saved arm plug without relying on names or namespaces."""
-    return _node(cmds, ref["nodeUuid"]) + "." + ref["attribute"]
-
-
-@contextmanager
-def _transaction(cmds, label):
-    if not cmds.undoInfo(query=True, state=True):
-        raise MmdControlRigBuildError("arm IK requires Maya Undo to be enabled")
-    chunk_name = label + "_" + uuid4().hex
-    cmds.undoInfo(openChunk=True, chunkName=chunk_name)
-    try:
-        yield
-    except Exception:
-        cmds.undoInfo(closeChunk=True)
-        if cmds.undoInfo(query=True, undoName=True) == chunk_name:
-            cmds.undo()
-        raise
-    else:
-        cmds.undoInfo(closeChunk=True)
+from .mmd_control_rig_ik_common import (
+    _node, _uuid, _ref, _transaction, _numeric_equal, _match_world_pose,
+    resolve_ik_plug as resolve_arm_plug, snapshot_ik_graph,
+)
 
 
 def validate_arm_ik(cmds, metadata, side):
@@ -486,69 +450,12 @@ def _reenable(cmds, root, metadata, side):
 
 
 def _graph_snapshot(cmds, row):
-    """Record exact types, DAG parents and solver inputs; targets remain animatable."""
-    result = {}
-    editable = {row["targetUuid"], row["poleUuid"]}
-    for uuid in row["nodes"]:
-        node = _node(cmds, uuid)
-        parents = cmds.listRelatives(node, parent=True, fullPath=True) or [] if cmds.objectType(node, isAType="dagNode") else []
-        incoming = []
-        pairs = cmds.listConnections(node, source=True, destination=False, plugs=True, connections=True) or []
-        for destination, source in zip(pairs[::2], pairs[1::2]):
-            attribute = cmds.attributeName(destination, long=True)
-            if uuid in editable and attribute.startswith(("translate", "rotate")):
-                continue
-            incoming.append([_ref(cmds, source), _ref(cmds, destination)])
-        outgoing = []
-        pairs = cmds.listConnections(node, source=False, destination=True, plugs=True, connections=True) or []
-        for source, destination in zip(pairs[::2], pairs[1::2]):
-            edge = [_ref(cmds, source), _ref(cmds, destination)]
-            if any(edge == [item["outputRef"], item["controlRef"]] for item in row["inputs"]):
-                continue
-            outgoing.append(edge)
-        result[uuid] = {
-            "outgoing": sorted(outgoing, key=lambda edge: json.dumps(edge, sort_keys=True)),
-            "type": cmds.nodeType(node),
-            "parents": [_uuid(cmds, parent) for parent in parents],
-            "incoming": sorted(incoming, key=lambda edge: json.dumps(edge, sort_keys=True)),
-        }
-    return result
-
-
-def _numeric_equal(left, right):
-    if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
-        return len(left) == len(right) and all(_numeric_equal(a, b) for a, b in zip(left, right))
-    return abs(float(left) - float(right)) < 1e-7
+    return snapshot_ik_graph(cmds, row, (row["targetUuid"], row["poleUuid"]))
 
 
 def _require_fk_curve(cmds, writer, plug):
     if cmds.nodeType(writer.split(".", 1)[0]) != "animCurveTA":
         raise MmdControlRigBuildError("arm IK requires a direct time animation curve: " + plug)
-
-
-def _match_world_pose(cmds, node, matrix, *, rotate_only=False):
-    """Key only the current frame on existing curves; preserve all other keys."""
-    from maya.api import OpenMaya as om
-
-    parent = cmds.listRelatives(node, parent=True, fullPath=True)
-    local = om.MMatrix(matrix)
-    if parent:
-        local = local * om.MMatrix(cmds.xform(parent[0], q=True, ws=True, matrix=True)).inverse()
-    transform = om.MTransformationMatrix(local)
-    rotation = transform.rotation()
-    rotation.reorderIt(cmds.getAttr(node + ".rotateOrder"))
-    translation = transform.translation(om.MSpace.kTransform)
-    for channel, values in (("translate", translation), ("rotate", [math.degrees(value) for value in rotation])):
-        if rotate_only and channel == "translate":
-            continue
-        for axis, value in zip("XYZ", values):
-            plug = node + "." + channel + axis
-            if cmds.connectionInfo(plug, sourceFromDestination=True):
-                cmds.setKeyframe(plug, time=cmds.currentTime(q=True), value=value)
-                cmds.dgdirty(plug)
-            else:
-                cmds.setAttr(plug, value)
-    cmds.currentTime(cmds.currentTime(q=True), update=True)
 
 
 def _create_ccd_solver(cmds, helpers, anchor, target, direction, side):
