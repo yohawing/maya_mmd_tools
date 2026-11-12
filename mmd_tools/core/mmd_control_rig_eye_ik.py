@@ -9,6 +9,7 @@ from .mmd_control_rig_basis import matrix_from_quaternion
 from .mmd_control_rig_ik_common import (
     _node, _uuid, _ref, _transaction, _numeric_equal, _match_world_pose,
     resolve_ik_plug as _plug, snapshot_ik_graph,
+    create_fk_storage, release_fk_storage,
 )
 
 
@@ -88,9 +89,12 @@ def _connect(cmds, row):
     for item in fresh:
         control = _plug(cmds, item["controlRef"])
         if item["sourceRef"]:
-            cmds.disconnectAttr(_plug(cmds, item["sourceRef"]), control)
+            source = _plug(cmds, item["sourceRef"])
+            cmds.connectAttr(source, _plug(cmds, item["storageRef"]))
+            cmds.disconnectAttr(source, control)
         cmds.connectAttr(_plug(cmds, item["outputRef"]), control)
     row["inputs"], row["active"] = fresh, True
+    row["graph"] = _graph(cmds, row)
 
 
 def enable_eye_ik(model_root, *, cmds_module=None):
@@ -105,6 +109,11 @@ def enable_eye_ik(model_root, *, cmds_module=None):
     if metadata.get("eyeIk"):
         row = validate_eye_ik(cmds, metadata)
         if not row["active"]:
+            if any("storageRef" not in item for item in row["inputs"]):
+                raise MmdControlRigBuildError(
+                    "Eye IK without FK rotation storage requires rebuilding; "
+                    "restore the MMD rig and rebuild the Control Rig"
+                )
             with _transaction(cmds, "Enable Eye IK"):
                 _connect(cmds, row)
                 _write_metadata(cmds, model_root, metadata)
@@ -155,6 +164,7 @@ def enable_eye_ik(model_root, *, cmds_module=None):
         static.append({"uuid": _uuid(cmds, append), "values": {"ratio": cmds.getAttr(append + ".ratio")}})
     with _transaction(cmds, "Enable Eye IK"):
         group = cmds.createNode("transform", name="eye_IK", parent=_node(cmds, metadata["controlGroupUuid"]))
+        storage = create_fk_storage(cmds, control, group, "eye_FK_storage", static)
         follow = cmds.parentConstraint(parent, group, maintainOffset=False)[0]
         helper = cmds.createNode("transform", name="eye_aim", parent=group)
         cmds.setAttr(helper + ".translate", *values["translate"][0])
@@ -176,6 +186,7 @@ def enable_eye_ik(model_root, *, cmds_module=None):
                "parentUuid": _uuid(cmds, parent), "distance": 5.0, "static": static,
                "appendEdges": append_edges, "inputs": [
                    {"controlRef": _ref(cmds, control + ".rotate"+a), "sourceRef": None, "value": 0,
+                    "storageRef": _ref(cmds, storage + ".rotate"+a),
                     "outputRef": _ref(cmds, decompose + ".outputRotate"+a)} for a in "XYZ"]}
         _match_target(cmds, row)
         aim = cmds.aimConstraint(target, helper, aimVector=(0,0,1), upVector=(0,1,0),
@@ -199,7 +210,6 @@ def enable_eye_ik(model_root, *, cmds_module=None):
             if not cmds.objectType(node, isAType="dagNode"):
                 metadata["helperNodes"].append(uuid)
         _connect(cmds, row)
-        row["graph"] = _graph(cmds, row)
         metadata["eyeIk"] = row
         _write_metadata(cmds, model_root, metadata)
     return inspect_eye_ik(model_root, cmds_module=cmds)
@@ -227,6 +237,8 @@ def disable_eye_ik(model_root, *, match_fk=False, cmds_module=None):
                 cmds.setKeyframe(control, time=cmds.currentTime(query=True), value=value)
                 cmds.dgdirty(control)
         cmds.currentTime(cmds.currentTime(query=True), update=True)
+        release_fk_storage(cmds, row)
+        row["graph"] = _graph(cmds, row)
         row["active"] = False
         _write_metadata(cmds, model_root, metadata)
     return inspect_eye_ik(model_root, cmds_module=cmds)

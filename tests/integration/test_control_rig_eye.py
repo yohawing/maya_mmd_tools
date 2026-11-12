@@ -191,6 +191,78 @@ class TestControlRigEyeIk(MayaTestBase):
         self.assertTrue(cmds.keyframe(target, attribute='translateX', query=True, timeChange=True))
         cmds.currentTime(5, update=True)
 
+    def test_quaternion_fk_survives_active_ik_save_and_reenable(self):
+        """Keep grouped FK quaternion curves intact while eye IK owns rotation."""
+        from mmd_tools.core.mmd_control_rig_eye_ik import enable_eye_ik, disable_eye_ik
+        from tests.integration.test_pose_layers import curve_snapshot
+
+        root, control, joints = create_eye_ik_case()
+        curves = [cmds.connectionInfo(control + '.rotate' + axis, sourceFromDestination=True).split('.')[0]
+                  for axis in 'XYZ']
+        cmds.rotationInterpolation(*curves, convert='quaternionSlerp')
+        frames = (1, 3.5, 5, 8.5, 10)
+        expected = {}
+        for frame in frames:
+            cmds.currentTime(frame, update=True)
+            expected[frame] = pose(joints)
+        original_curves = curve_snapshot()
+        scene = self.get_temp_filename('quaternion_eye.ma')
+        for _ in range(2):
+            cmds.currentTime(5, update=True)
+            row = enable_eye_ik(root)
+            self.move_eye_target(row['target'])
+            cmds.file(rename=scene)
+            cmds.file(save=True, type='mayaAscii', force=True)
+            cmds.file(scene, open=True, force=True)
+            disable_eye_ik(root)
+            for frame in frames:
+                cmds.currentTime(frame, update=True)
+                self.assert_eye_pose(pose(joints), expected[frame])
+            actual = curve_snapshot()
+            for name in curves:
+                self.assertEqual(original_curves[name]['times'], actual[name]['times'])
+                self.assertEqual(original_curves[name]['destinations'], actual[name]['destinations'])
+                for before, after in zip(original_curves[name]['values'], actual[name]['values']):
+                    self.assertAlmostEqual(before, after, delta=1e-5)
+
+    def test_old_eye_without_fk_storage_requires_rebuild_but_can_restore(self):
+        from mmd_tools.core.mmd_control_rig_eye_ik import enable_eye_ik, disable_eye_ik
+        from mmd_tools.core.mmd_control_rig_builder import (
+            _write_metadata, MmdControlRigBuildError, remove_mmd_control_rig,
+        )
+
+        root, _control, joints = create_eye_ik_case()
+        expected = pose(joints)
+        enable_eye_ik(root)
+        disable_eye_ik(root)
+        metadata = read_mmd_control_rig_metadata(root)
+        for item in metadata['eyeIk']['inputs']:
+            item.pop('storageRef')
+        _write_metadata(cmds, root, metadata)
+        with self.assertRaisesRegex(MmdControlRigBuildError, 'requires rebuilding'):
+            enable_eye_ik(root)
+        self.assertEqual(read_mmd_control_rig_metadata(root), metadata)
+        self.assert_eye_pose(pose(joints), expected)
+        restore_mmd_control_rig_attached(root)
+        self.assertEqual(read_mmd_control_rig_metadata(root)['state'], 'ATTACHED')
+        remove_mmd_control_rig(root)
+        self.assertFalse(set(cmds.ls(uuid=True)) & set(metadata['eyeIk']['nodes']))
+
+    def test_active_old_eye_can_select_target_without_reconnecting(self):
+        from mmd_tools.core.mmd_control_rig_eye_ik import enable_eye_ik
+        from mmd_tools.core.mmd_control_rig_builder import _write_metadata
+
+        root, _control, joints = create_eye_ik_case()
+        target = enable_eye_ik(root)['target']
+        expected = pose(joints)
+        metadata = read_mmd_control_rig_metadata(root)
+        for item in metadata['eyeIk']['inputs']:
+            item.pop('storageRef')
+        _write_metadata(cmds, root, metadata)
+        self.assertEqual(enable_eye_ik(root)['target'], target)
+        self.assertEqual(read_mmd_control_rig_metadata(root), metadata)
+        self.assert_eye_pose(pose(joints), expected)
+
     def test_nonzero_fk_roll_enable_target_response_and_restore_keys(self):
         from mmd_tools.core.mmd_control_rig_eye_ik import enable_eye_ik, disable_eye_ik, inspect_eye_ik
         from tests.integration.test_pose_layers import curve_snapshot

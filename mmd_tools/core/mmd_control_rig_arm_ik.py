@@ -15,6 +15,7 @@ from .mmd_control_rig_basis import matrix_from_quaternion
 from .mmd_control_rig_ik_common import (
     _node, _uuid, _ref, _transaction, _numeric_equal, _match_world_pose,
     resolve_ik_plug as resolve_arm_plug, snapshot_ik_graph,
+    create_fk_storage, release_fk_storage,
 )
 
 
@@ -213,12 +214,7 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
         grants = list(driven)
         converters = [anchor_matrix] + segment_nodes
         for role, joint, control, helper in zip(roles, joints, controls, helpers):
-            # Maya saves detached quaternion XYZ curves without their shared W.
-            # Keep the original FK rotation grouped while IK owns the control.
-            storage = cmds.createNode("transform", name=role + "_FK_storage", parent=group)
-            order = cmds.getAttr(control + ".rotateOrder")
-            cmds.setAttr(storage + ".rotateOrder", order)
-            static.append({"uuid": _uuid(cmds, storage), "values": {"rotateOrder": order}})
+            storage = create_fk_storage(cmds, control, group, role + "_FK_storage", static)
             basis = om.MMatrix(matrix_from_quaternion(metadata["authoringBases"][role]["quaternion"]))
 
             chain = composers.get(role, ())
@@ -361,16 +357,6 @@ def disable_arm_ik(model_root, side, *, match_fk=False, cmds_module=None):
         row["active"] = False
         _write_metadata(cmds, model_root, metadata)
     return row
-
-
-def release_fk_storage(cmds, row):
-    """Release the saved FK curve taps after control ownership is restored."""
-    for item in row["inputs"]:
-        if item.get("storageRef"):
-            plug = resolve_arm_plug(cmds, item["storageRef"])
-            source = cmds.connectionInfo(plug, sourceFromDestination=True)
-            if source:
-                cmds.disconnectAttr(source, plug)
 
 
 def inspect_arm_ik(model_root, side, *, cmds_module=None):

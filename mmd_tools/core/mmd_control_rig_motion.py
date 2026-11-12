@@ -1538,14 +1538,16 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
                     for control in dict.fromkeys(plug.rsplit(".", 1)[0] for plug in plugs):
                         _apply_quaternion_interpolation_to_plugs(cmds, [control + ".rotate" + axis for axis in "XYZ"])
             from .mmd_control_rig_arm_twist import release_auto_twist
-            from .mmd_control_rig_arm_ik import _graph_snapshot, release_fk_storage
+            from .mmd_control_rig_ik_common import snapshot_ik_graph, release_fk_storage
             for arm in arms:
                 arm["active"] = False
                 release_fk_storage(cmds, arm)
                 if arm.get("autoTwist"):
                     release_auto_twist(cmds, arm)
                 if arm.get("autoTwist") or any(item.get("storageRef") for item in arm["inputs"]):
-                    arm["graph"] = _graph_snapshot(cmds, arm)
+                    arm["graph"] = snapshot_ik_graph(
+                        cmds, arm, [arm[key] for key in ("targetUuid", "poleUuid") if key in arm]
+                    )
             # These curves are discarded by this context on failure, so the
             # inner transaction need not duplicate them for curve snapshots.
             yield tuple(created)

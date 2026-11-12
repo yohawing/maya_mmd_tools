@@ -29,6 +29,25 @@ def resolve_ik_plug(cmds, ref):
     return _node(cmds, ref["nodeUuid"]) + "." + ref["attribute"]
 
 
+def create_fk_storage(cmds, control, parent, name, static):
+    """Keep detached quaternion XYZ curves grouped so Maya preserves their W."""
+    storage = cmds.createNode("transform", name=name, parent=parent)
+    order = cmds.getAttr(control + ".rotateOrder")
+    cmds.setAttr(storage + ".rotateOrder", order)
+    static.append({"uuid": _uuid(cmds, storage), "values": {"rotateOrder": order}})
+    return storage
+
+
+def release_fk_storage(cmds, row):
+    """Release FK curve taps after the original control ownership is restored."""
+    for item in row["inputs"]:
+        if item.get("storageRef"):
+            plug = resolve_ik_plug(cmds, item["storageRef"])
+            source = cmds.connectionInfo(plug, sourceFromDestination=True)
+            if source:
+                cmds.disconnectAttr(source, plug)
+
+
 @contextmanager
 def _transaction(cmds, label):
     if not cmds.undoInfo(query=True, state=True):
