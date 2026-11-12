@@ -4848,6 +4848,8 @@ def _capture_animation_curve_payload(cmds, node: str) -> Dict[str, Any]:
                 ("outAngle", "outAngle"),
                 ("inWeight", "inWeight"),
                 ("outWeight", "outWeight"),
+                ("lock", "lock"),
+                ("weightLock", "weightLock"),
             ):
                 result = cmds.keyTangent(node, **query, **{option: True}) or []
                 key[name] = _scalar(result)
@@ -5012,6 +5014,10 @@ def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]
         pass
     for key in payload.get("keys", ()):
         time = float(key.get("time", 0.0))
+        # Rebuilt keys start locked in Maya. Restoring asymmetric VMD
+        # handles while locked makes one side overwrite the other.
+        lock_options = {"weightLock": False} if payload.get("weightedTangents") else {}
+        cmds.keyTangent(node, time=(time, time), edit=True, lock=False, **lock_options)
         tangent_types = {"time": (time, time), "edit": True}
         if key.get("inType") is not None:
             tangent_types["inTangentType"] = key["inType"]
@@ -5041,6 +5047,10 @@ def _restore_animation_curve_payload(cmds, node: str, payload: Mapping[str, Any]
                 cmds.keyTangent(node, **fixed_values)
             except Exception:
                 pass
+        if payload.get("weightedTangents"):
+            lock_options["weightLock"] = bool(key.get("weightLock", False))
+        cmds.keyTangent(node, time=(time, time), edit=True,
+                        lock=bool(key.get("lock", True)), **lock_options)
     infinity_kwargs = {
         name: payload[name]
         for name in ("preInfinite", "postInfinite")

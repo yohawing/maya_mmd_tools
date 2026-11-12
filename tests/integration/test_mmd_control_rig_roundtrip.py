@@ -81,6 +81,31 @@ class TestMmdControlRigRoundtrip(MayaTestBase):
             cmds.setInfinity(destination_node, query=True, postInfinite=True),
         )
 
+    def test_asymmetric_weighted_translation_preserves_subframe_shape(self):
+        """VMD Bezier handles may have different unlocked incoming/outgoing slopes."""
+        from mmd_tools.core.mmd_control_rig_motion import _offset_animation_curve_values
+        curve = cmds.createNode("animCurveTL", name="asymmetric_translate")
+        for frame, value in ((0, 0), (10, 2), (20, -1)):
+            cmds.setKeyframe(curve, time=frame, value=value)
+        cmds.keyTangent(curve, edit=True, weightedTangents=True)
+        cmds.keyTangent(curve, edit=True, lock=False, weightLock=False,
+                        inTangentType="fixed", outTangentType="fixed")
+        for frame, incoming, outgoing in ((0, 5, 45), (10, -30, 15), (20, 35, -20)):
+            cmds.keyTangent(curve, edit=True, time=(frame, frame),
+                            inAngle=incoming, outAngle=outgoing, inWeight=.2, outWeight=.7)
+        times = [index / 2 for index in range(41)]
+        expected = [cmds.keyframe(curve, query=True, eval=True, time=(t,t))[0] for t in times]
+        target = cmds.createNode("animCurveTL", name="asymmetric_translate_copy")
+        _copy_animation_curve(cmds, curve + ".output", target + ".output")
+        for frame, value in zip(times, expected):
+            self.assertAlmostEqual(cmds.keyframe(target, query=True, eval=True, time=(frame,frame))[0], value, places=6)
+        _offset_animation_curve_values(cmds, target + ".output", 10)
+        for frame, value in zip(times, expected):
+            self.assertAlmostEqual(cmds.keyframe(target, query=True, eval=True, time=(frame,frame))[0], value + 10, places=6)
+        for option in ("lock", "weightLock"):
+            self.assertEqual(cmds.keyTangent(curve, query=True, **{option:True}),
+                             cmds.keyTangent(target, query=True, **{option:True}))
+
     def test_empty_animcurve_copy_clears_destination_without_replacing_nodes(self):
         """An empty cleared controller curve removes stale authored keys."""
         source_node = cmds.createNode("animCurveTA", name="cr061_empty_payload_source")
