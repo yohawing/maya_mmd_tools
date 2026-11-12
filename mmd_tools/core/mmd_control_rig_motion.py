@@ -1447,6 +1447,7 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
     controls = {row["control"]: row for row in rows}
     inputs = []
     times = set()
+    source_times = set()
     # Other EDIT controls can move the shoulder after the arm's last key.
     # Use the existing journal's animation range rather than walking the DG.
     for row in rows:
@@ -1475,27 +1476,24 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
             inputs.append((item, control, source, output))
             for plug in (source, controls[control].get("source")):
                 if plug:
-                    times.update(cmds.keyframe(plug.split(".", 1)[0], query=True, timeChange=True) or [])
+                    source_times.update(cmds.keyframe(plug.split(".", 1)[0], query=True, timeChange=True) or [])
+    times.update(source_times)
     if bake and frame_range is not None:
         start, end = frame_range
-        for _, control, source, _ in inputs:
-            for plug in (source, controls[control].get("source")):
-                if plug and any(
-                    time < start or time > end
-                    for time in (
-                        cmds.keyframe(plug.split(".", 1)[0], query=True, timeChange=True) or []
-                    )
-                ):
-                    raise MmdControlRigBuildError(
-                        "Arm IK partial bake cannot preserve keys outside frame_range; "
-                        "bake the full animation range or disable Arm IK first"
-                    )
+        if any(time < start or time > end for time in source_times):
+            raise MmdControlRigBuildError(
+                "Arm IK partial bake cannot preserve keys outside frame_range; "
+                "bake the full animation range or disable Arm IK first"
+            )
     sample_times = _dense_sample_times(sorted(times), frame_range)
     if not sample_times:
         sample_times = [float(cmds.currentTime(query=True))]
     # Evaluate every live channel before disconnecting any axis.
     samples = {control: [] for _, control, _, _ in inputs}
     if bake:
+        time_nodes = cmds.ls(type="time") or []
+        if len(time_nodes) != 1:
+            raise MmdControlRigBuildError("arm IK bake requires one scene time node")
         current_time = cmds.currentTime(query=True)
         try:
             for time in sample_times:
@@ -1504,10 +1502,8 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
                     samples[control].append((time, float(cmds.getAttr(control))))
         finally:
             cmds.currentTime(current_time, update=True)
-    twist_plugs = [resolve_arm_plug(cmds, item["baselineRef"])
-                   for item, _, _, _ in inputs if item.get("baselineRef")]
-    twist_plugs.extend(resolve_arm_plug(cmds, item["storageRef"])
-                       for item, _, _, _ in inputs if item.get("storageRef"))
+    twist_plugs = [resolve_arm_plug(cmds, item[key])
+                   for key in ("baselineRef", "storageRef") for item, _, _, _ in inputs if item.get(key)]
     twist_plugs.extend(resolve_arm_plug(cmds, arm["twistVisibilityRef"])
                        for arm in arms if arm.get("twistVisibilityRef"))
     states = _capture_plug_states(cmds, [control for _, control, _, _ in inputs] + twist_plugs)
@@ -1520,9 +1516,6 @@ def _arm_ik_exit_stage(cmds, root, metadata, rows, *, bake=False, frame_range=No
                 if bake:
                     curve = cmds.createNode("animCurveTA", name="armIK_bake")
                     created.append(curve)
-                    time_nodes = cmds.ls(type="time") or []
-                    if len(time_nodes) != 1:
-                        raise MmdControlRigBuildError("arm IK bake requires one scene time node")
                     cmds.connectAttr(time_nodes[0] + ".outTime", curve + ".input")
                     for time, value in samples[control]:
                         cmds.setKeyframe(curve, time=time, value=value)

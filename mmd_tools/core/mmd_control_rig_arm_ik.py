@@ -133,10 +133,8 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             if any(abs(value - 1) > 1e-8 for value in cmds.getAttr(node + ".scale")[0]):
                 raise MmdControlRigBuildError("arm IK currently requires unit scale")
     segments, driven = _segment_intermediates(cmds, metadata, joints)
-    positions = [om.MVector(cmds.xform(node, q=True, ws=True, t=True)) for node in joints]
-    shoulder, elbow, wrist = positions
-    axis = wrist - shoulder
-    if axis.length() < 1e-6:
+    reach = _arm_reach(cmds, joints)
+    if reach < 1e-6:
         raise MmdControlRigBuildError("arm IK chain has zero reach")
     inputs = []
     for control in controls:
@@ -188,11 +186,11 @@ def enable_arm_ik(model_root, side, *, cmds_module=None):
             cmds.xform(helper, ws=True, matrix=cmds.xform(joint, q=True, ws=True, matrix=True))
             helpers.append(helper)
         segment_nodes = _create_segment_offsets(cmds, joints, helpers, side, segments)
-        target = _create_control_curve(cmds, side + "_wrist_IK", side + "_wrist", max((wrist - shoulder).length() * 0.08, 0.01))
+        target = _create_control_curve(cmds, side + "_wrist_IK", side + "_wrist", max(reach * 0.08, 0.01))
         target = cmds.parent(target, group)[0]
         _color_control(cmds, target, 6 if side == "left" else 13)
         cmds.xform(target, ws=True, matrix=cmds.xform(joints[-1], q=True, ws=True, matrix=True))
-        size = max((wrist - shoulder).length() * 0.04, 0.01)
+        size = max(reach * 0.04, 0.01)
         pole = _create_control_curve(cmds, side + "_upper_arm_IK", side + "_arm", size)
         pole = cmds.parent(pole, group)[0]
         _color_control(cmds, pole, 6 if side == "left" else 13)
@@ -415,17 +413,13 @@ def _reenable(cmds, root, metadata, side):
         if writer:
             _require_fk_curve(cmds, writer, plug)
         fresh.append(dict(item, sourceRef=_ref(cmds, writer) if writer else None, value=cmds.getAttr(plug)))
-    positions = [om.MVector(cmds.xform(node, q=True, ws=True, t=True)) for node in joints]
-    shoulder, elbow, wrist = positions
-    axis = wrist - shoulder
-    if axis.length() < 1e-6:
+    if _arm_reach(cmds, joints) < 1e-6:
         raise MmdControlRigBuildError("arm IK chain has zero reach")
     previous_cycles = set(cmds.cycleCheck(all=True, list=True) or []) if driven else set()
     with _transaction(cmds, "Enable Arm IK"):
         arm_world, elbow_world = [om.MMatrix(cmds.xform(joint, q=True, ws=True, matrix=True)) for joint in joints[:2]]
         lower = om.MTransformationMatrix(elbow_world * arm_world.inverse()).rotation()
-        lower_input = (resolve_arm_plug(cmds, row["lowerInputRef"]) if row.get("lowerInputRef") else
-                       cmds.connectionInfo(_node(cmds, row["solverUuid"]) + ".inputRotate[2]", sourceFromDestination=True))
+        lower_input = resolve_arm_plug(cmds, row["lowerInputRef"])
         cmds.setAttr(lower_input, *[math.degrees(value) for value in lower])
         _match_world_pose(cmds, target, cmds.xform(joints[-1], q=True, ws=True, matrix=True))
         _match_world_pose(cmds, pole, list(arm_world), rotate_only=True)
@@ -447,6 +441,15 @@ def _reenable(cmds, root, metadata, side):
         row["active"] = True
         _write_metadata(cmds, root, metadata)
     return inspect_arm_ik(root, side, cmds_module=cmds)
+
+
+def _arm_reach(cmds, joints):
+    """Measure the current upper-arm to wrist distance, without reading the elbow."""
+    from maya.api import OpenMaya as om
+
+    start, end = (om.MVector(cmds.xform(joint, q=True, ws=True, t=True))
+                  for joint in (joints[0], joints[-1]))
+    return (end - start).length()
 
 
 def _graph_snapshot(cmds, row):
