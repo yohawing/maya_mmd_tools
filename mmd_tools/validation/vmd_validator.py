@@ -491,6 +491,65 @@ def _stream_finite(
         )
 
 
+def _stream_check_fixed_record(
+    section: str,
+    raw: bytes,
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> int:
+    """Validate a fixed-length VMD record and return its frame number."""
+    if section == "bone_frames":
+        _stream_name(raw[:15], path + ".bone_name", issues)
+        frame_number = struct.unpack_from("<I", raw, 15)[0]
+        position = struct.unpack_from("<fff", raw, 19)
+        rotation = struct.unpack_from("<ffff", raw, 31)
+        _stream_finite(position, path + ".position", issues)
+        _stream_finite(rotation, path + ".rotation", issues)
+        norm = math.sqrt(sum(value * value for value in rotation))
+        if not math.isfinite(norm) or norm <= 1.0e-12:
+            _stream_issue(
+                issues,
+                "OUTPUT_VERIFY_FAILED",
+                path + ".rotation",
+                "VMD quaternion must not be zero",
+            )
+    elif section == "morph_frames":
+        _stream_name(raw[:15], path + ".morph_name", issues)
+        frame_number = struct.unpack_from("<I", raw, 15)[0]
+        _stream_finite((struct.unpack_from("<f", raw, 19)[0],), path + ".value", issues)
+    elif section == "camera_frames":
+        frame_number = struct.unpack_from("<I", raw, 0)[0]
+        distance = struct.unpack_from("<f", raw, 4)[0]
+        position = struct.unpack_from("<fff", raw, 8)
+        rotation = struct.unpack_from("<fff", raw, 20)
+        _stream_finite((distance,), path + ".distance", issues)
+        _stream_finite(position, path + ".position", issues)
+        _stream_finite(rotation, path + ".rotation", issues)
+        perspective = raw[60]
+        if perspective not in (0, 1):
+            _stream_issue(
+                issues,
+                "OUTPUT_VERIFY_FAILED",
+                path + ".perspective",
+                "VMD perspective must be 0 or 1",
+            )
+    elif section == "light_frames":
+        frame_number = struct.unpack_from("<I", raw, 0)[0]
+        _stream_finite(struct.unpack_from("<fff", raw, 4), path + ".color", issues)
+        _stream_finite(struct.unpack_from("<fff", raw, 16), path + ".position", issues)
+    else:
+        frame_number = struct.unpack_from("<I", raw, 0)[0]
+        if raw[4] not in (0, 1, 2):
+            _stream_issue(
+                issues,
+                "OUTPUT_VERIFY_FAILED",
+                path + ".mode",
+                "VMD shadow mode must be 0, 1, or 2",
+            )
+        _stream_finite((struct.unpack_from("<f", raw, 5)[0],), path + ".distance", issues)
+    return frame_number
+
+
 def verify_vmd_output_streaming(
     file_path: str,
     export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
@@ -756,55 +815,7 @@ def verify_vmd_output_streaming(
                             if raw is None:
                                 stopped = True
                                 break
-                            if section == "bone_frames":
-                                _stream_name(raw[:15], path + ".bone_name", issues)
-                                frame_number = struct.unpack_from("<I", raw, 15)[0]
-                                position = struct.unpack_from("<fff", raw, 19)
-                                rotation = struct.unpack_from("<ffff", raw, 31)
-                                _stream_finite(position, path + ".position", issues)
-                                _stream_finite(rotation, path + ".rotation", issues)
-                                norm = math.sqrt(sum(value * value for value in rotation))
-                                if not math.isfinite(norm) or norm <= 1.0e-12:
-                                    _stream_issue(
-                                        issues,
-                                        "OUTPUT_VERIFY_FAILED",
-                                        path + ".rotation",
-                                        "VMD quaternion must not be zero",
-                                    )
-                            elif section == "morph_frames":
-                                _stream_name(raw[:15], path + ".morph_name", issues)
-                                frame_number = struct.unpack_from("<I", raw, 15)[0]
-                                _stream_finite((struct.unpack_from("<f", raw, 19)[0],), path + ".value", issues)
-                            elif section == "camera_frames":
-                                frame_number = struct.unpack_from("<I", raw, 0)[0]
-                                distance = struct.unpack_from("<f", raw, 4)[0]
-                                position = struct.unpack_from("<fff", raw, 8)
-                                rotation = struct.unpack_from("<fff", raw, 20)
-                                _stream_finite((distance,), path + ".distance", issues)
-                                _stream_finite(position, path + ".position", issues)
-                                _stream_finite(rotation, path + ".rotation", issues)
-                                perspective = raw[60]
-                                if perspective not in (0, 1):
-                                    _stream_issue(
-                                        issues,
-                                        "OUTPUT_VERIFY_FAILED",
-                                        path + ".perspective",
-                                        "VMD perspective must be 0 or 1",
-                                    )
-                            elif section == "light_frames":
-                                frame_number = struct.unpack_from("<I", raw, 0)[0]
-                                _stream_finite(struct.unpack_from("<fff", raw, 4), path + ".color", issues)
-                                _stream_finite(struct.unpack_from("<fff", raw, 16), path + ".position", issues)
-                            else:
-                                frame_number = struct.unpack_from("<I", raw, 0)[0]
-                                if raw[4] not in (0, 1, 2):
-                                    _stream_issue(
-                                        issues,
-                                        "OUTPUT_VERIFY_FAILED",
-                                        path + ".mode",
-                                        "VMD shadow mode must be 0, 1, or 2",
-                                    )
-                                _stream_finite((struct.unpack_from("<f", raw, 5)[0],), path + ".distance", issues)
+                            frame_number = _stream_check_fixed_record(section, raw, path, issues)
                             record_frame(section, frame_number, path)
                         if stopped:
                             consume_remaining(handle)
