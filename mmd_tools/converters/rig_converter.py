@@ -975,6 +975,19 @@ class RigConverter:
             # provide world matrices.
             return
 
+    def _redirect_append_target_channel(self, node: str, target_joint: str, channel: str) -> None:
+        """各軸の既存入力を付与ノードに移し、その出力をジョイントに接続する。"""
+        suffix = channel.capitalize()
+        target_plug = f"{target_joint}.{channel}"
+        for axis in ("X", "Y", "Z"):
+            axis_plug = f"{target_plug}{axis}"
+            anim_src = cmds.listConnections(axis_plug, s=True, d=False, p=True)
+            if anim_src:
+                cmds.disconnectAttr(anim_src[0], axis_plug)
+                cmds.connectAttr(anim_src[0], f"{node}.base{suffix}{axis}")
+
+        cmds.connectAttr(f"{node}.output{suffix}", target_plug)
+
     def _create_append_nodes_from_manifest(
         self,
         manifest,
@@ -1082,17 +1095,7 @@ class RigConverter:
                             cmds.disconnectAttr(conn, f"{target_joint}.rotate")
                         except Exception:
                             pass
-                    # Wire: baseRotate from animation (if curves exist),
-                    # then node.outputRotate → joint.rotate.
-                    for axis in ("X", "Y", "Z"):
-                        anim_src = cmds.listConnections(
-                            f"{target_joint}.rotate{axis}", s=True, d=False, p=True
-                        )
-                        if anim_src:
-                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.rotate{axis}")
-                            cmds.connectAttr(anim_src[0], f"{node}.baseRotate{axis}")
-
-                    cmds.connectAttr(f"{node}.outputRotate", f"{target_joint}.rotate")
+                    self._redirect_append_target_channel(node, target_joint, "rotate")
 
                 if affect_translation:
                     target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
@@ -1103,15 +1106,7 @@ class RigConverter:
                         target_rest_translate[2],
                         type="double3",
                     )
-                    for axis in ("X", "Y", "Z"):
-                        anim_src = cmds.listConnections(
-                            f"{target_joint}.translate{axis}", s=True, d=False, p=True
-                        )
-                        if anim_src:
-                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
-                            cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
-
-                    cmds.connectAttr(f"{node}.outputTranslate", f"{target_joint}.translate")
+                    self._redirect_append_target_channel(node, target_joint, "translate")
 
                 if not cmds.attributeQuery("mmd_grant_node", node=node, exists=True):
                     cmds.addAttr(node, longName="mmd_grant_node", attributeType="bool")
