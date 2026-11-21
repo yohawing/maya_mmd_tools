@@ -1925,7 +1925,7 @@ class VmdConverter:
         """Capture existing controller keys before an EDIT-owned import mutates them."""
         if not isinstance(metadata, dict):
             return []
-        from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import capture_animation_channel_snapshot
 
         snapshot = []
         seen_controls = set()
@@ -1945,7 +1945,7 @@ class VmdConverter:
                 try:
                     if not cmds.objExists(plug):
                         continue
-                    channel = _capture_animation_channel_snapshot(cmds, plug)
+                    channel = capture_animation_channel_snapshot(cmds, plug)
                 except Exception:
                     continue
                 snapshot.append(
@@ -1988,7 +1988,7 @@ class VmdConverter:
         imports retain their historical performance and behavior.
         """
         from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
-        from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import capture_animation_channel_snapshot
 
         snapshot: Dict[str, object] = {
             "timeline": {},
@@ -2200,7 +2200,7 @@ class VmdConverter:
                 if not cmds.objExists(plug):
                     continue
                 try:
-                    channel = _capture_animation_channel_snapshot(cmds, plug)
+                    channel = capture_animation_channel_snapshot(cmds, plug)
                 except Exception:
                     continue
                 # A direct non-animCurve incoming connection owns this plug's
@@ -2248,7 +2248,7 @@ class VmdConverter:
         if not snapshot:
             return None
         from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
-        from ..core.mmd_control_rig_motion import _restore_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import restore_animation_channel_snapshot
 
         errors = []
         for row in snapshot.get("channels", []) or []:
@@ -2265,7 +2265,7 @@ class VmdConverter:
             try:
                 if secondary_locked:
                     cmds.setAttr(destination, lock=False)
-                _restore_animation_channel_snapshot(
+                restore_animation_channel_snapshot(
                     cmds,
                     row,
                     destination=destination,
@@ -2332,7 +2332,7 @@ class VmdConverter:
     @staticmethod
     def _restore_mmd_control_rig_animation_snapshot(snapshot) -> Optional[str]:
         """Restore controller keys captured before an EDIT-owned import."""
-        from ..core.mmd_control_rig_motion import _restore_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import restore_animation_channel_snapshot
 
         errors = []
         for row in snapshot or []:
@@ -2342,7 +2342,7 @@ class VmdConverter:
                 continue
             try:
                 destination = f"{control}.{attr}"
-                _restore_animation_channel_snapshot(
+                restore_animation_channel_snapshot(
                     cmds,
                     row,
                     destination=destination,
