@@ -286,6 +286,71 @@ def _set_float4(target, values: Vec4) -> None:
     target[0], target[1], target[2], target[3] = values
 
 
+def _rigid_body_descriptor(
+    shape_type: int, shape_size: Vec3, position: Vec3, rotation: Vec3,
+    mass: float, linear_damping: float, angular_damping: float, friction: float, restitution: float,
+    collision_group: int, collision_mask: int, bone_index: int, mode: int, bone_pos: Vec3,
+) -> tuple[MmdRuntimeFfiPhysicsRigidbodyDesc, bytes]:
+    bfb_pos, bfb_rot = _body_from_bone(position, rotation, bone_pos)
+    bfr_pos, bfr_rot = _bone_from_body(position, rotation, bone_pos)
+
+    desc = MmdRuntimeFfiPhysicsRigidbodyDesc()
+    desc.shape = shape_type
+    _set_float3(desc.shape_size, shape_size)
+    _set_float3(desc.position_xyz, position)
+    _set_float3(desc.rotation_euler_xyz, _pmx_body_euler_to_bullet(rotation))
+    desc.mass = mass
+    desc.linear_damping = linear_damping
+    desc.angular_damping = angular_damping
+    desc.friction = friction
+    desc.restitution = restitution
+    desc.collision_group = collision_group
+    desc.collision_mask = collision_mask
+    desc.bone_index = bone_index
+    desc.mode = mode
+    _set_float3(desc.body_from_bone_position_xyz, bfb_pos)
+    _set_float4(desc.body_from_bone_rotation_xyzw, bfb_rot)
+    _set_float3(desc.bone_from_body_position_xyz, bfr_pos)
+    _set_float4(desc.bone_from_body_rotation_xyzw, bfr_rot)
+
+    return desc, struct.pack(
+        "<I3f3f3f5fHHiI3f4f3f4f",
+        shape_type,
+        *shape_size, *position, *rotation,
+        mass, linear_damping, angular_damping, friction, restitution,
+        collision_group, collision_mask, bone_index, mode,
+        *bfb_pos, *bfb_rot, *bfr_pos, *bfr_rot,
+    )
+
+
+def _joint_descriptor(
+    jt_kind: int, rb_a_index: int, rb_b_index: int, position: Vec3, rotation: Vec3,
+    trans_min: Vec3, trans_max: Vec3, rot_min: Vec3, rot_max: Vec3,
+    spring_trans: Vec3, spring_rot: Vec3,
+) -> tuple[MmdRuntimeFfiPhysicsJointDesc, bytes]:
+    desc = MmdRuntimeFfiPhysicsJointDesc()
+    desc.kind = jt_kind
+    desc.rigidbody_a = rb_a_index
+    desc.rigidbody_b = rb_b_index
+    _set_float3(desc.position_xyz, position)
+    _set_float3(desc.rotation_euler_xyz, rotation)
+    _set_float3(desc.translation_lower_limit_xyz, trans_min)
+    _set_float3(desc.translation_upper_limit_xyz, trans_max)
+    _set_float3(desc.rotation_lower_limit_xyz, rot_min)
+    _set_float3(desc.rotation_upper_limit_xyz, rot_max)
+    _set_float3(desc.spring_translation_factor_xyz, spring_trans)
+    _set_float3(desc.spring_rotation_factor_xyz, spring_rot)
+
+    return desc, struct.pack(
+        "<IQQ3f3f3f3f3f3f3f3f",
+        jt_kind,
+        max(0, rb_a_index), max(0, rb_b_index),
+        *position, *rotation,
+        *trans_min, *trans_max, *rot_min, *rot_max,
+        *spring_trans, *spring_rot,
+    )
+
+
 def build_descriptors_from_pmx(
     rigid_bodies: Sequence,
     joints: Sequence,
@@ -333,40 +398,13 @@ def build_descriptors_from_pmx(
         else:
             bone_pos = (0.0, 0.0, 0.0)
 
-        bfb_pos, bfb_rot = _body_from_bone(rb.position, rb.rotation, bone_pos)
-        bfr_pos, bfr_rot = _bone_from_body(rb.position, rb.rotation, bone_pos)
-
-        desc = MmdRuntimeFfiPhysicsRigidbodyDesc()
-        desc.shape = rb.shape_type
-        _set_float3(desc.shape_size, rb.size)
-        _set_float3(desc.position_xyz, rb.position)
-        _set_float3(desc.rotation_euler_xyz, _pmx_body_euler_to_bullet(rb.rotation))
-        desc.mass = rb.mass
-        desc.linear_damping = rb.velocity_attenuation
-        desc.angular_damping = rb.rotation_attenuation
-        desc.friction = rb.friction
-        desc.restitution = rb.elasticity
-        desc.collision_group = rb.group
-        desc.collision_mask = rb.collision_mask
-        desc.bone_index = bone_idx
-        desc.mode = rb.physics_mode
-        _set_float3(desc.body_from_bone_position_xyz, bfb_pos)
-        _set_float4(desc.body_from_bone_rotation_xyzw, bfb_rot)
-        _set_float3(desc.bone_from_body_position_xyz, bfr_pos)
-        _set_float4(desc.bone_from_body_rotation_xyzw, bfr_rot)
-
+        desc, hash_bytes = _rigid_body_descriptor(
+            rb.shape_type, rb.size, rb.position, rb.rotation,
+            rb.mass, rb.velocity_attenuation, rb.rotation_attenuation, rb.friction, rb.elasticity,
+            rb.group, rb.collision_mask, bone_idx, rb.physics_mode, bone_pos,
+        )
         rb_descs.append(desc)
-
-        hash_parts.append(struct.pack(
-            "<I3f3f3f5fHHiI3f4f3f4f",
-            rb.shape_type,
-            *rb.size, *rb.position, *rb.rotation,
-            rb.mass, rb.velocity_attenuation, rb.rotation_attenuation,
-            rb.friction, rb.elasticity,
-            rb.group, rb.collision_mask,
-            bone_idx, rb.physics_mode,
-            *bfb_pos, *bfb_rot, *bfr_pos, *bfr_rot,
-        ))
+        hash_parts.append(hash_bytes)
 
     jt_descs: List[MmdRuntimeFfiPhysicsJointDesc] = []
     rb_count = len(rigid_bodies)
@@ -403,31 +441,13 @@ def build_descriptors_from_pmx(
             # validation error, but never emit a body-zero constraint.
             continue
 
-        desc = MmdRuntimeFfiPhysicsJointDesc()
-        desc.kind = jt_kind
-        desc.rigidbody_a = jt.rigid_body_a_index
-        desc.rigidbody_b = jt.rigid_body_b_index
-        _set_float3(desc.position_xyz, jt.position)
-        _set_float3(desc.rotation_euler_xyz, jt.rotation)
-        _set_float3(desc.translation_lower_limit_xyz, jt.translation_limit_min)
-        _set_float3(desc.translation_upper_limit_xyz, jt.translation_limit_max)
-        _set_float3(desc.rotation_lower_limit_xyz, jt.rotation_limit_min)
-        _set_float3(desc.rotation_upper_limit_xyz, jt.rotation_limit_max)
-        _set_float3(desc.spring_translation_factor_xyz, jt.spring_translation)
-        _set_float3(desc.spring_rotation_factor_xyz, jt.spring_rotation)
-
+        desc, hash_bytes = _joint_descriptor(
+            jt_kind, jt.rigid_body_a_index, jt.rigid_body_b_index, jt.position, jt.rotation,
+            jt.translation_limit_min, jt.translation_limit_max, jt.rotation_limit_min, jt.rotation_limit_max,
+            jt.spring_translation, jt.spring_rotation,
+        )
         jt_descs.append(desc)
-
-        hash_parts.append(struct.pack(
-            "<IQQ3f3f3f3f3f3f3f3f",
-            jt_kind,
-            max(0, jt.rigid_body_a_index),
-            max(0, jt.rigid_body_b_index),
-            *jt.position, *jt.rotation,
-            *jt.translation_limit_min, *jt.translation_limit_max,
-            *jt.rotation_limit_min, *jt.rotation_limit_max,
-            *jt.spring_translation, *jt.spring_rotation,
-        ))
+        hash_parts.append(hash_bytes)
 
     identity = hashlib.sha256(b"".join(hash_parts)).hexdigest()
 

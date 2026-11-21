@@ -7,7 +7,6 @@ a PhysicsDescriptorSet identical to build_descriptors_from_pmx output.
 from __future__ import annotations
 
 import hashlib
-import struct
 from typing import List, Optional, Sequence
 
 from maya import cmds
@@ -27,11 +26,8 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
 from mmd_tools.core.physics_descriptor import (
     DescriptorValidationError,
     PhysicsDescriptorSet,
-    _body_from_bone,
-    _bone_from_body,
-    _pmx_body_euler_to_bullet,
-    _set_float3,
-    _set_float4,
+    _joint_descriptor,
+    _rigid_body_descriptor,
     validate_joint_fields,
     validate_rigid_body_fields,
 )
@@ -183,37 +179,13 @@ def build_descriptors_from_dag(
         errors.extend(errs)
 
         bone_pos = _resolve_bone_world_position(shape, bone_joints)
-        bfb_pos, bfb_rot = _body_from_bone(position, rotation, bone_pos)
-        bfr_pos, bfr_rot = _bone_from_body(position, rotation, bone_pos)
-
-        desc = MmdRuntimeFfiPhysicsRigidbodyDesc()
-        desc.shape = shape_type
-        _set_float3(desc.shape_size, shape_size)
-        _set_float3(desc.position_xyz, position)
-        _set_float3(desc.rotation_euler_xyz, _pmx_body_euler_to_bullet(rotation))
-        desc.mass = mass
-        desc.linear_damping = linear_damping
-        desc.angular_damping = angular_damping
-        desc.friction = friction
-        desc.restitution = restitution
-        desc.collision_group = collision_group
-        desc.collision_mask = collision_mask
-        desc.bone_index = bone_index
-        desc.mode = mode
-        _set_float3(desc.body_from_bone_position_xyz, bfb_pos)
-        _set_float4(desc.body_from_bone_rotation_xyzw, bfb_rot)
-        _set_float3(desc.bone_from_body_position_xyz, bfr_pos)
-        _set_float4(desc.bone_from_body_rotation_xyzw, bfr_rot)
-        rb_descs.append(desc)
-
-        hash_parts.append(struct.pack(
-            "<I3f3f3f5fHHiI3f4f3f4f",
-            shape_type,
-            *shape_size, *position, *rotation,
+        desc, hash_bytes = _rigid_body_descriptor(
+            shape_type, shape_size, position, rotation,
             mass, linear_damping, angular_damping, friction, restitution,
-            collision_group, collision_mask, bone_index, mode,
-            *bfb_pos, *bfb_rot, *bfr_pos, *bfr_rot,
-        ))
+            collision_group, collision_mask, bone_index, mode, bone_pos,
+        )
+        rb_descs.append(desc)
+        hash_parts.append(hash_bytes)
 
     jt_descs: List[MmdRuntimeFfiPhysicsJointDesc] = []
     rb_count = len(rb_descs)
@@ -266,28 +238,12 @@ def build_descriptors_from_dag(
             # validation errors keep the descriptor set rejected by callers.
             continue
 
-        desc = MmdRuntimeFfiPhysicsJointDesc()
-        desc.kind = jt_kind
-        desc.rigidbody_a = rb_a_index
-        desc.rigidbody_b = rb_b_index
-        _set_float3(desc.position_xyz, position)
-        _set_float3(desc.rotation_euler_xyz, rotation)
-        _set_float3(desc.translation_lower_limit_xyz, trans_min)
-        _set_float3(desc.translation_upper_limit_xyz, trans_max)
-        _set_float3(desc.rotation_lower_limit_xyz, rot_min)
-        _set_float3(desc.rotation_upper_limit_xyz, rot_max)
-        _set_float3(desc.spring_translation_factor_xyz, spring_trans)
-        _set_float3(desc.spring_rotation_factor_xyz, spring_rot)
+        desc, hash_bytes = _joint_descriptor(
+            jt_kind, rb_a_index, rb_b_index, position, rotation,
+            trans_min, trans_max, rot_min, rot_max, spring_trans, spring_rot,
+        )
         jt_descs.append(desc)
-
-        hash_parts.append(struct.pack(
-            "<IQQ3f3f3f3f3f3f3f3f",
-            jt_kind,
-            max(0, rb_a_index), max(0, rb_b_index),
-            *position, *rotation,
-            *trans_min, *trans_max, *rot_min, *rot_max,
-            *spring_trans, *spring_rot,
-        ))
+        hash_parts.append(hash_bytes)
 
     identity = hashlib.sha256(b"".join(hash_parts)).hexdigest() if hash_parts else ""
 
