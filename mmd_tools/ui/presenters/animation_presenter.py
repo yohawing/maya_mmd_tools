@@ -48,6 +48,7 @@ from ..translations import UITranslator
 
 if TYPE_CHECKING:
     from ..application_state import ApplicationState
+    from ..widgets.morph_editor_widgets import MorphRowWidget
 
 logger = get_logger(__name__)
 
@@ -2303,16 +2304,8 @@ class AnimationPresenter:
         from ..qt_compat import (
             QGridLayout,
             QPushButton,
-            QSlider,
             QVBoxLayout,
             QWidget,
-            Qt,
-        )
-        from ..widgets.morph_editor_widgets import (
-            ElidedMorphLabel,
-            MorphRowWidget,
-            MorphWeightSpinBox,
-            create_morph_type_icon,
         )
 
         layout = self.view.morph_groups_layout
@@ -2348,57 +2341,9 @@ class AnimationPresenter:
             self._morph_groups[category_key] = (group, content_layout, header, cat_name)
 
             for row_index, morph in enumerate(morphs):
-                language = UITranslator.instance().get_language()
-                display_name = preferred_pmx_display_name(
-                    morph.name,
-                    morph.name_english,
-                    fallback=lambda: morph_name_fallback(morph.name, morph.index, include_index=True),
-                    language=language,
-                )
-                tooltip_parts = [display_name]
-                tooltip_parts.append(f"Type: {morph.morph_type}")
-                tooltip = "\n".join(tooltip_parts)
-                icon = create_morph_type_icon(morph.morph_type)
-                label = ElidedMorphLabel(display_name, tooltip)
-
-                slider = QSlider(Qt.Horizontal)
-                slider.setRange(0, 100)
-                slider.setStyleSheet(
-                    "QSlider::groove:horizontal { height: 3px; background: #252525; } "
-                    "QSlider::sub-page:horizontal { background: #5d8faa; } "
-                    "QSlider::handle:horizontal { width: 10px; margin: -4px 0; "
-                    "border-radius: 5px; background: #aeb4b8; } "
-                    "QSlider::handle:horizontal:hover { background: #79cfff; }"
-                )
-                editor = MorphWeightSpinBox()
-                plugs = self._morph_plugs(morph.name)
-                enabled = bool(plugs)
-                slider.setEnabled(enabled)
-                editor.setEnabled(enabled)
-
+                row_widgets = self._create_morph_row(morph)
                 morph_name = morph.name
-                slider.valueChanged.connect(
-                    lambda value, name=morph_name: self._on_morph_weight_changed(
-                        name, value / 100.0
-                    )
-                )
-                editor.edit_started.connect(self._begin_morph_edit)
-                editor.edit_finished.connect(self._end_morph_edit)
-                editor.valueChanged.connect(
-                    lambda value, name=morph_name: self._on_morph_weight_changed(
-                        name, value
-                    )
-                )
-                row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
-                row_widgets.slider_edit_started.connect(self._begin_morph_edit)
-                row_widgets.slider_edit_finished.connect(self._end_morph_edit)
-                row_widgets.set_value(self._morph_value(morph_name))
-                row_widgets.set_animation_state(self._morph_animation_state(plugs))
-                row_widgets.activated.connect(
-                    lambda modifiers, name=morph_name, row=row_widgets: self._on_morph_row_activated(name, modifiers, row)
-                )
-                row_widgets.multi_key_requested.connect(self._key_selected_morphs)
-                self._morph_sliders[morph_name] = slider
+                self._morph_sliders[morph_name] = row_widgets.slider
                 self._morph_rows.setdefault(morph_name, row_widgets)
                 self._morph_instances.append((morph_name, row_widgets))
                 content_layout.addWidget(row_widgets, row_index, 0, 1, 4)
@@ -2421,6 +2366,68 @@ class AnimationPresenter:
             layout.insertWidget(insert_pos, group)
 
         self._filter_morph_rows()
+
+    def _create_morph_row(self, morph: MorphInfo) -> MorphRowWidget:
+        """Build and connect the editor widgets for one morph."""
+        from ..qt_compat import QSlider, Qt
+        from ..widgets.morph_editor_widgets import (
+            ElidedMorphLabel,
+            MorphRowWidget,
+            MorphWeightSpinBox,
+            create_morph_type_icon,
+        )
+
+        language = UITranslator.instance().get_language()
+        display_name = preferred_pmx_display_name(
+            morph.name,
+            morph.name_english,
+            fallback=lambda: morph_name_fallback(morph.name, morph.index, include_index=True),
+            language=language,
+        )
+        tooltip_parts = [display_name]
+        tooltip_parts.append(f"Type: {morph.morph_type}")
+        tooltip = "\n".join(tooltip_parts)
+        icon = create_morph_type_icon(morph.morph_type)
+        label = ElidedMorphLabel(display_name, tooltip)
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setStyleSheet(
+            "QSlider::groove:horizontal { height: 3px; background: #252525; } "
+            "QSlider::sub-page:horizontal { background: #5d8faa; } "
+            "QSlider::handle:horizontal { width: 10px; margin: -4px 0; "
+            "border-radius: 5px; background: #aeb4b8; } "
+            "QSlider::handle:horizontal:hover { background: #79cfff; }"
+        )
+        editor = MorphWeightSpinBox()
+        plugs = self._morph_plugs(morph.name)
+        enabled = bool(plugs)
+        slider.setEnabled(enabled)
+        editor.setEnabled(enabled)
+
+        morph_name = morph.name
+        slider.valueChanged.connect(
+            lambda value, name=morph_name: self._on_morph_weight_changed(
+                name, value / 100.0
+            )
+        )
+        editor.edit_started.connect(self._begin_morph_edit)
+        editor.edit_finished.connect(self._end_morph_edit)
+        editor.valueChanged.connect(
+            lambda value, name=morph_name: self._on_morph_weight_changed(
+                name, value
+            )
+        )
+        row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
+        row_widgets.slider_edit_started.connect(self._begin_morph_edit)
+        row_widgets.slider_edit_finished.connect(self._end_morph_edit)
+        row_widgets.set_value(self._morph_value(morph_name))
+        row_widgets.set_animation_state(self._morph_animation_state(plugs))
+        row_widgets.activated.connect(
+            lambda modifiers, name=morph_name, row=row_widgets: self._on_morph_row_activated(name, modifiers, row)
+        )
+        row_widgets.multi_key_requested.connect(self._key_selected_morphs)
+        return row_widgets
 
     def _filter_morph_rows(self, *_args) -> None:
         """Hide unmatched rows and drop only selection that became hidden."""
