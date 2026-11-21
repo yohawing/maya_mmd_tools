@@ -876,13 +876,10 @@ class MayaSceneMetadataBackend:
             diffuse_route,
             diffuse_target,
         )
+        self._read_viewport_patch_values(original, diffuse_route, diffuse_target, diffuse_alpha_target)
         if diffuse_route is not None:
-            original["viewport_diffuse"] = self._read_material_diffuse_target(diffuse_target)
             expected_old["viewport_diffuse"] = self._maya_float3(old_material.diffuse[:3])
             if diffuse_alpha_target is not None:
-                original["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                    diffuse_alpha_target
-                )
                 expected_old["viewport_diffuse_alpha"] = old_material.diffuse[3]
         if not self._material_value_attrs_equal(original, expected_old):
             raise MayaSceneMetadataError(
@@ -1197,19 +1194,14 @@ class MayaSceneMetadataBackend:
         shader = self._material_identity(binding)
         if shader != transaction["binding"] or material.binding_identity != shader:
             raise MayaSceneMetadataError("material value patch commit binding mismatch")
-        actual = self._read_material_value_attrs(shader)
+        actual = self._read_viewport_patch_values(
+            self._read_material_value_attrs(shader), transaction.get("diffuse_route"),
+            transaction.get("diffuse_target"), transaction.get("diffuse_alpha_target"),
+        )
         expected = dict(transaction["target_values"])
-        diffuse_route = transaction.get("diffuse_route")
-        if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._read_material_diffuse_target(
-                transaction["diffuse_target"]
-            )
+        if transaction.get("diffuse_route") is not None:
             expected["viewport_diffuse"] = self._maya_float3(material.diffuse[:3])
-            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
-            if diffuse_alpha_target is not None:
-                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                    diffuse_alpha_target
-                )
+            if transaction.get("diffuse_alpha_target") is not None:
                 expected["viewport_diffuse_alpha"] = material.diffuse[3]
         if not self._material_value_attrs_equal(actual, expected):
             raise MayaSceneMetadataError(
@@ -1328,6 +1320,17 @@ class MayaSceneMetadataBackend:
         if len(converted) != 3:
             raise MayaSceneMetadataError("Maya float3 values must contain exactly three numbers")
         return converted
+
+    def _read_viewport_patch_values(
+        self, values: dict[str, Any], diffuse_route: MayaMaterialShaderRoute | None,
+        diffuse_target: str | None, diffuse_alpha_target: str | None,
+    ) -> dict[str, Any]:
+        """Add the viewport values owned by this material patch to its semantic values."""
+        if diffuse_route is not None:
+            values["viewport_diffuse"] = self._read_material_diffuse_target(diffuse_target)
+            if diffuse_alpha_target is not None:
+                values["viewport_diffuse_alpha"] = self._read_material_scalar_target(diffuse_alpha_target)
+        return values
 
     def _read_material_value_attrs(self, shader: str) -> dict[str, Any]:
         """Read only patch-safe semantic attrs from one shader binding."""
@@ -1984,17 +1987,10 @@ class MayaSceneMetadataBackend:
                 raise MayaSceneMetadataError("bone registration rollback preimage mismatch")
             return
         if kind == "material_value":
-            actual = self._read_material_value_attrs(transaction["binding"])
-            diffuse_route = transaction.get("diffuse_route")
-            if isinstance(diffuse_route, MayaMaterialShaderRoute):
-                actual["viewport_diffuse"] = self._read_material_diffuse_target(
-                    transaction["diffuse_target"]
-                )
-                diffuse_alpha_target = transaction.get("diffuse_alpha_target")
-                if diffuse_alpha_target is not None:
-                    actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                        diffuse_alpha_target
-                    )
+            actual = self._read_viewport_patch_values(
+                self._read_material_value_attrs(transaction["binding"]), transaction.get("diffuse_route"),
+                transaction.get("diffuse_target"), transaction.get("diffuse_alpha_target"),
+            )
             if not self._material_value_attrs_equal(
                 actual, transaction["original_values"]
             ):
@@ -2075,18 +2071,11 @@ class MayaSceneMetadataBackend:
 
     def _material_value_mutated(self, transaction: Mapping[str, Any]) -> bool:
         """Return whether a narrow Material command changed owned state."""
-        actual = self._read_material_value_attrs(transaction["binding"])
-        diffuse_route = transaction.get("diffuse_route")
+        actual = self._read_viewport_patch_values(
+            self._read_material_value_attrs(transaction["binding"]), transaction.get("diffuse_route"),
+            transaction.get("diffuse_target"), transaction.get("diffuse_alpha_target"),
+        )
         expected = transaction["original_values"]
-        if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._read_material_diffuse_target(
-                transaction["diffuse_target"]
-            )
-            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
-            if diffuse_alpha_target is not None:
-                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                    diffuse_alpha_target
-                )
         if not self._material_value_attrs_equal(actual, expected):
             return True
         outline_original = transaction.get("outline_original")
