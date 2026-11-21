@@ -37,6 +37,7 @@ _STREAM_METADATA_NAMES = {
     "shadow_frames": "shadows",
     "ik_show_hide_frames": "ik",
 }
+_STREAM_METADATA_KEYS = frozenset(_STREAM_METADATA_NAMES.values())
 _VMD_SIGNATURE = b"Vocaloid Motion Data"
 _VMD_SIGNATURE_V2 = b"Vocaloid Motion Data 0002"
 
@@ -550,32 +551,14 @@ def _stream_check_fixed_record(
     return frame_number
 
 
-def verify_vmd_output_streaming(
-    file_path: str,
-    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
-    *,
-    expected_counts: Optional[Mapping[str, int]] = None,
-    expected_bounds: Optional[Mapping[str, Any]] = None,
-    expected_sha256: Optional[str] = None,
-    expected_size: Optional[int] = None,
-    expected_frame_range: Optional[Tuple[int, int]] = None,
-) -> ExportValidationReport:
-    """Verify a VMD file one wire record at a time.
-
-    Unlike :func:`verify_vmd_output`, this verifier never constructs
-    ``VmdData`` or retains frame/name objects.  It accepts the optional tail
-    sections used by legacy VMD writers, while requiring each section that is
-    present to have a complete count and complete records.  The stream writer
-    emits all six canonical count fields, including an empty IK section.
-    """
-    normalized_strategy = str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
-    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
-        normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
-    issues: List[ExportValidationIssue] = []
-    metadata_names = frozenset(_STREAM_METADATA_NAMES.values())
+def _canonical_stream_counts(
+    expected_counts: Optional[Mapping[str, int]],
+    issues: List[ExportValidationIssue],
+) -> Optional[Dict[str, int]]:
+    """Validate expected counts and return them keyed by VMD section."""
     canonical_counts: Optional[Dict[str, int]] = None
     if expected_counts is not None:
-        counts_are_canonical = isinstance(expected_counts, Mapping) and set(expected_counts) == metadata_names
+        counts_are_canonical = isinstance(expected_counts, Mapping) and set(expected_counts) == _STREAM_METADATA_KEYS
         if counts_are_canonical:
             canonical_counts = {
                 section: expected_counts[name]
@@ -593,14 +576,21 @@ def verify_vmd_output_streaming(
                 "expected_counts",
                 "VMD stream counts must declare exactly six canonical unsigned 32-bit counts",
                 details={
-                    "expected_count_contract": sorted(metadata_names),
+                    "expected_count_contract": sorted(_STREAM_METADATA_KEYS),
                     "actual_type": type(expected_counts).__name__,
                 },
             )
+    return canonical_counts
 
+
+def _canonical_stream_bounds(
+    expected_bounds: Optional[Mapping[str, Any]],
+    issues: List[ExportValidationIssue],
+) -> Optional[Dict[str, Tuple[Optional[int], Optional[int]]]]:
+    """Validate expected bounds and return them keyed by VMD section."""
     canonical_bounds: Optional[Dict[str, Tuple[Optional[int], Optional[int]]]] = None
     if expected_bounds is not None:
-        bounds_are_canonical = isinstance(expected_bounds, Mapping) and set(expected_bounds) == metadata_names
+        bounds_are_canonical = isinstance(expected_bounds, Mapping) and set(expected_bounds) == _STREAM_METADATA_KEYS
         if bounds_are_canonical:
             try:
                 canonical_bounds = {
@@ -627,10 +617,37 @@ def verify_vmd_output_streaming(
                 "expected_bounds",
                 "VMD stream bounds must declare six canonical minimum/maximum pairs",
                 details={
-                    "expected_bounds_contract": sorted(metadata_names),
+                    "expected_bounds_contract": sorted(_STREAM_METADATA_KEYS),
                     "actual_type": type(expected_bounds).__name__,
                 },
             )
+    return canonical_bounds
+
+
+def verify_vmd_output_streaming(
+    file_path: str,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
+    *,
+    expected_counts: Optional[Mapping[str, int]] = None,
+    expected_bounds: Optional[Mapping[str, Any]] = None,
+    expected_sha256: Optional[str] = None,
+    expected_size: Optional[int] = None,
+    expected_frame_range: Optional[Tuple[int, int]] = None,
+) -> ExportValidationReport:
+    """Verify a VMD file one wire record at a time.
+
+    Unlike :func:`verify_vmd_output`, this verifier never constructs
+    ``VmdData`` or retains frame/name objects.  It accepts the optional tail
+    sections used by legacy VMD writers, while requiring each section that is
+    present to have a complete count and complete records.  The stream writer
+    emits all six canonical count fields, including an empty IK section.
+    """
+    normalized_strategy = str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
+    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
+        normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
+    issues: List[ExportValidationIssue] = []
+    canonical_counts = _canonical_stream_counts(expected_counts, issues)
+    canonical_bounds = _canonical_stream_bounds(expected_bounds, issues)
 
     normalized_frame_range, frame_range_issue = _normalize_frame_range(expected_frame_range)
     if frame_range_issue is not None:
