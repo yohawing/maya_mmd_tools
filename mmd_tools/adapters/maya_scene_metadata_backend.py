@@ -1895,56 +1895,11 @@ class MayaSceneMetadataBackend:
 
     def rollback_write(self, model_root: str) -> None:
         transaction = self._active_transaction(model_root)
-        if transaction.get("kind") == "full_metadata":
+        kind = transaction.get("kind")
+        if kind == "full_metadata":
             self._full_metadata_transaction.rollback_write(model_root)
             return
-        if transaction.get("kind") == "morph_topology_repair":
-            try:
-                if transaction["chunk_open"]:
-                    self._call_adapter("undo_info", closeChunk=True)
-                    transaction["chunk_open"] = False
-                if transaction["mutated"]:
-                    self._call_adapter("undo")
-            finally:
-                self._write_transaction = None
-            controller = transaction["controller"]
-            actual = {
-                "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
-                "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
-                "version_locked": bool(
-                    self._call_adapter(
-                        "get_attr", f"{controller}.topologyVersion", lock=True
-                    )
-                ),
-                "source_locked": bool(
-                    self._call_adapter(
-                        "get_attr", f"{controller}.groupTopology", lock=True
-                    )
-                ),
-            }
-            if actual != transaction["original_values"]:
-                raise MayaSceneMetadataError("morph topology rollback preimage mismatch")
-            return
-        if transaction.get("kind") == "display_frames":
-            try:
-                if transaction["chunk_open"]:
-                    self._call_adapter("undo_info", closeChunk=True)
-                    transaction["chunk_open"] = False
-                if transaction["mutated"]:
-                    self._call_adapter("undo")
-            finally:
-                self._write_transaction = None
-            existed = self._has_attr(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
-            if existed != transaction["attr_existed"]:
-                raise MayaSceneMetadataError("display frame rollback attribute existence mismatch")
-            if existed:
-                actual = self._required_string(
-                    transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON
-                )
-                if actual != transaction["original_value"]:
-                    raise MayaSceneMetadataError("display frame rollback preimage mismatch")
-            return
-        if transaction.get("kind") == "material_value":
+        if kind == "material_value":
             # Native Material commands can fail before Maya records any undo
             # item, or after changing only part of their fixed write set.
             # Decide from the narrow preimage/read-back pair instead of
@@ -1956,7 +1911,7 @@ class MayaSceneMetadataBackend:
                 # harmless.  Preserve the fail-closed rollback behavior; the
                 # subsequent exact preimage check reports any remaining issue.
                 transaction["mutated"] = True
-        if transaction.get("kind") == "material_binding":
+        if kind == "material_binding":
             try:
                 transaction["mutated"] = self.read_material_value(
                     transaction["root"], transaction["binding"], transaction["index"]
@@ -1975,7 +1930,37 @@ class MayaSceneMetadataBackend:
                 self._call_adapter("undo")
         finally:
             self._write_transaction = None
-        if transaction.get("kind") == "bone_value":
+        if kind == "morph_topology_repair":
+            controller = transaction["controller"]
+            actual = {
+                "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
+                "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
+                "version_locked": bool(
+                    self._call_adapter(
+                        "get_attr", f"{controller}.topologyVersion", lock=True
+                    )
+                ),
+                "source_locked": bool(
+                    self._call_adapter(
+                        "get_attr", f"{controller}.groupTopology", lock=True
+                    )
+                ),
+            }
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("morph topology rollback preimage mismatch")
+            return
+        if kind == "display_frames":
+            existed = self._has_attr(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
+            if existed != transaction["attr_existed"]:
+                raise MayaSceneMetadataError("display frame rollback attribute existence mismatch")
+            if existed:
+                actual = self._required_string(
+                    transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON
+                )
+                if actual != transaction["original_value"]:
+                    raise MayaSceneMetadataError("display frame rollback preimage mismatch")
+            return
+        if kind == "bone_value":
             self._require_selected_bone(
                 transaction["root"], transaction["binding"], transaction["index"]
             )
@@ -1983,7 +1968,7 @@ class MayaSceneMetadataBackend:
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("bone value patch rollback fingerprint mismatch")
             return
-        if transaction.get("kind") == "bone_register":
+        if kind == "bone_register":
             members = tuple(self._registry_morph_members(transaction["root"]) or ())
             if members != tuple(transaction["registry_members"]):
                 raise MayaSceneMetadataError("bone registration rollback registry mismatch")
@@ -1998,7 +1983,7 @@ class MayaSceneMetadataBackend:
             if actual_attrs != transaction["original_attrs"]:
                 raise MayaSceneMetadataError("bone registration rollback preimage mismatch")
             return
-        if transaction.get("kind") == "material_value":
+        if kind == "material_value":
             actual = self._read_material_value_attrs(transaction["binding"])
             diffuse_route = transaction.get("diffuse_route")
             if isinstance(diffuse_route, MayaMaterialShaderRoute):
@@ -2017,7 +2002,7 @@ class MayaSceneMetadataBackend:
             self._verify_material_outline_rollback(transaction)
             self._discard_failed_material_redo(transaction)
             return
-        if transaction.get("kind") == "material_binding":
+        if kind == "material_binding":
             actual = self.read_material_value(
                 transaction["root"], transaction["binding"], transaction["index"]
             )
@@ -2026,7 +2011,7 @@ class MayaSceneMetadataBackend:
             self._verify_material_outline_rollback(transaction)
             self._discard_failed_material_redo(transaction)
             return
-        if transaction.get("kind") == "material_create":
+        if kind == "material_create":
             members = self._registry_material_members(transaction["root"])
             if members is None:
                 raise MayaSceneMetadataError("material create rollback registry ownership disappeared")
@@ -2034,7 +2019,7 @@ class MayaSceneMetadataBackend:
             if actual != tuple(transaction["original_members"]):
                 raise MayaSceneMetadataError("material create rollback registry mismatch")
             return
-        if transaction.get("kind") == "material_reindex":
+        if kind == "material_reindex":
             actual = self._capture_material_reindex_state(
                 transaction["root"],
                 transaction["first_index"],
@@ -2044,7 +2029,7 @@ class MayaSceneMetadataBackend:
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("material reindex rollback narrow-state mismatch")
             return
-        if transaction.get("kind") == "morph_value":
+        if kind == "morph_value":
             self._require_selected_morph(
                 transaction["root"], transaction["binding"], transaction["index"]
             )
@@ -2056,12 +2041,12 @@ class MayaSceneMetadataBackend:
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("morph value patch rollback fingerprint mismatch")
             return
-        if transaction.get("kind") == "morph_reindex":
+        if kind == "morph_reindex":
             actual = self._capture_morph_reindex_state(transaction["root"])
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("morph reindex rollback fingerprint mismatch")
             return
-        if transaction.get("kind") == "morph_create":
+        if kind == "morph_create":
             actual = self._capture_morph_create_state(transaction["root"])
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("morph creation rollback fingerprint mismatch")
