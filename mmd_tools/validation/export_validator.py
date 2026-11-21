@@ -1462,8 +1462,6 @@ def _validate_pmx_morph_offsets(
                 0,
                 0xFF,
                 issues,
-                type_code="INPUT_INVALID",
-                range_code="INPUT_INVALID",
             )
             _validate_numeric_fields(
                 offset,
@@ -1531,8 +1529,6 @@ def _validate_morphs(
             0,
             0xFF,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
         )
 
         offsets = morph.get("offsets", ())
@@ -1560,8 +1556,8 @@ def _validate_optional_reference(
     effective_count: int,
     issues: List[ExportValidationIssue],
     *,
-    type_code: str,
-    range_code: str,
+    type_code: str = "INPUT_INVALID",
+    range_code: str = "INPUT_INVALID",
     label: str,
 ) -> None:
     """Validate an optional -1-or-in-range integer reference."""
@@ -1590,8 +1586,8 @@ def _validate_integer_range_field(
     maximum: int,
     issues: List[ExportValidationIssue],
     *,
-    type_code: str,
-    range_code: str,
+    type_code: str = "INPUT_INVALID",
+    range_code: str = "INPUT_INVALID",
     allow_none: bool = False,
 ) -> None:
     """Validate an optional integer field and its inclusive numeric range."""
@@ -1781,8 +1777,6 @@ def _validate_display_frames(
             0,
             1,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
         )
         if "elements" not in frame:
             continue
@@ -1877,8 +1871,6 @@ def _validate_rigid_bodies(
                 minimum,
                 maximum,
                 issues,
-                type_code="INPUT_INVALID",
-                range_code="INPUT_INVALID",
             )
         for field_name in ("size", "position", "rotation"):
             _validate_vector_field(rigid_body, field_name, 3, rigid_body_path, issues)
@@ -1915,8 +1907,6 @@ def _validate_joints(
             0,
             0xFF,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
         )
         for field_name in ("rigid_body_a_index", "rigid_body_b_index"):
             _validate_optional_reference(
@@ -2004,8 +1994,6 @@ def _validate_materials(
             0,
             UINT32_MAX,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
             allow_none=True,
         )
         face_count = material.get("face_count")
@@ -2022,8 +2010,6 @@ def _validate_materials(
             material_path,
             texture_count,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
             label="material texture index",
         )
         _validate_optional_reference(
@@ -2032,8 +2018,6 @@ def _validate_materials(
             material_path,
             texture_count,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
             label="material sphere texture index",
         )
         _validate_integer_range_field(
@@ -2043,8 +2027,6 @@ def _validate_materials(
             0,
             3,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
         )
         _validate_integer_range_field(
             material,
@@ -2053,8 +2035,6 @@ def _validate_materials(
             0,
             1,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
         )
         _validate_integer_range_field(
             material,
@@ -2063,8 +2043,6 @@ def _validate_materials(
             0,
             0xFF,
             issues,
-            type_code="INPUT_INVALID",
-            range_code="INPUT_INVALID",
         )
 
         shared_toon_flag = material.get("shared_toon_flag", 0)
@@ -2076,8 +2054,6 @@ def _validate_materials(
                     material_path,
                     texture_count,
                     issues,
-                    type_code="INPUT_INVALID",
-                    range_code="INPUT_INVALID",
                     label="material toon texture index",
                 )
             else:
@@ -2096,8 +2072,6 @@ def _validate_materials(
                         0,
                         9,
                         issues,
-                        type_code="INPUT_INVALID",
-                        range_code="INPUT_INVALID",
                     )
 
     if expected_index_count is None or has_invalid_face_count:
