@@ -25,6 +25,9 @@ from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
     CONTROL_RIG_MMD_OWNED,
     MmdControlRigBuildError,
+    _canonical_node,
+    _restore_raw_metadata,
+    _undo_chunk,
     inspect_mmd_control_rig,
     read_mmd_control_rig_metadata,
     remove_mmd_control_rig,
@@ -5077,13 +5080,6 @@ def _resolve_uuid(cmds, uuid: str) -> str:
     return str(nodes[0])
 
 
-def _canonical_node(cmds, node: str) -> str:
-    nodes = cmds.ls(node, long=True) or []
-    if len(nodes) != 1:
-        raise MmdControlRigBuildError(f"expected one scene node: {node}")
-    return str(nodes[0])
-
-
 def _write_metadata(cmds, root: str, metadata: Mapping[str, Any]) -> None:
     cmds.setAttr(
         f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}",
@@ -5097,24 +5093,3 @@ def _raw_metadata(cmds, root: str) -> Optional[str]:
     if not cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
         return None
     return cmds.getAttr(f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}")
-
-
-def _restore_raw_metadata(cmds, root: str, raw: Optional[str]) -> None:
-    """Restore the exact metadata payload that preceded a transition."""
-    plug = f"{root}.{ATTR_MMD_CONTROL_RIG_JSON}"
-    if raw is None:
-        if cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
-            cmds.deleteAttr(plug)
-        return
-    if not cmds.attributeQuery(ATTR_MMD_CONTROL_RIG_JSON, node=root, exists=True):
-        cmds.addAttr(root, longName=ATTR_MMD_CONTROL_RIG_JSON, dataType="string")
-    cmds.setAttr(plug, raw, type="string")
-
-
-@contextmanager
-def _undo_chunk(cmds, label: str):
-    cmds.undoInfo(openChunk=True, chunkName=label)
-    try:
-        yield
-    finally:
-        cmds.undoInfo(closeChunk=True)
