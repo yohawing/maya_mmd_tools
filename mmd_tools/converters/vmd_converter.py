@@ -593,56 +593,17 @@ class VmdConverter:
         # refuse fail-closed while target_model is a HumanIK TARGET preview
         # or has an active Control Rig, with no implicit mode switching.
         self._enforce_humanik_import_gate(target_model)
-        registered_sparse_frames = None
-        runtime_bake_requested = False
-        if not bake_mode and getattr(vmd_data, "bone_frames", None):
-            # Resolve the imported PMX index table before any Control Rig or
-            # clear-existing transaction mutates the scene. Missing native
-            # introspection fails closed instead of falling back to raw keys.
-            self._build_name_mappings(target_namespace, target_model=target_model)
-            sparse_vmd_bytes, sparse_pmx_bytes, sparse_pmx_path = (
-                self._resolve_runtime_bake_sources(
-                    vmd_data,
-                    vmd_bytes,
-                    pmx_bytes,
-                    pmx_path,
-                    target_namespace,
-                )
-            )
-            # Registered sparse compilation is only a legacy fallback.  When
-            # the runtime path is already selected, asking the native model
-            # parser to compile the same fake/opaque bytes first is both
-            # redundant and an unnecessary preflight failure point.
-            has_registered_source = bool(
-                sparse_vmd_bytes
-                and (
-                    sparse_pmx_bytes
-                    or (
-                        sparse_pmx_path
-                        and str(sparse_pmx_path).lower().endswith(".pmx")
-                    )
-                )
-            )
-            runtime_bake_requested = (
-                not create_mmd_control_rig
-                and has_registered_source
-                and self._should_use_mmd_runtime_bake(
-                    sparse_vmd_bytes,
-                    sparse_pmx_bytes,
-                    sparse_pmx_path,
-                    self._has_live_mmd_rig_for_runtime_target(),
-                    bake_mode,
-                )
-            )
-            if not runtime_bake_requested and (
-                create_mmd_control_rig or has_registered_source
-            ):
-                registered_sparse_frames, _ = self._compiled_registered_sparse_frames(
-                    vmd_bytes=sparse_vmd_bytes,
-                    pmx_bytes=sparse_pmx_bytes,
-                    pmx_path=sparse_pmx_path,
-                    profile=profile,
-                )
+        registered_sparse_frames = self._resolve_registered_sparse_frames(
+            vmd_data=vmd_data,
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=pmx_bytes,
+            pmx_path=pmx_path,
+            target_namespace=target_namespace,
+            target_model=target_model,
+            bake_mode=bake_mode,
+            create_mmd_control_rig=create_mmd_control_rig,
+            profile=profile,
+        )
         control_rig_transaction = None
         if create_mmd_control_rig:
             control_rig_transaction = self._prepare_mmd_control_rig_import(
@@ -1060,6 +1021,72 @@ class VmdConverter:
             self._current_import_live_rig_target = False
             self._restore_anim_layer_selection(anim_layer_selection)
             self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
+
+    def _resolve_registered_sparse_frames(
+        self,
+        *,
+        vmd_data,
+        vmd_bytes,
+        pmx_bytes,
+        pmx_path,
+        target_namespace,
+        target_model,
+        bake_mode,
+        create_mmd_control_rig,
+        profile,
+    ) -> Optional[tuple]:
+        """Compile registered sparse bone frames unless the runtime bake path takes over."""
+        registered_sparse_frames = None
+        runtime_bake_requested = False
+        if not bake_mode and getattr(vmd_data, "bone_frames", None):
+            # Resolve the imported PMX index table before any Control Rig or
+            # clear-existing transaction mutates the scene. Missing native
+            # introspection fails closed instead of falling back to raw keys.
+            self._build_name_mappings(target_namespace, target_model=target_model)
+            sparse_vmd_bytes, sparse_pmx_bytes, sparse_pmx_path = (
+                self._resolve_runtime_bake_sources(
+                    vmd_data,
+                    vmd_bytes,
+                    pmx_bytes,
+                    pmx_path,
+                    target_namespace,
+                )
+            )
+            # Registered sparse compilation is only a legacy fallback.  When
+            # the runtime path is already selected, asking the native model
+            # parser to compile the same fake/opaque bytes first is both
+            # redundant and an unnecessary preflight failure point.
+            has_registered_source = bool(
+                sparse_vmd_bytes
+                and (
+                    sparse_pmx_bytes
+                    or (
+                        sparse_pmx_path
+                        and str(sparse_pmx_path).lower().endswith(".pmx")
+                    )
+                )
+            )
+            runtime_bake_requested = (
+                not create_mmd_control_rig
+                and has_registered_source
+                and self._should_use_mmd_runtime_bake(
+                    sparse_vmd_bytes,
+                    sparse_pmx_bytes,
+                    sparse_pmx_path,
+                    self._has_live_mmd_rig_for_runtime_target(),
+                    bake_mode,
+                )
+            )
+            if not runtime_bake_requested and (
+                create_mmd_control_rig or has_registered_source
+            ):
+                registered_sparse_frames, _ = self._compiled_registered_sparse_frames(
+                    vmd_bytes=sparse_vmd_bytes,
+                    pmx_bytes=sparse_pmx_bytes,
+                    pmx_path=sparse_pmx_path,
+                    profile=profile,
+                )
+        return registered_sparse_frames
 
     def _enforce_humanik_import_gate(self, target_model: str) -> None:
         """Refuse VMD import while HumanIK owns ``target_model`` as TARGET/Control Rig.
