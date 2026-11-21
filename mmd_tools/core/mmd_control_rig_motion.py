@@ -313,8 +313,10 @@ def resolve_control_rig_direct_vmd_export_routes(
                     destination=False,
                     plugs=True,
                 ) or []
-                if tuple(_canonical_plug(cmds, str(plug)) for plug in incoming) != (
-                    control_plug,
+                # An animation layer blend may sit between the control and
+                # the solver; accept it when the control is still upstream.
+                if len(incoming) != 1 or not _plug_reaches_control(
+                    cmds, str(incoming[0]), control_plug
                 ):
                     raise MmdControlRigBuildError(
                         f"IK solver writer mismatch: {solver}.enabled"
