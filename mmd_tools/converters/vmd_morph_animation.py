@@ -1,37 +1,17 @@
 """Morph-specific helpers for VMD animation conversion."""
 
-from typing import Any, Dict, List, Union
+from typing import Dict, List
 
 import maya.cmds as cmds
 
 from . import vmd_profile
-from .vmd_context import VmdMorphAnimationContext
+from .vmd_context import VmdMorphAnimationContext, resolve_morph_animation_context
 from .vmd_scene_keying import _ensure_fallback_allowed
-
-
-def _resolve_morph_animation_context(
-    converter_or_context: Union[Any, VmdMorphAnimationContext],
-) -> VmdMorphAnimationContext:
-    if isinstance(converter_or_context, VmdMorphAnimationContext):
-        return converter_or_context
-    factory = getattr(converter_or_context, "_morph_animation_context", None)
-    if callable(factory):
-        return factory()
-    return VmdMorphAnimationContext(
-        logger=converter_or_context.logger,
-        morph_name_mapping=converter_or_context.morph_name_mapping,
-        anim_layer=converter_or_context.anim_layer,
-        use_animation_layers=converter_or_context.use_animation_layers,
-        iter_morph_mappings=converter_or_context._iter_morph_mappings,
-        vmd_frame_to_maya_time=converter_or_context.vmd_frame_to_maya_time,
-        samples_as_anim_layer_deltas=converter_or_context._samples_as_anim_layer_deltas,
-        batch_key_scalar_channels=converter_or_context._batch_key_scalar_channels,
-    )
 
 
 def convert_morph_animation(converter_or_context, morph_frames) -> bool:
     """Convert VMD morph frames using explicit morph-animation context."""
-    context = _resolve_morph_animation_context(converter_or_context)
+    context = resolve_morph_animation_context(converter_or_context)
     return _convert_morph_animation(context, morph_frames)
 
 
