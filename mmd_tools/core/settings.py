@@ -15,6 +15,21 @@ _MODEL_CREATE_MMD_CONTROL_RIG_OPTION_KEY = "import::model::create_mmd_control_ri
 _REMOVED_NATIVE_IMPORT_KEYS = ("use_cpp_fast_load", "use_cpp_vp2_ownership")
 
 
+def _option_var_available():
+    if not MAYA_AVAILABLE:
+        return False
+    try:
+        return hasattr(cmds, "optionVar")
+    except Exception:
+        return False
+
+
+def _set_nested(data, keys, value):
+    for key in keys[:-1]:
+        data = data.setdefault(key, {})
+    data[keys[-1]] = value
+
+
 def remove_legacy_native_import_settings(data):
     """Discard retired route preferences while retaining other native settings."""
     import_settings = data.get("import")
@@ -103,14 +118,7 @@ class Settings(UserDict):
 
     def load(self):
         """Load all settings from Maya's optionVars."""
-        if not MAYA_AVAILABLE:
-            return
-
-        # cmds.optionVarが利用可能かチェック
-        try:
-            if not hasattr(cmds, "optionVar"):
-                return
-        except Exception:
+        if not _option_var_available():
             return
 
         flat_defaults = self._flatten_dict(self._defaults)
@@ -130,11 +138,7 @@ class Settings(UserDict):
                     value = default_value  # Fallback to default if conversion fails
 
             # Set the loaded value in the nested dictionary
-            keys = key.split("::")
-            d = self.data
-            for k in keys[:-1]:
-                d = d.setdefault(k, {})
-            d[keys[-1]] = value
+            _set_nested(self.data, key.split("::"), value)
 
         self._migrate_legacy_create_mmd_control_rig_option_var()
 
@@ -169,10 +173,7 @@ class Settings(UserDict):
             return
 
         keys = _MODEL_CREATE_MMD_CONTROL_RIG_OPTION_KEY.split("::")
-        target = self.data
-        for key in keys[:-1]:
-            target = target.setdefault(key, {})
-        target[keys[-1]] = value
+        _set_nested(self.data, keys, value)
         try:
             cmds.optionVar(iv=(model_option_var, int(value)))
         except Exception:
@@ -183,14 +184,7 @@ class Settings(UserDict):
     def save(self):
         """Save all current settings to Maya's optionVars."""
         remove_legacy_native_import_settings(self.data)
-        if not MAYA_AVAILABLE:
-            return
-
-        # cmds.optionVarが利用可能かチェック
-        try:
-            if not hasattr(cmds, "optionVar"):
-                return
-        except Exception:
+        if not _option_var_available():
             return
 
         self._remove_legacy_native_import_settings()
