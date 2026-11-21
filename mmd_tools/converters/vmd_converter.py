@@ -14,7 +14,7 @@ import math
 from functools import partial
 import struct
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple, Union
 
 
 import maya.api.OpenMaya as om
@@ -628,13 +628,7 @@ class VmdConverter:
                     reason_code="control_rig_import_preflight_failed",
                 )
                 rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
-                self._record_control_rig_import_failure(profile, failure, rollback_error)
-                if rollback_error:
-                    raise MMDImportException(
-                        f"{failure}; {rollback_error}",
-                        reason_code=failure.reason_code,
-                    ) from failure
-                raise failure
+                self._raise_control_rig_import_failure(profile, failure, rollback_error)
             return False
         import_start_time = None
         anim_layer_selection = None
@@ -834,17 +828,7 @@ class VmdConverter:
                                 reason_code="control_rig_import_runtime_failed",
                             )
                             rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
-                            self._record_control_rig_import_failure(
-                                import_context.profile,
-                                failure,
-                                rollback_error,
-                            )
-                            if rollback_error:
-                                raise MMDImportException(
-                                    f"{failure}; {rollback_error}",
-                                    reason_code=failure.reason_code,
-                                ) from failure
-                            raise failure
+                            self._raise_control_rig_import_failure(import_context.profile, failure, rollback_error)
                         return False
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
                     self._record_profile_warning(
@@ -1009,13 +993,7 @@ class VmdConverter:
                     f"MMD Control Rig VMD import failed: {e}",
                     reason_code="control_rig_import_failed",
                 )
-                self._record_control_rig_import_failure(import_context.profile, failure, rollback_error)
-                if rollback_error:
-                    raise MMDImportException(
-                        f"{failure}; {rollback_error}",
-                        reason_code=failure.reason_code,
-                    ) from e
-                raise failure from e
+                self._raise_control_rig_import_failure(import_context.profile, failure, rollback_error, cause=e)
             return False
         finally:
             self._current_import_live_rig_target = False
@@ -2464,6 +2442,18 @@ class VmdConverter:
                 # orphaned rollback aid; a connected curve remains owned by
                 # the newly-authored route and is intentionally preserved.
                 continue
+
+    def _raise_control_rig_import_failure(self, profile, failure, rollback_error, *, cause=None) -> NoReturn:
+        """Record the import failure before raising it with any rollback details."""
+        self._record_control_rig_import_failure(profile, failure, rollback_error)
+        if rollback_error:
+            raise MMDImportException(
+                f"{failure}; {rollback_error}",
+                reason_code=failure.reason_code,
+            ) from (failure if cause is None else cause)
+        if cause is None:
+            raise failure
+        raise failure from cause
 
     @staticmethod
     def _record_control_rig_import_failure(profile, exc, rollback_error=None) -> None:
