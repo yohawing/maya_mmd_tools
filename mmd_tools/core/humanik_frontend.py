@@ -1991,8 +1991,8 @@ class HumanIkFrontendSession:
             "enter_target_mode": self._describe_enter_target_mode_action(key, preview_active),
             "create_control_rig": self._describe_create_control_rig_action(key, preview_active),
             "bake_to_mmd_rig": self._describe_bake_to_mmd_rig_action(),
-            "bake_to_control_rig": self._describe_bake_to_control_rig_action(),
-            "bake_from_control_rig": self._describe_bake_from_control_rig_action(),
+            "bake_to_control_rig": self._describe_control_rig_bake_action(),
+            "bake_from_control_rig": self._describe_control_rig_bake_action(),
             "restore_mmd_rig": self._describe_restore_mmd_rig_action(nothing_to_restore),
             "diagnostics": {"allowed": True, "reasonCode": None, "reasonText": None},
         }
@@ -2046,15 +2046,36 @@ class HumanIkFrontendSession:
             state["importLock"] = self._describe_import_lock(key)
         return state
 
+    @staticmethod
+    def _preview_active_block(action_name: str) -> Dict[str, Any]:
+        return _action_blocked(
+            REASON_PREVIEW_ACTIVE,
+            f"Cannot {action_name} while a HumanIK target preview is active",
+        )
+
+    @staticmethod
+    def _not_characterized_block(key: str) -> Dict[str, Any]:
+        return _action_blocked(REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}")
+
+    def _control_rig_interop_block(self, key: str) -> Optional[Dict[str, Any]]:
+        interop = inspect_humanik_mmd_control_rig_interop(
+            key,
+            cmds_module=self._cmds,
+        )
+        if not interop.allowed:
+            return _action_blocked(
+                REASON_MMD_CONTROL_RIG_OWNER,
+                "HumanIK overlay is blocked by the MMD-native Control Rig ownership "
+                f"contract: {interop.reason}",
+            )
+        return None
+
     def _describe_setup_and_characterize_action(
         self, key: Optional[str], preview_active: bool
     ) -> Dict[str, Any]:
         """Mirror ``setup_and_characterize``'s guards, in the order it checks them."""
         if preview_active:
-            return _action_blocked(
-                REASON_PREVIEW_ACTIVE,
-                "Cannot setup_and_characterize while a HumanIK target preview is active",
-            )
+            return self._preview_active_block("setup_and_characterize")
         if key is None:
             return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to characterize")
         return _action_allowed()
@@ -2064,16 +2085,11 @@ class HumanIkFrontendSession:
     ) -> Dict[str, Any]:
         """Mirror ``enter_source_mode``'s guards, in the order it checks them."""
         if preview_active:
-            return _action_blocked(
-                REASON_PREVIEW_ACTIVE,
-                "Cannot enter_source_mode while a HumanIK target preview is active",
-            )
+            return self._preview_active_block("enter_source_mode")
         if key is None:
             return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to enter SOURCE mode")
         if key not in self._bindings:
-            return _action_blocked(
-                REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
-            )
+            return self._not_characterized_block(key)
         return _action_allowed()
 
     def _describe_enter_external_source_mode_action(self, preview_active: bool) -> Dict[str, Any]:
@@ -2087,10 +2103,7 @@ class HumanIkFrontendSession:
         live Maya scene scan and are exercised by the real call itself.
         """
         if preview_active:
-            return _action_blocked(
-                REASON_PREVIEW_ACTIVE,
-                "Cannot enter_external_source_mode while a HumanIK target preview is active",
-            )
+            return self._preview_active_block("enter_external_source_mode")
         return _action_allowed()
 
     def _describe_enter_target_mode_action(
@@ -2113,19 +2126,10 @@ class HumanIkFrontendSession:
                 REASON_PREVIEW_ACTIVE, "A HumanIK target preview is already active"
             )
         if key not in self._bindings:
-            return _action_blocked(
-                REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
-            )
-        interop = inspect_humanik_mmd_control_rig_interop(
-            key,
-            cmds_module=self._cmds,
-        )
-        if not interop.allowed:
-            return _action_blocked(
-                REASON_MMD_CONTROL_RIG_OWNER,
-                "HumanIK overlay is blocked by the MMD-native Control Rig ownership "
-                f"contract: {interop.reason}",
-            )
+            return self._not_characterized_block(key)
+        interop_block = self._control_rig_interop_block(key)
+        if interop_block is not None:
+            return interop_block
         target_binding = self._bindings[key]
         if self._external_source_character is not None:
             if target_binding.character == self._external_source_character:
@@ -2149,26 +2153,14 @@ class HumanIkFrontendSession:
     ) -> Dict[str, Any]:
         """Mirror ``create_control_rig``'s guards, in the order it checks them."""
         if preview_active:
-            return _action_blocked(
-                REASON_PREVIEW_ACTIVE,
-                "Cannot create_control_rig while a HumanIK target preview is active",
-            )
+            return self._preview_active_block("create_control_rig")
         if key is None:
             return _action_blocked(REASON_MODEL_REQUIRED, "Select a model to create a control rig")
         if key not in self._bindings:
-            return _action_blocked(
-                REASON_NOT_CHARACTERIZED, f"HumanIK model is not characterized: {key}"
-            )
-        interop = inspect_humanik_mmd_control_rig_interop(
-            key,
-            cmds_module=self._cmds,
-        )
-        if not interop.allowed:
-            return _action_blocked(
-                REASON_MMD_CONTROL_RIG_OWNER,
-                "HumanIK overlay is blocked by the MMD-native Control Rig ownership "
-                f"contract: {interop.reason}",
-            )
+            return self._not_characterized_block(key)
+        interop_block = self._control_rig_interop_block(key)
+        if interop_block is not None:
+            return interop_block
         if key == self._source_model_root:
             return _action_blocked(
                 REASON_MODEL_IS_SOURCE,
@@ -2192,22 +2184,8 @@ class HumanIkFrontendSession:
             )
         return _action_allowed()
 
-    def _describe_bake_to_control_rig_action(self) -> Dict[str, Any]:
-        """Mirror ``bake_to_control_rig``'s preview/transaction guards."""
-        if self.active_preview is None or self._target_model_root is None:
-            return _action_blocked(
-                REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"
-            )
-        transaction = self._control_rig_transactions.get(self._target_model_root)
-        if transaction is None or not transaction.active:
-            return _action_blocked(
-                REASON_NO_ACTIVE_CONTROL_RIG,
-                "HumanIK target Control Rig transaction is not active",
-            )
-        return _action_allowed()
-
-    def _describe_bake_from_control_rig_action(self) -> Dict[str, Any]:
-        """Mirror ``bake_from_control_rig``'s preview/transaction guards."""
+    def _describe_control_rig_bake_action(self) -> Dict[str, Any]:
+        """Mirror the preview and transaction guards for both Control Rig bake directions."""
         if self.active_preview is None or self._target_model_root is None:
             return _action_blocked(
                 REASON_NO_ACTIVE_PREVIEW, "HumanIK target preview is not active"
