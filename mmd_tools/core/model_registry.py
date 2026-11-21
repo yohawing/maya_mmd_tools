@@ -26,6 +26,7 @@ from .constants import (
     ATTR_MMD_REGISTRY_TEXTURE_MEMBERS,
     SCENE_ROOT_SUFFIX,
 )
+from .maya_attribute_utils import attribute_exists
 
 
 REGISTRY_SCHEMA_VERSION = "1"
@@ -98,7 +99,7 @@ def get_model_registry(model_root: str) -> Optional[str]:
     root = _canonical_root(model_root)
     if root is None:
         raise ModelRegistryError(f"invalid MMD model root: {model_root}")
-    if not _has_attr(root, ATTR_MMD_MODEL_REGISTRY):
+    if not attribute_exists(root, ATTR_MMD_MODEL_REGISTRY):
         return None
 
     registries = cmds.listConnections(
@@ -305,7 +306,7 @@ def list_model_registry_members(model_root: str, category: str) -> Optional[List
     registry = get_model_registry(model_root)
     if registry is None:
         return None
-    if not _has_attr(registry, member_attr):
+    if not attribute_exists(registry, member_attr):
         return []
     return list(
         cmds.listConnections(
@@ -386,7 +387,7 @@ def _validate_registry_node(registry: str) -> str:
     """Validate schema and both sides of one registry/root ownership link."""
     if not cmds.objExists(registry):
         raise ModelRegistryError(f"registry does not exist: {registry}")
-    if not _has_attr(registry, ATTR_MMD_REGISTRY_SCHEMA) or not _has_attr(
+    if not attribute_exists(registry, ATTR_MMD_REGISTRY_SCHEMA) or not attribute_exists(
         registry, ATTR_MMD_REGISTRY_ROOT
     ):
         raise ModelRegistryError(f"registry schema is incomplete: {registry}")
@@ -409,7 +410,7 @@ def _validate_registry_node(registry: str) -> str:
     root = _canonical_root(connected_roots[0])
     if root is None or not _is_model_root(root):
         raise ModelRegistryError(f"registry root is not an MMD model root: {registry}")
-    if not _has_attr(root, ATTR_MMD_MODEL_REGISTRY):
+    if not attribute_exists(root, ATTR_MMD_MODEL_REGISTRY):
         raise ModelRegistryError(f"model root does not reference registry: {registry}")
     owner_registries = cmds.listConnections(
         f"{root}.{ATTR_MMD_MODEL_REGISTRY}",
@@ -422,10 +423,10 @@ def _validate_registry_node(registry: str) -> str:
 
 
 def _is_model_root(root: str) -> bool:
-    return root.rsplit("|", 1)[-1].endswith(SCENE_ROOT_SUFFIX) or _has_attr(
+    return root.rsplit("|", 1)[-1].endswith(SCENE_ROOT_SUFFIX) or attribute_exists(
         root,
         ATTR_MMD_MODEL_NAME,
-    ) or _has_attr(root, ATTR_MMD_MODEL_NAME_EN)
+    ) or attribute_exists(root, ATTR_MMD_MODEL_NAME_EN)
 
 
 def _split_namespace(leaf: str) -> tuple[str, str]:
@@ -436,7 +437,7 @@ def _split_namespace(leaf: str) -> tuple[str, str]:
 
 
 def _ensure_message_attr(node: str, attribute: str, *, multi: bool = False) -> None:
-    if _has_attr(node, attribute):
+    if attribute_exists(node, attribute):
         return
     kwargs = {"longName": attribute, "attributeType": "message"}
     if multi:
@@ -445,7 +446,7 @@ def _ensure_message_attr(node: str, attribute: str, *, multi: bool = False) -> N
 
 
 def _ensure_string_attr(node: str, attribute: str) -> None:
-    if not _has_attr(node, attribute):
+    if not attribute_exists(node, attribute):
         cmds.addAttr(node, longName=attribute, dataType="string")
 
 
@@ -478,13 +479,6 @@ def _same_adapter_node(adapter, left: str, right: str) -> bool:
     left_names = adapter.ls(left, long=True) or []
     right_names = adapter.ls(right, long=True) or []
     return len(left_names) == 1 and len(right_names) == 1 and left_names[0] == right_names[0]
-
-
-def _has_attr(node: str, attribute: str) -> bool:
-    try:
-        return bool(cmds.attributeQuery(attribute, node=node, exists=True))
-    except Exception:
-        return False
 
 
 __all__ = [

@@ -89,7 +89,7 @@ class TestModelRegistry(unittest.TestCase):
                 "createNode",
                 side_effect=create_node,
             ),
-            mock.patch.object(model_registry, "_has_attr", return_value=False),
+            mock.patch.object(model_registry, "attribute_exists", return_value=False),
             mock.patch.object(model_registry.cmds, "objExists", return_value=True),
             mock.patch.object(model_registry.cmds, "addAttr"),
             mock.patch.object(model_registry.cmds, "setAttr"),
@@ -153,7 +153,7 @@ class TestModelRegistry(unittest.TestCase):
     def test_unknown_schema_is_rejected(self):
         with (
             mock.patch.object(model_registry.cmds, "objExists", return_value=True),
-            mock.patch.object(model_registry, "_has_attr", return_value=True),
+            mock.patch.object(model_registry, "attribute_exists", return_value=True),
             mock.patch.object(model_registry.cmds, "getAttr", return_value="2"),
         ):
             with self.assertRaises(model_registry.ModelRegistryError):

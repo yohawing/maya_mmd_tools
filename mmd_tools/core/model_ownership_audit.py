@@ -20,6 +20,7 @@ from .constants import (
     ATTR_MMD_REGISTRY_SCHEMA,
     SCENE_ROOT_SUFFIX,
 )
+from .maya_attribute_utils import attribute_exists
 from .model_registry import ModelRegistryError, get_model_registry
 
 
@@ -173,8 +174,8 @@ def discover_model_roots() -> List[str]:
     roots = []
     for candidate in sorted(candidates):
         if not (
-            _has_attr(candidate, ATTR_MMD_MODEL_NAME)
-            or _has_attr(candidate, ATTR_MMD_MODEL_NAME_EN)
+            attribute_exists(candidate, ATTR_MMD_MODEL_NAME)
+            or attribute_exists(candidate, ATTR_MMD_MODEL_NAME_EN)
         ):
             continue
         canonical = _canonical_dag_root(candidate)
@@ -245,7 +246,7 @@ def _classify_root_message_destination(node: str, attr: str) -> Tuple[str, str]:
     if (
         node_type == "network"
         and attr == ATTR_MMD_REGISTRY_ROOT
-        and _has_attr(node, ATTR_MMD_REGISTRY_SCHEMA)
+        and attribute_exists(node, ATTR_MMD_REGISTRY_SCHEMA)
     ):
         return "model_registry", "standard"
     if attr.split("[", 1)[0] == ATTR_MMD_MODEL_ROOT:
@@ -266,8 +267,8 @@ def _canonical_dag_root(node: Any) -> Optional[str]:
         return None
     if not (
         candidate.rsplit("|", 1)[-1].endswith(SCENE_ROOT_SUFFIX)
-        or _has_attr(candidate, ATTR_MMD_MODEL_NAME)
-        or _has_attr(candidate, ATTR_MMD_MODEL_NAME_EN)
+        or attribute_exists(candidate, ATTR_MMD_MODEL_NAME)
+        or attribute_exists(candidate, ATTR_MMD_MODEL_NAME_EN)
     ):
         return None
     return candidate
@@ -291,13 +292,6 @@ def _node_type(node: str) -> str:
         return str(cmds.nodeType(node) or "")
     except Exception:
         return ""
-
-
-def _has_attr(node: str, attr: str) -> bool:
-    try:
-        return bool(cmds.attributeQuery(attr, node=node, exists=True))
-    except Exception:
-        return False
 
 
 __all__ = [
