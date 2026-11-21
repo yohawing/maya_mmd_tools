@@ -1988,51 +1988,7 @@ class MayaMaterialAuthoring:
                 f"shader {shader!r} has ambiguous {slot.semantic} texture file nodes"
             )
         if not resolved_path:
-            if file_nodes:
-                file_node = file_nodes[0]
-                if preview_utility:
-                    for channel, axis in zip("RGB", "XYZ"):
-                        utility_input = f"{preview_utility}.input1{axis}"
-                        for source in self._call(
-                            "list_connections",
-                            utility_input,
-                            source=True,
-                            destination=False,
-                            plugs=True,
-                        ) or []:
-                            if str(source).rsplit(".", 1)[0] == file_node:
-                                self._call("disconnect_attr", str(source), utility_input)
-                    for utility in self._owned_standard_preview_utilities(shader):
-                        if self._call("node_type", utility) in {"multDoubleLinear", "multDL"}:
-                            alpha_input = f"{utility}.input1"
-                            for source in self._call(
-                                "list_connections",
-                                alpha_input,
-                                source=True,
-                                destination=False,
-                                plugs=True,
-                            ) or []:
-                                if str(source).rsplit(".", 1)[0] == file_node:
-                                    self._call("disconnect_attr", str(source), alpha_input)
-                        self._call("delete", utility)
-                else:
-                    self._call("disconnect_attr", f"{file_node}.outColor", destination)
-                remaining = self._call(
-                    "list_connections",
-                    f"{file_node}.outColor",
-                    source=False,
-                    destination=True,
-                    plugs=True,
-                ) or []
-                if not remaining:
-                    self._call("delete", file_node)
-            if slot.presence_attribute is not None:
-                self._set_attr(
-                    shader,
-                    slot.presence_attribute,
-                    0,
-                    "long",
-                )
+            self._clear_texture_slot(shader, slot, destination, file_nodes, preview_utility)
             return
         if file_nodes:
             file_node = file_nodes[0]
@@ -2078,6 +2034,61 @@ class MayaMaterialAuthoring:
                 shader,
                 slot.presence_attribute,
                 1,
+                "long",
+            )
+
+    def _clear_texture_slot(
+        self,
+        shader: str,
+        slot: MayaMaterialTextureSlotRoute,
+        destination: str,
+        file_nodes: list[str],
+        preview_utility: str | None,
+    ) -> None:
+        """Disconnect the slot's texture graph and clear its presence flag."""
+        if file_nodes:
+            file_node = file_nodes[0]
+            if preview_utility:
+                for channel, axis in zip("RGB", "XYZ"):
+                    utility_input = f"{preview_utility}.input1{axis}"
+                    for source in self._call(
+                        "list_connections",
+                        utility_input,
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    ) or []:
+                        if str(source).rsplit(".", 1)[0] == file_node:
+                            self._call("disconnect_attr", str(source), utility_input)
+                for utility in self._owned_standard_preview_utilities(shader):
+                    if self._call("node_type", utility) in {"multDoubleLinear", "multDL"}:
+                        alpha_input = f"{utility}.input1"
+                        for source in self._call(
+                            "list_connections",
+                            alpha_input,
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        ) or []:
+                            if str(source).rsplit(".", 1)[0] == file_node:
+                                self._call("disconnect_attr", str(source), alpha_input)
+                    self._call("delete", utility)
+            else:
+                self._call("disconnect_attr", f"{file_node}.outColor", destination)
+            remaining = self._call(
+                "list_connections",
+                f"{file_node}.outColor",
+                source=False,
+                destination=True,
+                plugs=True,
+            ) or []
+            if not remaining:
+                self._call("delete", file_node)
+        if slot.presence_attribute is not None:
+            self._set_attr(
+                shader,
+                slot.presence_attribute,
+                0,
                 "long",
             )
 
