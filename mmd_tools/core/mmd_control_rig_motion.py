@@ -1134,6 +1134,29 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
     return metadata
 
 
+def _detach_edit_row(cmds, row, rotation_converters) -> bool:
+    """Detach edit connections and return whether the layer route handled restoration."""
+    if row.get("layerRoute"):
+        if row.get("translateBaselineOutput"):
+            _disconnect_translate_baseline(cmds, row)
+            _disconnect_layer_control_source(cmds, row)
+        restore_mmd_control_rig_anim_layer_route(
+            cmds,
+            row["layerRoute"],
+            row["control"],
+        )
+        return True
+    control, target = row["control"], row["target"]
+    _disconnect_translate_baseline(cmds, row)
+    if cmds.isConnected(control, target):
+        cmds.disconnectAttr(control, target)
+    _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
+    control_source = row.get("controlSource")
+    if control_source and cmds.isConnected(control_source, control):
+        cmds.disconnectAttr(control_source, control)
+    return False
+
+
 def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Dict[str, Any]:
     """Restore the exact pre-EDIT animation connections and channel values."""
     cmds = cmds_module or maya_cmds()
@@ -1182,48 +1205,18 @@ def restore_mmd_control_rig_attached(model_root: str, *, cmds_module=None) -> Di
         ) + _translate_baseline_nodes(ik_rows + channel_rows),
     ):
         for row in reversed(ik_rows):
-            if row.get("layerRoute"):
-                if row.get("translateBaselineOutput"):
-                    _disconnect_translate_baseline(cmds, row)
-                    _disconnect_layer_control_source(cmds, row)
-                restore_mmd_control_rig_anim_layer_route(
-                    cmds,
-                    row["layerRoute"],
-                    row["control"],
-                )
+            if _detach_edit_row(cmds, row, rotation_converters):
                 continue
-            source, target = row["control"], row["target"]
-            _disconnect_translate_baseline(cmds, row)
-            if cmds.isConnected(source, target):
-                cmds.disconnectAttr(source, target)
-            _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
-            control_source = row.get("controlSource")
-            if control_source and cmds.isConnected(control_source, source):
-                cmds.disconnectAttr(control_source, source)
+            target = row["target"]
             prior = row.get("source")
             if prior:
                 cmds.connectAttr(prior, target, force=False)
             else:
                 cmds.setAttr(target, bool(row["value"]))
         for row in reversed(channel_rows):
-            if row.get("layerRoute"):
-                if row.get("translateBaselineOutput"):
-                    _disconnect_translate_baseline(cmds, row)
-                    _disconnect_layer_control_source(cmds, row)
-                restore_mmd_control_rig_anim_layer_route(
-                    cmds,
-                    row["layerRoute"],
-                    row["control"],
-                )
+            if _detach_edit_row(cmds, row, rotation_converters):
                 continue
             control, target = row["control"], row["target"]
-            _disconnect_translate_baseline(cmds, row)
-            if cmds.isConnected(control, target):
-                cmds.disconnectAttr(control, target)
-            _disconnect_owned_rotation_writer(cmds, target, rotation_converters)
-            control_source = row.get("controlSource")
-            if control_source and cmds.isConnected(control_source, control):
-                cmds.disconnectAttr(control_source, control)
             source = row.get("source")
             if source:
                 if cmds.isConnected(source, control):
