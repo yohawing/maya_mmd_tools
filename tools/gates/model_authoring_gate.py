@@ -279,7 +279,7 @@ def _require_completed_worker_result(
 
 def _writer_not_called_case() -> dict[str, Any]:
     """Exercise the real export action's no-writer contract without Maya."""
-    from mmd_tools.adapters.maya_authoring_e2e import writer_not_called_case
+    from tools.gates.maya_authoring_e2e import writer_not_called_case
 
     return writer_not_called_case(
         BUILD_ROOT / "temp" / f"authoring-negative-{os.getpid()}.pmx"
@@ -342,7 +342,7 @@ def _run_maya_worker(manifest: Mapping[str, Any], version: int, report_path: Pat
 
         load_mmd_tools_plugin(ROOT, cmds_module=cmds)
         from mmd_tools.adapters.maya_authoring_factory import build_maya_authoring_composition
-        from mmd_tools.adapters.maya_authoring_e2e import run_authoring_e2e
+        from tools.gates.maya_authoring_e2e import run_authoring_e2e
         from mmd_tools.adapters.maya_model_template_initializer import MayaModelTemplateInitializer
 
         composition = build_maya_authoring_composition(cmds_module=cmds)

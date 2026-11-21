@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from mmd_tools.adapters.maya_material_authoring import MaterialReindexResult
-from mmd_tools.adapters import maya_authoring_e2e
+from tools.gates import maya_authoring_e2e
 from mmd_tools.core.bone_authoring import capture_rest, register_bone, reindex_bones, unregister_bone
 from mmd_tools.core.material_authoring import create_material, delete_material, move_material
 from mmd_tools.core.model_authoring_spec import (
