@@ -656,7 +656,7 @@ def _apply_basic_materials(
 
     try:
         materials = metadata.get("materials") or []
-        used_names = _scene_name_set(cmds_module)
+        used_names = maya_name_utils.collect_scene_names(cmds_module)
         converter = None
         if (native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None
                 and len(getattr(native_pmx, "materials", ()) or ()) >= len(materials)):
@@ -1301,7 +1301,7 @@ def _create_standard_material(
 ) -> Optional[str]:
     """Create a Maya standardSurface shader from parsed PMX material metadata."""
     raw_name = material.get("englishName") or material.get("name") or f"material_{material_index}"
-    names = used_names if used_names is not None else _scene_name_set(cmds_module)
+    names = used_names if used_names is not None else maya_name_utils.collect_scene_names(cmds_module)
     shader_name = _allocate_fast_material_name(raw_name, material_index, names)
 
     try:
@@ -1364,20 +1364,6 @@ def _create_standard_material(
 def _sanitize_node_name(raw: str) -> str:
     """Return a Maya-safe name through the shared Unicode conversion policy."""
     return maya_name_utils.sanitize_text(raw)
-
-
-def _scene_name_set(cmds_module) -> set[str]:
-    """Collect existing Maya leaf names for deterministic fast-path allocation."""
-    try:
-        nodes = cmds_module.ls() or []
-    except Exception:
-        return set()
-    names: set[str] = set()
-    for node in nodes:
-        leaf = str(node).rsplit("|", 1)[-1]
-        names.add(leaf)
-        names.add(leaf.rsplit(":", 1)[-1])
-    return names
 
 
 def _allocate_fast_material_name(raw_name, material_index: int, used_names: set[str]) -> str:

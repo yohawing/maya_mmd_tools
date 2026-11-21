@@ -1178,7 +1178,7 @@ class MeshConverter:
         # precomputed from per-material UV-region texture alpha (atlas-safe).
         self._transparency_modes = {}
         self._material_name_by_index = {}
-        self._material_name_used = self._scene_name_set()
+        self._material_name_used = maya_name_utils.collect_scene_names(cmds)
         self._material_name_scene_check = True
         # The optional C++ command is preferred when the native plugin is
         # already loaded.  The O(V+F) Python topology builder remains the
@@ -1210,20 +1210,6 @@ class MeshConverter:
             "native_uv_weld_meshes": [],
         }
         self.texture_dir = os.path.dirname(pmx_filepath or "")
-
-    @staticmethod
-    def _scene_name_set():
-        """Return conservative leaf-name reservations from the current scene."""
-        try:
-            nodes = cmds.ls() or []
-        except Exception:
-            return set()
-        names = set()
-        for node in nodes:
-            leaf = str(node).rsplit("|", 1)[-1]
-            names.add(leaf)
-            names.add(leaf.rsplit(":", 1)[-1])
-        return names
 
     def _allocate_material_name(self, material, material_index=None):
         """Allocate one safe base for a material and all derived node names."""

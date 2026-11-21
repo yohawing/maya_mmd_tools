@@ -9,6 +9,20 @@ from . import utils
 _MAYA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def collect_scene_names(cmds_module) -> Set[str]:
+    """Return scene leaf names and namespace-free names, or an empty set if ls fails."""
+    try:
+        nodes = cmds_module.ls() or []
+    except Exception:
+        return set()
+    names = set()
+    for node in nodes:
+        leaf = str(node).rsplit("|", 1)[-1]
+        names.add(leaf)
+        names.add(leaf.rsplit(":", 1)[-1])
+    return names
+
+
 def sanitize_text(name):
     """
     Maya用に名前をサニタイズする。

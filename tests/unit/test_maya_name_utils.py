@@ -1,10 +1,28 @@
 import re
 import unittest
+from unittest.mock import Mock
 
 from mmd_tools.core import maya_name_utils
 
 
 class TestMayaNameUtils(unittest.TestCase):
+    def test_collect_scene_names_reserves_leaf_and_namespace_free_names(self):
+        cmds = Mock(name="maya.cmds")
+        cmds.ls.return_value = ["|root|mesh", "|root|model:part:shape", "plain"]
+
+        self.assertEqual(
+            maya_name_utils.collect_scene_names(cmds),
+            {"mesh", "model:part:shape", "shape", "plain"},
+        )
+        cmds.ls.assert_called_once_with()
+
+    def test_collect_scene_names_returns_empty_set_when_ls_fails(self):
+        cmds = Mock(name="maya.cmds")
+        cmds.ls.side_effect = RuntimeError("ls failed")
+
+        self.assertEqual(maya_name_utils.collect_scene_names(cmds), set())
+        cmds.ls.assert_called_once_with()
+
     def test_sanitize_maya_name(self):
         """ASCII変換でうまくサニタイズされるか"""
         self.assertEqual(maya_name_utils.sanitize_text("髪"), "hair")
