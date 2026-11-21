@@ -2396,45 +2396,9 @@ class MayaSceneMetadataBackend:
         if route is None:
             return None
         destination = f"{shader}.{route.diffuse_attribute}"
-        sources = self._list_connections(
-            destination,
-            source=True,
-            destination=False,
-            plugs=True,
+        return self._evaluator_base_plug(
+            destination, output_attr="outputDiffuse", base_attr="baseDiffuse", label="diffuse"
         )
-        if not sources:
-            return destination
-        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
-            raise MayaSceneMetadataError(
-                f"material diffuse target has an ambiguous source: {destination!r}"
-            )
-        source_node, source_attr = sources[0].rsplit(".", 1)
-        if (
-            self._node_type(source_node) != "mmdMaterialMorphEval"
-            or source_attr != "outputDiffuse"
-        ):
-            raise MayaSceneMetadataError(
-                f"material diffuse target is driven by an unsupported source: {sources[0]!r}"
-            )
-        base = f"{source_node}.baseDiffuse"
-        if not self._has_attr(source_node, "baseDiffuse"):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator is missing writable baseDiffuse: {source_node!r}"
-            )
-        if self._list_connections(
-            base,
-            source=True,
-            destination=False,
-            plugs=True,
-        ):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuse is externally driven: {base!r}"
-            )
-        if bool(self._call_adapter("get_attr", base, lock=True)):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuse is locked: {base!r}"
-            )
-        return base
 
     def _resolve_material_diffuse_alpha_target(
         self,
@@ -2449,6 +2413,32 @@ class MayaSceneMetadataBackend:
         if not self._has_attr(shader, route.diffuse_alpha_attribute):
             return None
         destination = f"{shader}.{route.diffuse_alpha_attribute}"
+
+        base = self._evaluator_base_plug(
+            destination,
+            output_attr="outputDiffuseAlpha",
+            base_attr="baseDiffuseA",
+            label="diffuse alpha",
+        )
+        if base != destination:
+            source_node = base.rsplit(".", 1)[0]
+            expected_rgb_target = f"{source_node}.baseDiffuse"
+            if diffuse_target != expected_rgb_target:
+                source = f"{source_node}.outputDiffuseAlpha"
+                raise MayaSceneMetadataError(
+                    f"material diffuse alpha evaluator does not match RGB target: {source!r}"
+                )
+        return base
+
+    def _evaluator_base_plug(
+        self,
+        destination: str,
+        *,
+        output_attr: str,
+        base_attr: str,
+        label: str,
+    ) -> str:
+        """Return the direct destination or the driving evaluator's writable base plug."""
         sources = self._list_connections(
             destination,
             source=True,
@@ -2459,25 +2449,20 @@ class MayaSceneMetadataBackend:
             return destination
         if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
             raise MayaSceneMetadataError(
-                f"material diffuse alpha target has an ambiguous source: {destination!r}"
+                f"material {label} target has an ambiguous source: {destination!r}"
             )
         source_node, source_attr = sources[0].rsplit(".", 1)
         if (
             self._node_type(source_node) != "mmdMaterialMorphEval"
-            or source_attr != "outputDiffuseAlpha"
+            or source_attr != output_attr
         ):
             raise MayaSceneMetadataError(
-                f"material diffuse alpha target is driven by an unsupported source: {sources[0]!r}"
+                f"material {label} target is driven by an unsupported source: {sources[0]!r}"
             )
-        expected_rgb_target = f"{source_node}.baseDiffuse"
-        if diffuse_target != expected_rgb_target:
+        base = f"{source_node}.{base_attr}"
+        if not self._has_attr(source_node, base_attr):
             raise MayaSceneMetadataError(
-                f"material diffuse alpha evaluator does not match RGB target: {sources[0]!r}"
-            )
-        base = f"{source_node}.baseDiffuseA"
-        if not self._has_attr(source_node, "baseDiffuseA"):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator is missing writable baseDiffuseA: {source_node!r}"
+                f"material morph evaluator is missing writable {base_attr}: {source_node!r}"
             )
         if self._list_connections(
             base,
@@ -2486,11 +2471,11 @@ class MayaSceneMetadataBackend:
             plugs=True,
         ):
             raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuseA is externally driven: {base!r}"
+                f"material morph evaluator {base_attr} is externally driven: {base!r}"
             )
         if bool(self._call_adapter("get_attr", base, lock=True)):
             raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuseA is locked: {base!r}"
+                f"material morph evaluator {base_attr} is locked: {base!r}"
             )
         return base
 
