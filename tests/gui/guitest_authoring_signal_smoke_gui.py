@@ -708,7 +708,14 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
 
     def _load_dx11_material_fixture(self):
         """Return one production Material view and its DX11 shader binding."""
+        from mmd_tools.converters import material_morph_runtime, mesh_converter
         from mmd_tools.core import settings
+
+        # dx11Shader exposes MMDShader.fx uniforms only on a DX11 device.
+        if material_morph_runtime.detect_effective_vp2_draw_api() != (
+            material_morph_runtime.VP2_API_DIRECTX11
+        ):
+            self.skipTest("requires --vp2_device_override VirtualDeviceDx11")
 
         cmds.file(new=True, force=True)
         cmds.loadPlugin("dx11Shader", quiet=True)
@@ -737,6 +744,28 @@ class TestAuthoringSignalSmokeGUI(GuiTestBase):
             settings.set("import.model.mmd_shader_backend", previous_backend)
         self.assertTrue(root)
         self.root = str(root)
+
+        # Import now authors standardSurface only.  Recreate a legacy DX11
+        # material with the production replacement helpers.
+        coordinator = self.window.authoring_composition.coordinator
+        standard = coordinator.read_spec(self.root).materials[0].binding_identity
+        destinations = {
+            attr: cmds.listConnections(
+                f"{standard}.{attr}", source=False, destination=True, plugs=True
+            ) or []
+            for attr in ("outColor", "message")
+        }
+        replacement = mesh_converter._create_backend_replacement(
+            standard, mesh_converter.BACKEND_DX11
+        )
+        mesh_converter._copy_shader_backend_state(standard, replacement)
+        cmds.delete(standard)
+        replacement = cmds.rename(replacement, standard)
+        for attr, plugs in destinations.items():
+            for destination in plugs:
+                cmds.connectAttr(f"{replacement}.{attr}", destination, force=True)
+        cmds.flushUndo()
+
         self.window.app_state.current_model_root = self.root
         QApplication.processEvents()
 

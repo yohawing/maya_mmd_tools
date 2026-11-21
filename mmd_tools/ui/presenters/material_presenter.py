@@ -540,6 +540,9 @@ class MaterialPresenter:
         """Select a canonical binding only when the refreshed projection owns it."""
 
         projection = self._material_list_projection
+        if projection is None:
+            # No model or a failed read leaves nothing selectable.
+            return False
         try:
             projection, _ = normalize_material_list_projection(projection)
         except (TypeError, ValueError):
