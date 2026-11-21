@@ -1427,8 +1427,10 @@ class AnimationPresenter:
         bone_map = self._build_bone_index_map(model_root)
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
-        self._ik_nodes_by_side = self._collect_leg_ik_nodes(model_root)
-        self._toe_ik_nodes_by_side = self._collect_toe_ik_nodes(model_root)
+        self._ik_nodes_by_side = self._collect_ik_nodes_by_side(model_root, _IK_BONE_NAMES, "IK")
+        self._toe_ik_nodes_by_side = self._collect_ik_nodes_by_side(
+            model_root, _TOE_IK_BONE_NAMES, "toe IK"
+        )
         (
             control_ik_nodes,
             control_toe_ik_nodes,
@@ -1524,41 +1526,24 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "set_enabled_regions"):
             self.view.finger_picker.set_enabled_regions(finger_ids)
 
-    def _collect_leg_ik_nodes(self, model_root: str) -> dict[str, str]:
-        """Resolve the current model's owned left/right foot IK solvers."""
+    def _collect_ik_nodes_by_side(
+        self, model_root: str, bone_names: dict[str, str], label: str
+    ) -> dict[str, str]:
+        """Resolve the current model's owned left/right IK solvers."""
 
         try:
             from ...converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
 
             nodes = collect_ik_nodes_by_bone_name(target_model=model_root)
         except Exception as exc:
-            logger.debug("Failed to collect IK nodes for %s: %s", model_root, exc)
+            logger.debug("Failed to collect %s nodes for %s: %s", label, model_root, exc)
             return {}
         normalized = {
             normalize_mmd_bone_name(name) or name: node for name, node in nodes.items()
         }
         return {
             side: normalized[name]
-            for side, raw_name in _IK_BONE_NAMES.items()
-            if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
-        }
-
-    def _collect_toe_ik_nodes(self, model_root: str) -> dict[str, str]:
-        """Resolve the current model's owned left/right toe IK solvers."""
-
-        try:
-            from ...converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
-
-            nodes = collect_ik_nodes_by_bone_name(target_model=model_root)
-        except Exception as exc:
-            logger.debug("Failed to collect toe IK nodes for %s: %s", model_root, exc)
-            return {}
-        normalized = {
-            normalize_mmd_bone_name(name) or name: node for name, node in nodes.items()
-        }
-        return {
-            side: normalized[name]
-            for side, raw_name in _TOE_IK_BONE_NAMES.items()
+            for side, raw_name in bone_names.items()
             if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
         }
 
@@ -1702,6 +1687,16 @@ class AnimationPresenter:
             self._last_ik_states = {}
             self._sync_picker_regions()
 
+    def _read_ik_enabled_states(self, nodes: dict[str, str], attribute: str) -> dict[str, bool]:
+        """Read each side's IK enabled flag, treating unreadable plugs as disabled."""
+        states = {}
+        for side, node in nodes.items():
+            try:
+                states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
+            except Exception:
+                states[side] = False
+        return states
+
     def _sync_ik_picker_state(self, *, force: bool = False) -> None:
         """Hide a side's FK controls while its evaluated leg IK is enabled."""
 
@@ -1709,18 +1704,8 @@ class AnimationPresenter:
         active_foot_nodes = self._active_ik_nodes_by_side()
         active_toe_nodes = self._active_toe_ik_nodes_by_side()
         attribute = self._active_ik_attribute()
-        states = {}
-        for side, node in active_foot_nodes.items():
-            try:
-                states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
-            except Exception:
-                states[side] = False
-        toe_states = {}
-        for side, node in active_toe_nodes.items():
-            try:
-                toe_states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
-            except Exception:
-                toe_states[side] = False
+        states = self._read_ik_enabled_states(active_foot_nodes, attribute)
+        toe_states = self._read_ik_enabled_states(active_toe_nodes, attribute)
         combined_states = {
             **{f"foot:{side}": enabled for side, enabled in states.items()},
             **{f"toe:{side}": enabled for side, enabled in toe_states.items()},
