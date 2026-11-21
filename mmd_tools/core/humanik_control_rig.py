@@ -40,10 +40,10 @@ from mmd_tools.core.humanik_transaction import (
     deserialize_humanik_restore_state,
     apply_humanik_restore_state,
     include_unconnected_hik_trs,
-    _node_uuid,
 )
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.maya_identity import unique_node_uuid
 
 
 logger = get_logger(__name__)
@@ -106,8 +106,8 @@ class HumanIkControlRigTransaction:
     ) -> Dict[str, Any]:
         """Return the minimal active transaction facts persisted in a scene."""
         if cmds_module is not None:
-            model_root_uuid = model_root_uuid or _node_uuid(cmds_module, model_root)
-            character_uuid = character_uuid or _node_uuid(
+            model_root_uuid = model_root_uuid or unique_node_uuid(cmds_module, model_root)
+            character_uuid = character_uuid or unique_node_uuid(
                 cmds_module, self.character
             )
         interop_model_root_uuid = None

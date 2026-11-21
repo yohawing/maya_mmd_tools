@@ -64,6 +64,7 @@ from mmd_tools.core.humanik_transaction import (
 )
 from mmd_tools.core.humanik_utils import maya_cmds, maya_mel, mel_string
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.maya_identity import unique_node_uuid
 from mmd_tools.services.scene_model_service import SceneModelService
 
 
@@ -284,15 +285,6 @@ def _assignment_row(assignment: HumanIkBoneAssignment) -> Dict[str, Any]:
     }
 
 
-def _source_node_uuid(cmds: Any, node: str) -> Optional[str]:
-    """Return one current Maya UUID, or ``None`` when identity is ambiguous."""
-    try:
-        values = cmds.ls(str(node), uuid=True) or []
-    except Exception:
-        return None
-    return str(values[0]) if len(values) == 1 and values[0] else None
-
-
 def _record_disconnected_source_uuids(transaction: Any, cmds: Any) -> None:
     """Attach current source-node identities before persisting a transaction."""
     for edge in getattr(transaction, "disconnected", ()) or ():
@@ -302,7 +294,7 @@ def _record_disconnected_source_uuids(transaction: Any, cmds: Any) -> None:
         if "." not in source:
             continue
         source_node = source.rsplit(".", 1)[0]
-        source_uuid = _source_node_uuid(cmds, source_node)
+        source_uuid = unique_node_uuid(cmds, source_node)
         if source_uuid is not None:
             edge["sourceNodeUuid"] = source_uuid
 
@@ -334,7 +326,7 @@ def _preisolated_feedback_nodes(
     node_uuids = {
         node: source_uuid
         for node in source_nodes
-        if (source_uuid := _source_node_uuid(cmds, node)) is not None
+        if (source_uuid := unique_node_uuid(cmds, node)) is not None
     }
     return preisolated_mmd_ccdik_nodes_from_disconnected_edges(
         edges,

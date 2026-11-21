@@ -18,6 +18,7 @@ from mmd_tools.core.humanik_builder import (
 )
 from mmd_tools.core.humanik_utils import incoming_sources, maya_cmds, maya_mel, mel_string
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.maya_identity import unique_node_uuid
 
 
 logger = get_logger(__name__)
@@ -33,15 +34,6 @@ HUMANIK_RESTORE_STATE_VERSION = 1
 HUMANIK_RESTORE_STATE_NODE = "mmdHumanIkRestoreState"
 HUMANIK_RESTORE_STATE_TAG_ATTR = "mmd_humanik_restore_state_schema"
 HUMANIK_RESTORE_STATE_PAYLOAD_ATTR = "mmd_humanik_restore_state_payload"
-
-
-def _node_uuid(cmds, node: str) -> Optional[str]:
-    """Return one unambiguous Maya UUID for ``node`` when available."""
-    try:
-        values = cmds.ls(str(node), uuid=True) or []
-    except Exception:
-        return None
-    return str(values[0]) if len(values) == 1 and values[0] else None
 
 
 def _resolve_node_uuid(cmds, node: str, node_uuid: Optional[str]) -> Optional[str]:
@@ -456,7 +448,7 @@ def capture_humanik_restore_state(
         input_type=input_type,
         plugs=plugs,
         nodes=node_snapshots,
-        character_uuid=_node_uuid(cmds, character),
+        character_uuid=unique_node_uuid(cmds, character),
     )
 
 
@@ -680,7 +672,7 @@ def _capture_plug(cmds, plug: str) -> HumanIkPlugSnapshot:
         sources=incoming_sources(cmds, destination),
         value=cmds.getAttr(destination),
         attr_type=str(cmds.getAttr(destination, type=True) or ""),
-        node_uuid=_node_uuid(cmds, destination.rsplit(".", 1)[0]),
+        node_uuid=unique_node_uuid(cmds, destination.rsplit(".", 1)[0]),
     )
 
 
@@ -692,7 +684,7 @@ def _capture_node(cmds, node: str) -> HumanIkNodeSnapshot:
     return HumanIkNodeSnapshot(
         node=str(node),
         attributes=attributes,
-        node_uuid=_node_uuid(cmds, node),
+        node_uuid=unique_node_uuid(cmds, node),
     )
 
 

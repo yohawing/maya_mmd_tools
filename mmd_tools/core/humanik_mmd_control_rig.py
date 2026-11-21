@@ -21,6 +21,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from mmd_tools.core.constants import ATTR_MMD_CONTROL_RIG_JSON
 from mmd_tools.core.humanik_utils import maya_cmds
+from mmd_tools.core.maya_identity import unique_node_uuid
 
 
 MMD_INTEROP_ATTACHED = "ATTACHED"
@@ -29,15 +30,6 @@ MMD_INTEROP_EDIT = "EDIT"
 MMD_INTEROP_MMD_OWNED = "MMD_OWNED"
 MMD_INTEROP_CONTROL_OWNED = "CONTROL_OWNED"
 MMD_INTEROP_CONVERTING = "CONVERTING"
-
-
-def _node_uuid(cmds, node: str) -> Optional[str]:
-    """Return one concrete Maya UUID, or ``None`` when identity is unknown."""
-    try:
-        values = cmds.ls(str(node), uuid=True) or []
-    except Exception:
-        return None
-    return str(values[0]) if len(values) == 1 and values[0] else None
 
 
 @dataclass(frozen=True)
@@ -164,7 +156,7 @@ def inspect_humanik_mmd_control_rig_interop(
             )
     else:
         cmds = cmds_module
-    root_uuid = _node_uuid(cmds, root)
+    root_uuid = unique_node_uuid(cmds, root)
 
     # A model binding can be represented by a synthetic root in host-neutral
     # frontend tests, and a stale scene binding can point at a deleted root.
