@@ -38,6 +38,22 @@ def _without_undo(cmds):
         cmds.undoInfo(stateWithoutFlush=enabled)
 
 
+@contextmanager
+def _undo_chunk_or_revert(cmds, name):
+    """Undo the chunk if its body raises an Exception."""
+    cmds.undoInfo(openChunk=True, chunkName=name)
+    failed = False
+    try:
+        yield
+    except Exception:
+        failed = True
+        raise
+    finally:
+        cmds.undoInfo(closeChunk=True)
+        if failed:
+            cmds.undo()
+
+
 def _sources(cmds, plug):
     return cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
 
@@ -296,9 +312,7 @@ def build(root, cmds_module=None):
     # Geometry is evaluated before any input connection is changed.
     points = [_shape_points(cmds, row) for row in rows]
     data = dict(version=2, world=world, controls=[], groups=[], nodes=[])
-    cmds.undoInfo(openChunk=True, chunkName="Build secondary bone controls")
-    failed = False
-    try:
+    with _undo_chunk_or_revert(cmds, "Build secondary bone controls"):
         container = cmds.createNode("transform", name=f"{namespace}Secondary", parent=base.control_group)
         container = base.control_group + "|" + container.rsplit("|", 1)[-1]
         data["nodes"].append(container)
@@ -371,13 +385,6 @@ def build(root, cmds_module=None):
                 cmds.setAttr(f"{control}.{channel}", lock=True, keyable=False, channelBox=False)
         _write(cmds, root, data)
         refresh_editability(root, cmds, record_undo=True)
-    except Exception:
-        failed = True
-        raise
-    finally:
-        cmds.undoInfo(closeChunk=True)
-        if failed:
-            cmds.undo()
     install_callbacks(root, cmds)
     return inspect(root, cmds)
 
@@ -556,9 +563,7 @@ def remove(root, cmds_module=None):
                 raise ValueError(f"Secondary control route changed: {authored}")
             if len(_sources(cmds, authored)) > 1:
                 raise ValueError(f"Ambiguous controller input; preserve animation: {authored}")
-    cmds.undoInfo(openChunk=True, chunkName="Remove secondary bone controls")
-    failed = False
-    try:
+    with _undo_chunk_or_revert(cmds, "Remove secondary bone controls"):
         for row in data["controls"]:
             for channel in _CHANNELS:
                 authored = f"{row['control']}.{channel}"
@@ -574,13 +579,6 @@ def remove(root, cmds_module=None):
                 _move_layer_memberships(cmds, authored, destination)
         cmds.delete([node for node in data["nodes"] if cmds.objExists(node)])
         cmds.deleteAttr(f"{root}.{_ATTR}")
-    except Exception:
-        failed = True
-        raise
-    finally:
-        cmds.undoInfo(closeChunk=True)
-        if failed:
-            cmds.undo()
     job = _JOBS.pop(cmds.ls(root, uuid=True)[0], None)
     if job:
         from maya.api import OpenMaya as om
