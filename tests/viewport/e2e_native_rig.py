@@ -57,6 +57,7 @@ def run_e2e_check(log_path: str, model_path: str) -> None:
         "native_append_joints": [],
         "grant_constraints": 0,
         "ik_handles": 0,
+        "native_solver_nodes": 0,
         "manifest_bone_count": 0,
         "manifest_ik_count": 0,
         "manifest_grant_count": 0,
@@ -100,6 +101,11 @@ def run_e2e_check(log_path: str, model_path: str) -> None:
         # 3. Import PMX and verify native rig path
         _log(f"importing: {model_path}")
         cmds.file(new=True, force=True)
+        # Import needs the MMD node types; unregistered types become unknownDag.
+        plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        if not cmds.pluginInfo(plugin_path.stem, query=True, loaded=True):
+            cmds.loadPlugin(str(plugin_path), quiet=True)
+            _log(f"loaded plugin: {plugin_path}")
 
         from mmd_tools.io.mmd_importer import import_mmd_file
         result = import_mmd_file(model_path)
@@ -148,16 +154,21 @@ def run_e2e_check(log_path: str, model_path: str) -> None:
         results["ik_handles"] = len(native_ik_handles)
         _log(f"native IK handles: {len(native_ik_handles)} {native_ik_handles}")
 
+        # Current native rigs evaluate through mmdCcdIk / mmdAppend DG nodes.
+        solver_nodes = (cmds.ls(type="mmdCcdIk") or []) + (cmds.ls(type="mmdAppend") or [])
+        results["native_solver_nodes"] = len(solver_nodes)
+        _log(f"native solver nodes: {len(solver_nodes)}")
+
         # 6. Determine pass/fail
         native_used = len(native_ik) > 0 or len(native_append) > 0
-        has_dg = len(grant_constraints) > 0 or len(native_ik_handles) > 0
+        has_dg = bool(grant_constraints or native_ik_handles or solver_nodes)
         results["native_rig_used"] = native_used
         results["ik_chain_count"] = len(native_ik)
         results["append_solver_count"] = len(native_append)
 
         if native_used and has_dg:
             results["status"] = "pass"
-            _log("PASS: native rig path used with DG constraints + IK handles")
+            _log("PASS: native rig path used with DG solver nodes")
         elif native_used and not has_dg:
             results["status"] = "warn"
             results["errors"].append("native metadata present but no DG constraints created")
@@ -204,12 +215,17 @@ def main() -> int:
     maya_exe = maya_commandport.maya_exe(args.maya)
     logger.info("Maya: %s", maya_exe)
 
+    # Trust this checkout's plug-ins in the disposable profile so loading
+    # plugin_main.py does not stop on Maya's security dialog.
+    maya_app_dir = (log_dir / f"maya-app-{args.maya}-{args.port}").resolve()
+    maya_commandport.seed_isolated_maya_profile(maya_app_dir, str(args.maya), project_root)
     proc = maya_commandport.launch_maya(
         version=args.maya,
         project_root=project_root,
         output_dir=log_dir,
         port=args.port,
         launch_mode="explorer" if sys.platform == "win32" else "direct",
+        env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
     )
     maya_out = log_dir / "maya_stdout.log"
     maya_err = log_dir / "maya_stderr.log"
