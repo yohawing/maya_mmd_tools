@@ -870,73 +870,9 @@ class VmdConverter:
                         if route_plan.use_registered_sparse
                         else list(import_context.vmd_data.bone_frames)
                     )
-                    if import_context.create_mmd_control_rig:
-                        # Identity-only optional roles are a VMD no-op and
-                        # must not create a controller curve on the ON path.
-                        # Active roles retain identity frame 0 samples for
-                        # interpolation/initial-pose continuity.
-                        # Portable motions may carry optional roles absent from
-                        # the target model.  Filter them before the legacy
-                        # converter sees the frames so its missing-joint path
-                        # cannot reclassify an optional role as a failed bone.
-                        bone_frames = self._control_rig_bone_frames_for_import(
-                            bone_frames,
-                            mapped_names=self.bone_name_mapping,
-                        )
-                    if bone_frames:
-                        self.logger.info(
-                            f"Starting bone animation conversion (legacy): {len(bone_frames)} frames"
-                        )
-                        with vmd_profile.scope("bone_animation_convert"):
-                            failed_before = set(self._failed_bones)
-                            # ``_convert_bone_animation`` records failures on
-                            # the converter and returns True when any role
-                            # succeeds.  Isolate this import's failures so a
-                            # stale role from an earlier conversion cannot
-                            # hide a new partial-write error.
-                            self._failed_bones.clear()
-                            try:
-                                bone_success = self._convert_bone_animation(
-                                    bone_frames,
-                                    key_routes=legacy_bone_key_routes,
-                                )
-                            except Exception as exc:
-                                failed_after = set(self._failed_bones)
-                                self._failed_bones.update(failed_before)
-                                if import_context.create_mmd_control_rig:
-                                    raise MMDImportException(
-                                        f"MMD Control Rig bone keying failed: {exc}",
-                                        reason_code="control_rig_bone_keying_failed",
-                                    ) from exc
-                                raise
-                        # This set was cleared immediately before conversion,
-                        # so every member belongs to the current import even
-                        # when the same role also failed in an earlier call.
-                        failed_after = sorted(set(self._failed_bones))
-                        # Keep the converter's cumulative failure record for
-                        # diagnostics while still classifying this call.
-                        self._failed_bones.update(failed_before)
-                        if import_context.create_mmd_control_rig and (not bone_success or failed_after):
-                            raise MMDImportException(
-                                "MMD Control Rig bone keying failed for VMD roles"
-                                + (f": {failed_after}" if failed_after else ""),
-                                reason_code="control_rig_bone_keying_failed",
-                            )
-                        if not bone_success:
-                            self.logger.warning("Some errors occurred during bone animation conversion")
-                    if (
-                        self._rotation_time_curve_records
-                        and import_context.create_mmd_control_rig
-                    ):
-                        from .vmd_rotation_time_curve import (
-                            record_vmd_rotation_time_curve_metadata,
-                        )
-
-                        record_vmd_rotation_time_curve_metadata(
-                            import_context.target_model,
-                            self._rotation_time_curve_records,
-                            replace_existing=import_context.clear_existing_motion,
-                        )
+                    self._convert_legacy_bone_frames(
+                        import_context, bone_frames, legacy_bone_key_routes
+                    )
                 _emit_progress(72)
 
                 # モーフアニメーション（レガシー）
@@ -999,6 +935,78 @@ class VmdConverter:
             self._current_import_live_rig_target = False
             self._restore_anim_layer_selection(anim_layer_selection)
             self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
+
+    def _convert_legacy_bone_frames(
+        self, import_context: VmdImportContext, bone_frames, legacy_bone_key_routes
+    ) -> None:
+        """Key legacy bone frames and record Control Rig rotation metadata."""
+        if import_context.create_mmd_control_rig:
+            # Identity-only optional roles are a VMD no-op and
+            # must not create a controller curve on the ON path.
+            # Active roles retain identity frame 0 samples for
+            # interpolation/initial-pose continuity.
+            # Portable motions may carry optional roles absent from
+            # the target model.  Filter them before the legacy
+            # converter sees the frames so its missing-joint path
+            # cannot reclassify an optional role as a failed bone.
+            bone_frames = self._control_rig_bone_frames_for_import(
+                bone_frames,
+                mapped_names=self.bone_name_mapping,
+            )
+        if bone_frames:
+            self.logger.info(
+                f"Starting bone animation conversion (legacy): {len(bone_frames)} frames"
+            )
+            with vmd_profile.scope("bone_animation_convert"):
+                failed_before = set(self._failed_bones)
+                # ``_convert_bone_animation`` records failures on
+                # the converter and returns True when any role
+                # succeeds.  Isolate this import's failures so a
+                # stale role from an earlier conversion cannot
+                # hide a new partial-write error.
+                self._failed_bones.clear()
+                try:
+                    bone_success = self._convert_bone_animation(
+                        bone_frames,
+                        key_routes=legacy_bone_key_routes,
+                    )
+                except Exception as exc:
+                    failed_after = set(self._failed_bones)
+                    self._failed_bones.update(failed_before)
+                    if import_context.create_mmd_control_rig:
+                        raise MMDImportException(
+                            f"MMD Control Rig bone keying failed: {exc}",
+                            reason_code="control_rig_bone_keying_failed",
+                        ) from exc
+                    raise
+            # This set was cleared immediately before conversion,
+            # so every member belongs to the current import even
+            # when the same role also failed in an earlier call.
+            failed_after = sorted(set(self._failed_bones))
+            # Keep the converter's cumulative failure record for
+            # diagnostics while still classifying this call.
+            self._failed_bones.update(failed_before)
+            if import_context.create_mmd_control_rig and (not bone_success or failed_after):
+                raise MMDImportException(
+                    "MMD Control Rig bone keying failed for VMD roles"
+                    + (f": {failed_after}" if failed_after else ""),
+                    reason_code="control_rig_bone_keying_failed",
+                )
+            if not bone_success:
+                self.logger.warning("Some errors occurred during bone animation conversion")
+        if (
+            self._rotation_time_curve_records
+            and import_context.create_mmd_control_rig
+        ):
+            from .vmd_rotation_time_curve import (
+                record_vmd_rotation_time_curve_metadata,
+            )
+
+            record_vmd_rotation_time_curve_metadata(
+                import_context.target_model,
+                self._rotation_time_curve_records,
+                replace_existing=import_context.clear_existing_motion,
+            )
 
     def _resolve_registered_sparse_frames(
         self,
