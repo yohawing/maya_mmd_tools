@@ -31,6 +31,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_ROOT,
     ATTR_MMD_MODEL_NAME,
 )
+from mmd_tools.core.maya_identity import unique_long_name
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
     read_mmd_control_rig_metadata,
@@ -502,8 +503,8 @@ def _bake_timeline_validate_anim_blend(
         rotate_order_node, rotate_order_attr = incoming["rotateOrder"].split(".", 1)
         if (
             rotate_order_attr != "rotateOrder"
-            or _canonical_dag_path(rotate_order_node)
-            != _canonical_dag_path(physical_node)
+            or unique_long_name(cmds, rotate_order_node)
+            != unique_long_name(cmds, physical_node)
         ):
             return None
     if not layers:
@@ -677,20 +678,9 @@ def _normalize_track_selection_identity(section: Any, name: Any) -> tuple[str, s
     return str(section).strip().lower(), normalized_name
 
 
-def _canonical_dag_path(node: str) -> Optional[str]:
-    """Resolve one Maya node to an unambiguous long DAG path."""
-    try:
-        matches = cmds.ls(node, long=True) or []
-    except Exception:
-        return None
-    if len(matches) != 1:
-        return None
-    return str(matches[0])
-
-
 def _dag_path_is_under_root(node: str, root_path: str) -> bool:
     """Return whether a DAG node is the root or a descendant of it."""
-    node_path = _canonical_dag_path(node)
+    node_path = unique_long_name(cmds, node)
     if not node_path:
         return False
     return node_path == root_path or node_path.startswith(f"{root_path}|")
@@ -704,10 +694,10 @@ def _dependency_node_model_local(node: str, target_model: str) -> bool:
     a short name before this boundary; it never crosses an ambiguous parent.
     """
 
-    root_path = _canonical_dag_path(target_model) or str(target_model)
+    root_path = unique_long_name(cmds, target_model) or str(target_model)
     if _dag_path_is_under_root(node, root_path):
         return True
-    current = _canonical_dag_path(node) or str(node)
+    current = unique_long_name(cmds, node) or str(node)
     seen = set()
     while current and current not in seen:
         seen.add(current)
@@ -723,7 +713,7 @@ def _dependency_node_model_local(node: str, target_model: str) -> bool:
             parents = [parents]
         if len(parents) != 1:
             return False
-        parent = _canonical_dag_path(str(parents[0])) or str(parents[0])
+        parent = unique_long_name(cmds, str(parents[0])) or str(parents[0])
         if parent == root_path or parent == str(target_model):
             return True
         current = parent
@@ -754,8 +744,8 @@ def _dependency_node_has_model_marker(node: str, target_model: str) -> bool:
         if len(sources) == 1:
             source_node = str(sources[0]).split(".", 1)[0]
             if _dependency_node_model_local(source_node, target_model) or (
-                _canonical_dag_path(source_node)
-                == _canonical_dag_path(target_model)
+                unique_long_name(cmds, source_node)
+                == unique_long_name(cmds, target_model)
             ):
                 return True
             continue
@@ -769,7 +759,7 @@ def _dependency_node_has_model_marker(node: str, target_model: str) -> bool:
         if value is not None and not isinstance(value, (list, tuple, dict)):
             if str(value) in {
                 str(target_model),
-                _canonical_dag_path(target_model) or str(target_model),
+                unique_long_name(cmds, target_model) or str(target_model),
             }:
                 return True
     return False
@@ -808,7 +798,7 @@ def _classify_unsupported_bone_dependency(
 
     joint = str(joint)
     target_model = str(target_model)
-    root_path = _canonical_dag_path(target_model) or target_model
+    root_path = unique_long_name(cmds, target_model) or target_model
     visited: set[str] = set()
     visiting: set[str] = {joint}
     visited_destinations: set[str] = set()
@@ -843,16 +833,10 @@ def _classify_unsupported_bone_dependency(
         }
 
     def canonical(node: str) -> Optional[str]:
-        value = _canonical_dag_path(node)
+        value = unique_long_name(cmds, node)
         if value:
             return value
-        try:
-            matches = cmds.ls(node, long=True) or []
-        except Exception:
-            return None
-        if len(matches) != 1:
-            return None
-        return str(matches[0])
+        return unique_long_name(cmds, node)
 
     def inspect(source_plug: str, destination_plug: str) -> Optional[dict[str, Any]]:
         source_node, separator, _source_attr = str(source_plug).rpartition(".")
@@ -1094,7 +1078,7 @@ def _runtime_route_node_matches(node: str, runtime_nodes: Sequence[str]) -> bool
     """Return whether a route source is one of the proven runtime nodes."""
 
     node = str(node)
-    canonical = _canonical_dag_path(node) or node
+    canonical = unique_long_name(cmds, node) or node
     return canonical in {str(value) for value in runtime_nodes} or node in {
         str(value) for value in runtime_nodes
     }
@@ -1122,7 +1106,7 @@ def _runtime_route_group_complete(
         return False
     if any(not _runtime_route_node_matches(value[0], runtime_nodes) for value in values):
         return False
-    route_nodes = {_canonical_dag_path(str(value[0])) or str(value[0]) for value in values}
+    route_nodes = {unique_long_name(cmds, str(value[0])) or str(value[0]) for value in values}
     if len(route_nodes) != 1:
         return False
     node_types = []
@@ -3741,7 +3725,7 @@ class VmdSceneCollector:
 
         if not target_model:
             return
-        root_path = _canonical_dag_path(target_model)
+        root_path = unique_long_name(cmds, target_model)
         if not root_path:
             return
         joints_by_path = {
@@ -3789,7 +3773,7 @@ class VmdSceneCollector:
             if len(target_connections) != 1:
                 continue
             target_joint = target_connections[0]
-            target_path = _canonical_dag_path(target_joint)
+            target_path = unique_long_name(cmds, target_joint)
             if strict_bake_timeline and (
                 not target_path
                 or not _dag_path_is_under_root(target_path, root_path)
@@ -5021,7 +5005,7 @@ class VmdSceneCollector:
         if not target_model:
             return self._require_single_tagged_track(nodes, attr, "targetless automatic")
 
-        root_path = _canonical_dag_path(target_model)
+        root_path = unique_long_name(cmds, target_model)
         if not root_path:
             return []
         scoped = [
@@ -6143,7 +6127,7 @@ def _physics_solvers_owned_by_model(
         root_matches = [
             value
             for value in roots
-            if _canonical_dag_path(value) == root_path
+            if unique_long_name(cmds, value) == root_path
         ]
         selected_registry_matches = [
             value

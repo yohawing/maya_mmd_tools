@@ -14,6 +14,7 @@ from maya import cmds
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.maya_identity import unique_long_name
 from mmd_tools.converters.morph_runtime_common import (
     connect_if_needed as _connect_if_needed,
     get_morph_order,
@@ -299,7 +300,7 @@ def resolve_owned_bone_morph_base_routes(
     """
     requested: Dict[str, str] = {}
     for joint in joints:
-        canonical = _canonical_dag_path(str(joint))
+        canonical = unique_long_name(cmds, str(joint))
         if canonical:
             requested[canonical] = str(joint)
     if not requested:
@@ -409,15 +410,6 @@ def resolve_owned_bone_morph_base_routes(
                 route[f"{attr_kind}{axis}"] = (node, f"{base_name}{axis}")
         routes[requested[canonical_joint]] = route
     return BoneMorphBaseRouteResolution(routes=routes, blocked=blocked)
-
-
-def _canonical_dag_path(node: str) -> Optional[str]:
-    """Return one unambiguous long DAG path, or ``None``."""
-    try:
-        matches = cmds.ls(node, long=True) or []
-    except Exception:
-        return None
-    return str(matches[0]) if len(matches) == 1 else None
 
 
 def _canonical_dag_paths(node: str) -> Tuple[str, ...]:
