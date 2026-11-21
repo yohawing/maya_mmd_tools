@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Iterable, Optional, Sequence
 
+from ...core.maya_name_utils import maya_node_leaf_name
 from ...core.name_display import preferred_pmx_display_name
 from ..translations import UITranslator
 
@@ -18,12 +19,6 @@ def text_matches_query(query: str, terms: Iterable[object]) -> bool:
     if not query:
         return True
     return any(query in term for term in _normalise_terms(terms))
-
-
-def maya_node_leaf_name(node: object) -> str:
-    """Return a Maya node's leaf name without its DAG path or namespace."""
-    leaf = str(node or "").rsplit("|", 1)[-1]
-    return leaf.rsplit(":", 1)[-1]
 
 
 def format_indexed_node_label(

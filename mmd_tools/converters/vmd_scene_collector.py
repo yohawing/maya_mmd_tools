@@ -32,6 +32,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.core.maya_identity import unique_long_name
+from mmd_tools.core.maya_name_utils import dag_leaf_name
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
     read_mmd_control_rig_metadata,
@@ -3114,7 +3115,7 @@ class VmdSceneCollector:
         long_joint = str((cmds.ls(joint, long=True) or [joint])[0])
 
         def matching(mapping: Mapping[str, Any]) -> Any:
-            for key in (long_joint, str(joint), str(joint).rsplit("|", 1)[-1]):
+            for key in (long_joint, str(joint), dag_leaf_name(joint)):
                 if key in mapping:
                     return mapping[key]
             for candidate in mapping.values():

@@ -9,6 +9,17 @@ from . import utils
 _MAYA_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def dag_leaf_name(node: object) -> str:
+    """Return the final DAG path component, including its namespace."""
+    return str(node).rsplit("|", 1)[-1]
+
+
+def maya_node_leaf_name(node: object) -> str:
+    """Return a Maya node's leaf name without its DAG path or namespace."""
+    leaf = str(node or "").rsplit("|", 1)[-1]
+    return leaf.rsplit(":", 1)[-1]
+
+
 def collect_scene_names(cmds_module) -> Set[str]:
     """Return scene leaf names and namespace-free names, or an empty set if ls fails."""
     try:
@@ -17,7 +28,7 @@ def collect_scene_names(cmds_module) -> Set[str]:
         return set()
     names = set()
     for node in nodes:
-        leaf = str(node).rsplit("|", 1)[-1]
+        leaf = dag_leaf_name(node)
         names.add(leaf)
         names.add(leaf.rsplit(":", 1)[-1])
     return names

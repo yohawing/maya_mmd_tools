@@ -6,6 +6,18 @@ from mmd_tools.core import maya_name_utils
 
 
 class TestMayaNameUtils(unittest.TestCase):
+    def test_leaf_names(self):
+        for node, dag_leaf, namespace_free in (
+            ("|root|model:rig:joint", "model:rig:joint", "joint"),
+            ("", "", ""),
+            (None, "None", ""),
+            (0, "0", ""),
+            (42, "42", "42"),
+        ):
+            with self.subTest(node=node):
+                self.assertEqual(maya_name_utils.dag_leaf_name(node), dag_leaf)
+                self.assertEqual(maya_name_utils.maya_node_leaf_name(node), namespace_free)
+
     def test_collect_scene_names_reserves_leaf_and_namespace_free_names(self):
         cmds = Mock(name="maya.cmds")
         cmds.ls.return_value = ["|root|mesh", "|root|model:part:shape", "plain"]
