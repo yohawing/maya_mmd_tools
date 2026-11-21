@@ -124,8 +124,8 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertEqual(chain["targetBoneSlot"], 2)
         self.assertEqual(chain["links"][0]["bone_slot"], 2)
         self.assertEqual(
-            cmds.listConnections(f"{link}.rotate", source=True, destination=False, plugs=True),
-            [f"{node}.outputRotate[0]"],
+            cmds.listConnections(f"{link}.rotateX", source=True, destination=False, plugs=True),
+            [f"{node}.outputRotate[0].outputRotateElementX"],
         )
         self.assertEqual(
             cmds.listConnections(f"{node}.goalWorldMatrix", source=True, destination=False),
@@ -214,8 +214,8 @@ class TestRigConverterMaya(unittest.TestCase):
             [f"{append_node}.outputRotate"],
         )
         self.assertEqual(
-            cmds.listConnections(f"{link}.rotate", source=True, destination=False, plugs=True),
-            [f"{ik_node}.outputRotate[0]"],
+            cmds.listConnections(f"{link}.rotateX", source=True, destination=False, plugs=True),
+            [f"{ik_node}.outputRotate[0].outputRotateElementX"],
         )
 
     def test_native_rig_nodes_do_not_double_current_namespace(self):
@@ -542,7 +542,7 @@ class TestRigConverterMaya(unittest.TestCase):
                 and cmds.getAttr(f"{c}.mmd_grant_constraint")
             ]
             native_append_nodes = cmds.listConnections(
-                f"{joints[0]}.rotate",
+                f"{joints[0]}.rotateX",
                 source=True,
                 destination=False,
                 type="mmdAppend",

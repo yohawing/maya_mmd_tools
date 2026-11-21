@@ -726,7 +726,7 @@ class TestRigModeAcceptance(MayaTestBase):
 
         for node in append_nodes:
             out_conns = cmds.listConnections(
-                f"{node}.outputRotate", s=False, d=True
+                f"{node}.outputRotateX", s=False, d=True
             ) or []
             self.assertGreater(
                 len(out_conns), 0,

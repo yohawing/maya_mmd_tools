@@ -1264,7 +1264,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(control_source.rsplit(".", 1)[-1], "rotateX")
         self.assertEqual(cmds.ls(control_source.split(".", 1)[0], long=True)[0], control)
         self.assertTrue(
-            (cmds.listConnections(f"{thigh}.rotate", source=True, destination=False, plugs=True) or [""])[0]
+            (cmds.listConnections(f"{thigh}.rotateX", source=True, destination=False, plugs=True) or [""])[0]
             .startswith(f"{solver}.outputRotate[")
         )
 
@@ -1468,7 +1468,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertEqual(len(target_sources), 1)
         self.assertEqual(cmds.ls(target_sources[0].split(".", 1)[0], long=True)[0], control)
         thigh_sources = cmds.listConnections(
-            f"{thigh}.rotate",
+            f"{thigh}.rotateX",
             source=True,
             destination=False,
             plugs=True,
@@ -2599,7 +2599,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(append_node)
         append_joint = (
             cmds.listConnections(
-                f"{append_node}.outputRotate",
+                f"{append_node}.outputRotateX",
                 source=False,
                 destination=True,
                 type="joint",
@@ -2712,7 +2712,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(append_node)
         append_joint = (
             cmds.listConnections(
-                f"{append_node}.outputRotate",
+                f"{append_node}.outputRotateX",
                 source=False,
                 destination=True,
                 type="joint",
@@ -2918,7 +2918,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         self.assertTrue(append_node)
         append_joint = (
             cmds.listConnections(
-                f"{append_node}.outputRotate",
+                f"{append_node}.outputRotateX",
                 source=False,
                 destination=True,
                 type="joint",
