@@ -1000,40 +1000,8 @@ class VmdConverter:
                     self._convert_morph_animation(import_context.vmd_data.morph_frames)
                 _emit_progress(82)
 
-            # カメラアニメーション（レガシー）
-            if (
-                import_context.import_camera_animation
-                and hasattr(import_context.vmd_data, "camera_frames")
-                and import_context.vmd_data.camera_frames
-            ):
-                self.logger.info(f"Converting camera animation: {len(import_context.vmd_data.camera_frames)} frames")
-                self._clear_existing_camera_motion()
-                camera_sample_bytes = vmd_bytes if import_context.bake_mode else None
-                self._convert_camera_animation(import_context.vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
             _emit_progress(88)
-
-            # ライトアニメーション（レガシー）
-            if (
-                import_context.import_light_animation
-                and hasattr(import_context.vmd_data, "light_frames")
-                and import_context.vmd_data.light_frames
-            ):
-                self.logger.info(f"Converting light animation: {len(import_context.vmd_data.light_frames)} frames")
-                self._clear_existing_light_motion()
-                light_sample_bytes = vmd_bytes if import_context.bake_mode else None
-                self._convert_light_animation(import_context.vmd_data.light_frames, vmd_bytes=light_sample_bytes)
-            if (
-                import_context.import_light_animation
-                and hasattr(import_context.vmd_data, "shadow_frames")
-                and import_context.vmd_data.shadow_frames
-            ):
-                if not (
-                    hasattr(import_context.vmd_data, "light_frames")
-                    and import_context.vmd_data.light_frames
-                ):
-                    self._clear_existing_shadow_motion()
-                if not self._convert_self_shadow_animation(import_context.vmd_data.shadow_frames):
-                    raise RuntimeError("VMD self-shadow animation conversion failed")
+            self._convert_scene_channels(import_context.vmd_data, vmd_bytes, import_context.bake_mode)
             _emit_progress(94)
 
             self._restore_import_timeline_state(import_start_time)
@@ -2503,6 +2471,28 @@ class VmdConverter:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
         return suspend_import_scene_updates(self._import_state_context())
 
+    def _convert_scene_channels(self, vmd_data, vmd_bytes, bake_mode) -> None:
+        """Convert camera, light, and self-shadow animation in scene order."""
+        if self.import_camera_animation and getattr(vmd_data, "camera_frames", None):
+            self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
+            self._clear_existing_camera_motion()
+            self._convert_camera_animation(
+                vmd_data.camera_frames,
+                vmd_bytes=vmd_bytes if bake_mode else None,
+            )
+        if self.import_light_animation and getattr(vmd_data, "light_frames", None):
+            self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
+            self._clear_existing_light_motion()
+            self._convert_light_animation(
+                vmd_data.light_frames,
+                vmd_bytes=vmd_bytes if bake_mode else None,
+            )
+        if self.import_light_animation and getattr(vmd_data, "shadow_frames", None):
+            if not getattr(vmd_data, "light_frames", None):
+                self._clear_existing_shadow_motion()
+            if not self._convert_self_shadow_animation(vmd_data.shadow_frames):
+                raise RuntimeError("VMD self-shadow animation conversion failed")
+
     def _convert_scene_animation_only(self, vmd_data, layer_name, bake_mode, vmd_bytes) -> bool:
         """Convert camera/light channels without entering any model or IK path."""
         if any(
@@ -2530,23 +2520,7 @@ class VmdConverter:
             else:
                 self.anim_layer = None
             self._setup_timeline(vmd_data)
-            if self.import_camera_animation and getattr(vmd_data, "camera_frames", None):
-                self._clear_existing_camera_motion()
-                self._convert_camera_animation(
-                    vmd_data.camera_frames,
-                    vmd_bytes=vmd_bytes if bake_mode else None,
-                )
-            if self.import_light_animation and getattr(vmd_data, "light_frames", None):
-                self._clear_existing_light_motion()
-                self._convert_light_animation(
-                    vmd_data.light_frames,
-                    vmd_bytes=vmd_bytes if bake_mode else None,
-                )
-            if self.import_light_animation and getattr(vmd_data, "shadow_frames", None):
-                if not getattr(vmd_data, "light_frames", None):
-                    self._clear_existing_shadow_motion()
-                if not self._convert_self_shadow_animation(vmd_data.shadow_frames):
-                    raise RuntimeError("VMD self-shadow animation conversion failed")
+            self._convert_scene_channels(vmd_data, vmd_bytes, bake_mode)
             self._restore_import_timeline_state(current_time)
             return True
         except Exception as exc:
