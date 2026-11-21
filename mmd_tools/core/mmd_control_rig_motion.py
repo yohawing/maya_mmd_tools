@@ -692,6 +692,31 @@ def _rollback_enter_edit(
     return rollback_error
 
 
+def _incoming_plugs(cmds, plug: str) -> List[str]:
+    """Return incoming source plugs in connection order."""
+    return [
+        str(source)
+        for source in (cmds.listConnections(plug, source=True, destination=False, plugs=True) or [])
+    ]
+
+
+def _ik_visibility_control_groups(
+    role: str, controls: Mapping[str, str]
+) -> Tuple[Optional[Tuple[str, ...]], Optional[Tuple[str, ...]]]:
+    """Return controls shown and hidden when foot IK is enabled."""
+    if role not in {"left_foot_ik", "right_foot_ik"}:
+        return None, None
+    side = str(role).split("_", 1)[0]
+    visible = tuple(
+        controls[key]
+        for key in (f"{side}_foot_ik_parent", f"{side}_foot_ik", f"{side}_toe_ik")
+        if key in controls
+    )
+    knee = f"{side}_knee"
+    hidden = (controls[knee],) if knee in controls else ()
+    return visible, hidden
+
+
 def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str, Any]:
     """Route MMD authored inputs through owned controls without recreating keys."""
     cmds = cmds_module or maya_cmds()
@@ -825,18 +850,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                             else None
                         )
                     if layer_route is not None:
-                        incoming_control = [
-                            str(source)
-                            for source in (
-                                cmds.listConnections(
-                                    control_plug,
-                                    source=True,
-                                    destination=False,
-                                    plugs=True,
-                                )
-                                or []
-                            )
-                        ]
+                        incoming_control = _incoming_plugs(cmds, control_plug)
                         layer_source = layer_route.get("curve")
                         if incoming_control and incoming_control != [layer_source]:
                             raise MmdControlRigBuildError(
@@ -918,18 +932,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     control_source = _existing_control_curve(
                         cmds, curve_representations, target
                     )
-                    control_incoming = [
-                        str(source)
-                        for source in (
-                            cmds.listConnections(
-                                control_plug,
-                                source=True,
-                                destination=False,
-                                plugs=True,
-                            )
-                            or []
-                        )
-                    ]
+                    control_incoming = _incoming_plugs(cmds, control_plug)
                     if control_incoming:
                         recorded_source = (
                             _canonical_plug(cmds, control_source)
@@ -1035,24 +1038,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                 offset_controls.add(control)
 
                 if binding.get("inputKind") == INPUT_IK_CONTROLLER:
-                    visibility_controls = None
-                    hidden_when_enabled_controls = None
-                    if role in {"left_foot_ik", "right_foot_ik"}:
-                        side = str(role).split("_", 1)[0]
-                        visibility_controls = tuple(
-                            controls[control_role]
-                            for control_role in (
-                                f"{side}_foot_ik_parent",
-                                f"{side}_foot_ik",
-                                f"{side}_toe_ik",
-                            )
-                            if control_role in controls
-                        )
-                        hidden_when_enabled_controls = tuple(
-                            controls[control_role]
-                            for control_role in (f"{side}_knee",)
-                            if control_role in controls
-                        )
+                    visibility_controls, hidden_when_enabled_controls = _ik_visibility_control_groups(role, controls)
                     _connect_ik_enabled(
                         cmds,
                         control,
