@@ -60,6 +60,7 @@ from mmd_tools.adapters.native_authoring_command import (
     NativeAuthoringCommandGateway,
 )
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
+from mmd_tools.core.utils import unique_json_object
 from mmd_tools.core.constants import (
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_BONE_FLAGS,
@@ -1451,7 +1452,7 @@ class MayaSceneMetadataBackend:
 
     def _parse_material_reindex_offsets(self, node: str, raw: str) -> list[dict[str, Any]]:
         try:
-            value = json.loads(raw, object_pairs_hook=self._unique_json_object)
+            value = json.loads(raw, object_pairs_hook=unique_json_object)
         except (TypeError, ValueError) as exc:
             raise MayaSceneMetadataError(
                 f"{node}.{self._MATERIAL_MORPH_OFFSETS_JSON} must contain strict JSON"
@@ -2126,15 +2127,6 @@ class MayaSceneMetadataBackend:
     def _read_morph(self, node: str, *, root: str | None = None) -> dict[str, Any]:
         """Delegate strict Morph mapping reads used by writer readback checks."""
         return self._morph_repository.read_morph_mapping(node, root=root)
-
-    @staticmethod
-    def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError(f"duplicate JSON field {key!r}")
-            value[key] = item
-        return value
 
     def _registry_material_members(self, root: str) -> list[str] | None:
         return self._material_repository.registry_material_members(root)

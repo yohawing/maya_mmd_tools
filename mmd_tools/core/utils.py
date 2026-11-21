@@ -1,9 +1,19 @@
 # Utility関数
 
 import struct
-from typing import List
+from typing import Any, Dict, List, Tuple
 
 from mmd_tools.core.pmx_data.header import PmxEncoding
+
+
+def unique_json_object(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """Build a JSON object from pairs, rejecting duplicate field names."""
+    value: Dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON field {key!r}")
+        value[key] = item
+    return value
 
 
 def _is_pmx_utf16le_encoding(encoding) -> bool:

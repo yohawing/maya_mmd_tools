@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from mmd_tools.core.utils import unique_json_object
 from mmd_tools.core import model_registry
 from mmd_tools.adapters.maya_material_shader_route import (
     MayaMaterialShaderRoute,
@@ -1185,7 +1186,7 @@ class MayaMaterialAuthoring:
                 )
             raw = self._get_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS)
             try:
-                offsets = json.loads(raw, object_pairs_hook=self._unique_json_object)
+                offsets = json.loads(raw, object_pairs_hook=unique_json_object)
             except (TypeError, ValueError) as exc:
                 raise MayaMaterialAuthoringError(
                     f"material morph {node!r} contains invalid offsets JSON"
@@ -1215,15 +1216,6 @@ class MayaMaterialAuthoring:
                     )
                 )
         return updates
-
-    @staticmethod
-    def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError(f"duplicate JSON field {key!r}")
-            value[key] = item
-        return value
 
     def _validate_adjacent_reindex(
         self,
