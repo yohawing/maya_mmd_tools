@@ -3159,6 +3159,17 @@ def _create_live_rotation_converters(
     return converters
 
 
+def _union_key_times(cmds, plugs) -> List[float]:
+    """Return sorted unique key times from the nodes of the supplied plugs."""
+    times = set()
+    for plug in plugs:
+        if plug:
+            node = str(plug).split(".", 1)[0]
+            keys = cmds.keyframe(node, query=True, timeChange=True) or []
+            times.update(float(time) for time in keys)
+    return sorted(times)
+
+
 def _rebase_new_ik_link_control_curves(
     cmds,
     rows: List[Mapping[str, Any]],
@@ -3223,14 +3234,7 @@ def _rebase_new_ik_link_control_curves(
             # A legacy partial representation may already contain control-space
             # curves. Do not reinterpret those persisted values as solver XYZ.
             continue
-        times = sorted(
-            {
-                float(time)
-                for node in curve_nodes
-                if node
-                for time in (cmds.keyframe(node, query=True, timeChange=True) or [])
-            }
-        )
+        times = _union_key_times(cmds, curve_nodes)
         if not times:
             times = [float(cmds.currentTime(query=True))]
         source_uses_quaternion = all(
@@ -3756,21 +3760,7 @@ def _capture_live_target_rotation_samples(
     rows_by_attr = {_rotation_attr_for_target(row["target"]): row for row in rows}
     sources = [sources_by_control.get(rows_by_attr[attr]["control"]) for attr in attrs]
     mmd_sources = [rows_by_attr[attr].get("source") for attr in attrs]
-    times = sorted(
-        {
-            float(time)
-            for plug in (*sources, *mmd_sources)
-            if plug
-            for time in (
-                cmds.keyframe(
-                    str(plug).split(".", 1)[0],
-                    query=True,
-                    timeChange=True,
-                )
-                or []
-            )
-        }
-    )
+    times = _union_key_times(cmds, (*sources, *mmd_sources))
     times = _dense_sample_times(times, frame_range)
     if not times:
         times = [float(cmds.currentTime(query=True))]
@@ -4006,21 +3996,7 @@ def _sample_control_rotation_group_passthrough(
     control_node = str(rows_by_attr["rotateX"]["control"]).rsplit(".", 1)[0]
     sources = [control_sources.get(rows_by_attr[attr]["control"]) for attr in attrs]
     mmd_sources = [rows_by_attr[attr].get("source") for attr in attrs]
-    times = sorted(
-        {
-            float(time)
-            for plug in (*sources, *mmd_sources)
-            if plug
-            for time in (
-                cmds.keyframe(
-                    str(plug).split(".", 1)[0],
-                    query=True,
-                    timeChange=True,
-                )
-                or []
-            )
-        }
-    )
+    times = _union_key_times(cmds, (*sources, *mmd_sources))
     times = _dense_sample_times(times, frame_range)
     if not times:
         times = [float(cmds.currentTime(query=True))]
@@ -4125,14 +4101,7 @@ def _sample_control_rotation_group_to_bone(
     target_node = target.rsplit(".", 1)[0]
     sources = [control_sources.get(rows_by_attr[attr]["control"]) for attr in attrs]
     mmd_sources = [rows_by_attr[attr].get("source") for attr in attrs]
-    times = sorted(
-        {
-            float(time)
-            for plug in (*sources, *mmd_sources)
-            if plug
-            for time in (cmds.keyframe(str(plug).split(".", 1)[0], query=True, timeChange=True) or [])
-        }
-    )
+    times = _union_key_times(cmds, (*sources, *mmd_sources))
     if not times:
         try:
             times = [float(cmds.currentTime(query=True))]
