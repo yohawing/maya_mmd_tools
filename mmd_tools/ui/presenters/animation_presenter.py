@@ -1110,6 +1110,8 @@ class AnimationPresenter:
 
         import maya.api.OpenMaya as om
 
+        from ..mirror_actions import bind_world_contexts
+
         cmds = self.maya_adapter._cmds
         canonical = {}
         pending = list(joints)
@@ -1166,42 +1168,7 @@ class AnimationPresenter:
             transform.setRotation(orient)
             local_records[index] = (transform.asMatrix(), orient, translation)
 
-        bind_worlds = {}
-        resolved_spaces = {}
-
-        def resolve(index):
-            if index in bind_worlds:
-                return bind_worlds[index]
-            local, _orient, _translation = local_records[index]
-            parent_index = parent_by_index[index]
-            world = local * resolve(parent_index) if parent_index is not None else local
-            bind_worlds[index] = world
-            return world
-
-        def resolve_space(index):
-            if index in resolved_spaces:
-                return resolved_spaces[index]
-            parent_index = parent_by_index[index]
-            space = (
-                bind_space_by_index[index]
-                if parent_index is None
-                else resolve_space(parent_index)
-            )
-            resolved_spaces[index] = space
-            return space
-
-        result = {}
-        for index, joint in canonical.items():
-            world = resolve(index)
-            _local, orient, _translation = local_records[index]
-            result[joint] = {
-                "joint_orient": tuple(
-                    float(getattr(orient, component)) for component in ("x", "y", "z", "w")
-                ),
-                "bind_world_matrix": tuple(float(value) for value in world),
-                "bind_space_node": resolve_space(index),
-            }
-        return result
+        return bind_world_contexts(canonical, parent_by_index, bind_space_by_index, local_records)
 
     def _mirror_entries(self):
         """Build UUID-authoritative joint/control entries for this model."""
