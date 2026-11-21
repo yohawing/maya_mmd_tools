@@ -619,6 +619,77 @@ def control_rig_quaternion_safe_joints(joints, *, cmds_module=None) -> set[str]:
     return safe
 
 
+def _rollback_enter_edit(
+    cmds,
+    root,
+    operations,
+    created_curve_nodes,
+    transaction_plugs,
+    plug_states,
+    added_attributes,
+    layer_journal,
+    metadata_before,
+):
+    """Restore the pre-EDIT state and return any recorded rollback error."""
+    rollback_error = None
+    try:
+        _rollback(cmds, operations)
+        _assert_created_curve_nodes_safe(
+            cmds,
+            created_curve_nodes,
+            transaction_plugs,
+        )
+        _restore_plug_states(
+            cmds,
+            plug_states,
+            allowed_sources={
+                str(source)
+                for _action, source, _target in operations
+                if source
+            },
+            owned_nodes=set(created_curve_nodes),
+        )
+        for node in reversed(created_curve_nodes):
+            if cmds.objExists(node):
+                cmds.delete(node)
+        for plug in reversed(added_attributes):
+            node, _, attribute = plug.partition(".")
+            if cmds.objExists(plug) and not (
+                cmds.listConnections(plug, source=False, destination=True) or []
+            ):
+                cmds.deleteAttr(f"{node}.{attribute}")
+        restore_mmd_control_rig_anim_layer_journal(cmds, layer_journal)
+    except Exception as rollback_exc:
+        rollback_error = rollback_exc
+        # A caller may inject a failure into connectAttr itself. The
+        # completed undo chunk is the only reliable graph restore path in
+        # that case because the patched writer cannot reconnect sources.
+        try:
+            cmds.undo()
+        except Exception:
+            pass
+        for node in reversed(created_curve_nodes):
+            if cmds.objExists(node):
+                try:
+                    _assert_created_curve_nodes_safe(
+                        cmds,
+                        (node,),
+                        transaction_plugs,
+                    )
+                    cmds.delete(node)
+                except Exception:
+                    # A topology-drifted curve may carry a foreign edge;
+                    # leave it and its writer untouched.
+                    continue
+    try:
+        # Metadata is restored even when a test-injected connection
+        # failure also affects best-effort graph rollback.
+        _restore_raw_metadata(cmds, root, metadata_before)
+    except Exception as metadata_exc:
+        rollback_error = rollback_error or metadata_exc
+    return rollback_error
+
+
 def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str, Any]:
     """Route MMD authored inputs through owned controls without recreating keys."""
     cmds = cmds_module or maya_cmds()
@@ -1045,62 +1116,17 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
             metadata["owner"] = CONTROL_RIG_CONTROL_OWNED
             _write_metadata(cmds, root, metadata)
     except Exception as exc:
-        rollback_error = None
-        try:
-            _rollback(cmds, operations)
-            _assert_created_curve_nodes_safe(
-                cmds,
-                created_curve_nodes,
-                transaction_plugs,
-            )
-            _restore_plug_states(
-                cmds,
-                plug_states,
-                allowed_sources={
-                    str(source)
-                    for _action, source, _target in operations
-                    if source
-                },
-                owned_nodes=set(created_curve_nodes),
-            )
-            for node in reversed(created_curve_nodes):
-                if cmds.objExists(node):
-                    cmds.delete(node)
-            for plug in reversed(added_attributes):
-                node, _, attribute = plug.partition(".")
-                if cmds.objExists(plug) and not (
-                    cmds.listConnections(plug, source=False, destination=True) or []
-                ):
-                    cmds.deleteAttr(f"{node}.{attribute}")
-            restore_mmd_control_rig_anim_layer_journal(cmds, layer_journal)
-        except Exception as rollback_exc:
-            rollback_error = rollback_exc
-            # A caller may inject a failure into connectAttr itself. The
-            # completed undo chunk is the only reliable graph restore path in
-            # that case because the patched writer cannot reconnect sources.
-            try:
-                cmds.undo()
-            except Exception:
-                pass
-            for node in reversed(created_curve_nodes):
-                if cmds.objExists(node):
-                    try:
-                        _assert_created_curve_nodes_safe(
-                            cmds,
-                            (node,),
-                            transaction_plugs,
-                        )
-                        cmds.delete(node)
-                    except Exception:
-                        # A topology-drifted curve may carry a foreign edge;
-                        # leave it and its writer untouched.
-                        continue
-        try:
-            # Metadata is restored even when a test-injected connection
-            # failure also affects best-effort graph rollback.
-            _restore_raw_metadata(cmds, root, metadata_before)
-        except Exception as metadata_exc:
-            rollback_error = rollback_error or metadata_exc
+        rollback_error = _rollback_enter_edit(
+            cmds,
+            root,
+            operations,
+            created_curve_nodes,
+            transaction_plugs,
+            plug_states,
+            added_attributes,
+            layer_journal,
+            metadata_before,
+        )
         if rollback_error is not None:
             raise MmdControlRigBuildError(
                 f"control-rig enter EDIT failed and rollback was incomplete: {rollback_error}"
