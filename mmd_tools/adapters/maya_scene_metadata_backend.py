@@ -180,6 +180,17 @@ class MayaSceneMetadataBackend:
         """Inspect derived controller topology without changing the scene."""
         return self._morph_repository.inspect_morph_topology(model_root)
 
+    def _require_undo_enabled(self, purpose: str) -> None:
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError(f"Maya undo must be enabled for {purpose}")
+
+    def _open_undo_chunk(self, chunk_name: str) -> None:
+        self._call_adapter("undo_info", openChunk=True, chunkName=chunk_name)
+
+    def _close_undo_chunk(self) -> None:
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
     def begin_morph_topology_repair(self, model_root: str, expected_source: str) -> None:
         """Open an explicit derived-topology-only repair transaction."""
         if self._write_transaction is not None:
@@ -195,8 +206,7 @@ class MayaSceneMetadataBackend:
             f"{root}.mmd_morph_controller", source=True, destination=False
         )
         controller = self._material_identity(controllers[0])
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph topology repair")
+        self._require_undo_enabled("morph topology repair")
         original = {
             "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
             "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
@@ -211,7 +221,7 @@ class MayaSceneMetadataBackend:
                 )
             ),
         }
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Topology Repair")
+        self._open_undo_chunk("MMD Morph Topology Repair")
         self._write_transaction = {
             "root": root,
             "kind": "morph_topology_repair",
@@ -270,8 +280,7 @@ class MayaSceneMetadataBackend:
         inspection = self.inspect_morph_topology(model_root)
         if not inspection.valid:
             raise MayaSceneMetadataError("morph topology remains invalid after repair")
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     _DIFFUSE_ALPHA = "mmd_diffuse_alpha"
     _EDGE_ALPHA = "mmd_edge_alpha"
@@ -509,13 +518,8 @@ class MayaSceneMetadataBackend:
         original_value = (
             self._required_string(root, ATTR_MMD_DISPLAY_FRAMES_JSON) if existed else None
         )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for display frame writes")
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="Edit Display Frames",
-        )
+        self._require_undo_enabled("display frame writes")
+        self._open_undo_chunk("Edit Display Frames")
         self._write_transaction = {
             "root": root,
             "kind": "display_frames",
@@ -569,8 +573,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"display frame metadata readback mismatch: expected {payload!r}, got {actual!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def begin_material_reindex(
         self,
@@ -596,13 +599,8 @@ class MayaSceneMetadataBackend:
         root = self._material_identity(model_root)
         first_index, second_index = sorted((index, new_position))
         original = self._capture_material_reindex_state(root, first_index, second_index)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material reindex")
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Material Reindex",
-        )
+        self._require_undo_enabled("material reindex")
+        self._open_undo_chunk("MMD Material Reindex")
         self._write_transaction = {
             "root": root,
             "kind": "material_reindex",
@@ -675,11 +673,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material create index is not trailing: expected {expected_index}, got {index}"
             )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material creation")
-        self._call_adapter(
-            "undo_info", openChunk=True, chunkName="MMD Material Create"
-        )
+        self._require_undo_enabled("material creation")
+        self._open_undo_chunk("MMD Material Create")
         self._write_transaction = {
             "root": root,
             "kind": "material_create",
@@ -728,9 +723,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"selected bone has stale registration metadata: {joint!r}"
             )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for bone registration")
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Bone Register")
+        self._require_undo_enabled("bone registration")
+        self._open_undo_chunk("MMD Bone Register")
         self._write_transaction = {
             "root": root,
             "kind": "bone_register",
@@ -763,8 +757,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"bone registration readback mismatch: expected {bone.to_mapping()!r}, got {actual.to_mapping()!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def commit_material_create(self, model_root: str, material: MmdMaterialSpec) -> None:
         """Strictly verify one new shader binding and close its undo chunk."""
@@ -793,8 +786,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material create readback mismatch: expected {material.to_mapping()!r}, got {actual.to_mapping()!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def rebase_write_bindings(
         self,
@@ -862,8 +854,7 @@ class MayaSceneMetadataBackend:
         if old_material.index != new_material.index:
             raise MayaSceneMetadataError("material value patch cannot change material index")
         outline_original = self._begin_material_outline_capture(shader, outline_enabled)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material value patches")
+        self._require_undo_enabled("material value patches")
         original = self._read_material_value_attrs(shader)
         expected_old = self._material_value_attrs(old_material)
         diffuse_route = material_diffuse_route(
@@ -886,11 +877,7 @@ class MayaSceneMetadataBackend:
                 f"material value patch preimage mismatch for {shader!r}: "
                 f"expected {expected_old!r}, got {original!r}"
             )
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Material Value Patch",
-        )
+        self._open_undo_chunk("MMD Material Value Patch")
         self._write_transaction = {
             "root": root,
             "kind": "material_value",
@@ -932,13 +919,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material binding patch preimage mismatch for {shader!r}"
             )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material binding patches")
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Material Binding Patch",
-        )
+        self._require_undo_enabled("material binding patches")
+        self._open_undo_chunk("MMD Material Binding Patch")
         self._write_transaction = {
             "root": root,
             "kind": "material_binding",
@@ -970,8 +952,7 @@ class MayaSceneMetadataBackend:
         if old_bone.index != new_bone.index:
             raise MayaSceneMetadataError("bone value patch cannot change bone index")
         self._require_selected_bone(root, joint, old_bone.index)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for bone value patches")
+        self._require_undo_enabled("bone value patches")
         original = self._read_bone_value_attrs(joint)
         expected_old = self._bone_value_attrs(old_bone)
         if original != expected_old:
@@ -979,11 +960,7 @@ class MayaSceneMetadataBackend:
                 f"bone value patch preimage mismatch for {joint!r}: "
                 f"expected {expected_old!r}, got {original!r}"
             )
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Bone Value Patch",
-        )
+        self._open_undo_chunk("MMD Bone Value Patch")
         self._write_transaction = {
             "root": root,
             "kind": "bone_value",
@@ -1013,8 +990,7 @@ class MayaSceneMetadataBackend:
         if old_morph.index != new_morph.index:
             raise MayaSceneMetadataError("morph value patch cannot change morph index")
         self._require_selected_morph(root, node, old_morph.index)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph value patches")
+        self._require_undo_enabled("morph value patches")
         original = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node, root=root)))
         expected_old = self._morph_value_attrs(old_morph)
         if original != expected_old:
@@ -1022,11 +998,7 @@ class MayaSceneMetadataBackend:
                 f"morph value patch preimage mismatch for {node!r}: "
                 f"expected {expected_old!r}, got {original!r}"
             )
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Morph Value Patch",
-        )
+        self._open_undo_chunk("MMD Morph Value Patch")
         self._write_transaction = {
             "root": root,
             "kind": "morph_value",
@@ -1091,8 +1063,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"morph value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     @staticmethod
     def _morph_value_attrs(morph: MmdMorphSpec) -> dict[str, Any]:
@@ -1130,8 +1101,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"bone value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     @staticmethod
     def _bone_value_attrs(bone: MmdBoneSpec) -> dict[str, Any]:
@@ -1208,8 +1178,7 @@ class MayaSceneMetadataBackend:
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
         self._verify_material_outline_target(transaction, outline_target, material)
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def commit_material_binding_patch(
         self,
@@ -1233,8 +1202,7 @@ class MayaSceneMetadataBackend:
                 f"material binding patch fingerprint mismatch: expected {material!r}, got {actual!r}"
             )
         self._verify_material_outline_target(transaction, outline_target, material)
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     @staticmethod
     def _material_value_attrs(material: MmdMaterialSpec) -> dict[str, Any]:
@@ -1393,8 +1361,7 @@ class MayaSceneMetadataBackend:
                 raise MayaSceneMetadataError(
                     "material reindex transaction narrow-state mismatch"
                 )
-            self._call_adapter("undo_info", closeChunk=True)
-            self._write_transaction = None
+            self._close_undo_chunk()
             return
         raise MayaSceneMetadataError("active transaction is not a material reindex")
 
@@ -1537,9 +1504,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError("morph indices must be a contiguous registry-owned range")
         if index not in indices or new_position not in indices:
             raise MayaSceneMetadataError("morph reindex selected indices are not registry-owned")
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph reindex")
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Reindex")
+        self._require_undo_enabled("morph reindex")
+        self._open_undo_chunk("MMD Morph Reindex")
         self._write_transaction = {
             "root": root,
             "kind": "morph_reindex",
@@ -1563,9 +1529,8 @@ class MayaSceneMetadataBackend:
         new_index = len(original["morphs"])
         if set(original["morphs"].values()) != set(range(new_index)):
             raise MayaSceneMetadataError("morph indices must be a contiguous registry-owned range")
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph creation")
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Create")
+        self._require_undo_enabled("morph creation")
+        self._open_undo_chunk("MMD Morph Create")
         self._write_transaction = {
             "root": root,
             "kind": "morph_create",
@@ -1624,8 +1589,7 @@ class MayaSceneMetadataBackend:
                     raise MayaSceneMetadataError("existing morph controller alias changed during creation")
         if not actual["aliases"].get(morph.index):
             raise MayaSceneMetadataError("created morph controller alias is missing")
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def _capture_morph_create_state(self, root: str) -> dict[str, Any]:
         members = self._registry_morph_members(root)
@@ -1704,8 +1668,7 @@ class MayaSceneMetadataBackend:
         expected = self._expected_morph_reindex_state(transaction["original_values"], swapped)
         if actual != expected:
             raise MayaSceneMetadataError("morph reindex fingerprint mismatch")
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def _capture_morph_reindex_state(self, root: str) -> dict[str, Any]:
         members = self._registry_morph_members(root)
