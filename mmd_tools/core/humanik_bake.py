@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from mmd_tools.core.humanik_preview import HumanIkTargetPreview, stop_humanik_target_preview
+from mmd_tools.core.humanik_retarget import active_humanik_retarget_input
 from mmd_tools.core.humanik_utils import maya_cmds
 
 
@@ -673,7 +674,7 @@ def _verify_restore_state_restored(preview: HumanIkTargetPreview, cmds, mel_modu
                 return False
     if mel_module is not None:
         try:
-            source = str(mel_module.eval(f'hikGetRetargetCharacterInput("{restore_state.character}")') or "")
+            source = active_humanik_retarget_input(restore_state.character, mel_module)
             if source != str(getattr(restore_state, "input_source", "")):
                 return False
             locked = bool(mel_module.eval(f'hikIsDefinitionLocked("{restore_state.character}")'))

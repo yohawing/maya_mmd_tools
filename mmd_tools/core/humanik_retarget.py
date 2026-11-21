@@ -138,6 +138,21 @@ def find_humanik_character_for_model(model_root: str, cmds_module=None) -> Optio
     return None
 
 
+def active_humanik_retarget_input(character: str, mel) -> str:
+    """Return the character's active retarget source, or ``""`` on stance input.
+
+    Maya can still list an old retargeter after switching to the inactive
+    stance input (input type 0); that source no longer drives the character.
+    """
+    source = str(mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or "")
+    try:
+        if int(mel.eval(f"hikGetInputType({mel_string(character)})")) == 0:
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return source
+
+
 def describe_humanik_import_lock(
     model_root: str,
     cmds_module=None,
@@ -181,9 +196,7 @@ def describe_humanik_import_lock(
     except Exception:
         has_control_rig = False
     try:
-        input_source = str(
-            mel.eval(f"hikGetRetargetCharacterInput({mel_string(character)})") or ""
-        )
+        input_source = active_humanik_retarget_input(character, mel)
     except Exception:
         input_source = ""
     if has_control_rig:
