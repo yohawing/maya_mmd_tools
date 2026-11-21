@@ -497,6 +497,128 @@ def _build_pmx_morphs(morphs_raw, header, vertex_count, bone_count, material_cou
     return morphs, version
 
 
+def _build_pmx_rigid_bodies(rigid_bodies_raw, header, bone_count):
+    """Build and return the PMX rigid bodies."""
+    rigid_bodies = []
+    for rb_raw in rigid_bodies_raw:
+        rb = PmxRigidBody(
+            bone_index_size=header.bone_index_size,
+            encoding_flag=header.encoding_flag,
+        )
+        rb.name = rb_raw.get("name", "RigidBody")
+        rb.name_english = rb_raw.get("name_english", "")
+        rb.related_bone_index = rb_raw.get("related_bone_index", -1)
+        if rb.related_bone_index != -1 and not (0 <= rb.related_bone_index < bone_count):
+            raise ValueError(
+                f"rigid body related_bone_index out of range: {rb.related_bone_index} "
+                f"(bone_count={bone_count})"
+            )
+        rb.group = rb_raw.get("group", 0)
+        rb.collision_mask = rb_raw.get("collision_mask", 0)
+        rb.shape_type = rb_raw.get("shape_type", 0)
+        rb.size = tuple(rb_raw.get("size", [0.0, 0.0, 0.0]))
+        rb.position = tuple(rb_raw.get("position", [0.0, 0.0, 0.0]))
+        rb.rotation = tuple(rb_raw.get("rotation", [0.0, 0.0, 0.0]))
+        rb.mass = rb_raw.get("mass", 0.0)
+        rb.velocity_attenuation = rb_raw.get("velocity_attenuation", 0.0)
+        rb.rotation_attenuation = rb_raw.get("rotation_attenuation", 0.0)
+        rb.elasticity = rb_raw.get("elasticity", 0.0)
+        rb.friction = rb_raw.get("friction", 0.0)
+        rb.physics_mode = rb_raw.get("physics_mode", 0)
+        rigid_bodies.append(rb)
+    return rigid_bodies
+
+
+def _build_pmx_joints(joints_raw, header, rigid_body_count):
+    """Build and return the PMX joints."""
+    joints = []
+    for j_raw in joints_raw:
+        joint = PmxJoint(
+            rigid_body_index_size=header.rigid_body_index_size,
+            encoding=header.encoding,
+        )
+        joint.name = j_raw.get("name", "Joint")
+        joint.name_english = j_raw.get("name_english", "")
+        joint.joint_type = j_raw.get("joint_type", 0)
+        joint.rigid_body_a_index = j_raw.get("rigid_body_a_index", -1)
+        joint.rigid_body_b_index = j_raw.get("rigid_body_b_index", -1)
+        for attr in ("rigid_body_a_index", "rigid_body_b_index"):
+            rb_index = getattr(joint, attr)
+            if rb_index != -1 and not (0 <= rb_index < rigid_body_count):
+                raise ValueError(
+                    f"joint {attr} out of range: {rb_index} "
+                    f"(rigid_body_count={rigid_body_count})"
+                )
+        joint.position = tuple(j_raw.get("position", [0.0, 0.0, 0.0]))
+        joint.rotation = tuple(j_raw.get("rotation", [0.0, 0.0, 0.0]))
+        joint.translation_limit_min = tuple(j_raw.get("translation_limit_min", [0.0, 0.0, 0.0]))
+        joint.translation_limit_max = tuple(j_raw.get("translation_limit_max", [0.0, 0.0, 0.0]))
+        joint.rotation_limit_min = tuple(j_raw.get("rotation_limit_min", [0.0, 0.0, 0.0]))
+        joint.rotation_limit_max = tuple(j_raw.get("rotation_limit_max", [0.0, 0.0, 0.0]))
+        joint.spring_translation = tuple(j_raw.get("spring_translation", [0.0, 0.0, 0.0]))
+        joint.spring_rotation = tuple(j_raw.get("spring_rotation", [0.0, 0.0, 0.0]))
+        joints.append(joint)
+    return joints
+
+
+def _build_pmx_display_frames(display_frames_raw, header, bone_count, morph_count):
+    """Build and return the PMX display frames."""
+    display_frames = []
+
+    def _append_display_frame(frame_raw):
+        frame_data = normalize_display_frame_dict(frame_raw)
+        frame = PmxDisplayFrame(
+            header.bone_index_size,
+            header.morph_index_size,
+            header.encoding_flag,
+        )
+        frame.name = frame_data["name"]
+        frame.name_english = frame_data["name_english"]
+        frame.special_flag = frame_data["special_flag"]
+        frame.elements = []
+        for element in frame_data["elements"]:
+            element_type = element["type"]
+            index = element["index"]
+            if element_type == 0:
+                if index < 0 or index >= bone_count:
+                    raise ValueError(
+                        f"display frame bone index out of range: {index} "
+                        f"(bone_count={bone_count})"
+                    )
+            elif element_type == 1:
+                if index < 0 or index >= morph_count:
+                    raise ValueError(
+                        f"display frame morph index out of range: {index} "
+                        f"(morph_count={morph_count})"
+                    )
+            else:
+                raise ValueError(f"Unsupported display frame element type: {element_type}")
+            frame.elements.append({"type": element_type, "index": index})
+        display_frames.append(frame)
+
+    if display_frames_raw:
+        for frame_raw in display_frames_raw:
+            _append_display_frame(frame_raw)
+    else:
+        _append_display_frame(
+            {
+                "name": "Root",
+                "name_english": "Root",
+                "special_flag": 1,
+                "elements": [{"type": 0, "index": 0}],
+            }
+        )
+        _append_display_frame(
+            {
+                "name": "表情",
+                "name_english": "Exp",
+                "special_flag": 1,
+                "elements": [],
+            }
+        )
+    return display_frames
+
+
 class PmxExporter:
     """
     MayaのシーンデータをPMXファイルフォーマットにエクスポートするクラス。
@@ -674,113 +796,13 @@ class PmxExporter:
         )
 
         # --- rigid bodies ---
-        for rb_raw in rigid_bodies_raw:
-            rb = PmxRigidBody(
-                bone_index_size=pmx.header.bone_index_size,
-                encoding_flag=pmx.header.encoding_flag,
-            )
-            rb.name = rb_raw.get("name", "RigidBody")
-            rb.name_english = rb_raw.get("name_english", "")
-            rb.related_bone_index = rb_raw.get("related_bone_index", -1)
-            if rb.related_bone_index != -1 and not (0 <= rb.related_bone_index < bone_count):
-                raise ValueError(
-                    f"rigid body related_bone_index out of range: {rb.related_bone_index} "
-                    f"(bone_count={bone_count})"
-                )
-            rb.group = rb_raw.get("group", 0)
-            rb.collision_mask = rb_raw.get("collision_mask", 0)
-            rb.shape_type = rb_raw.get("shape_type", 0)
-            rb.size = tuple(rb_raw.get("size", [0.0, 0.0, 0.0]))
-            rb.position = tuple(rb_raw.get("position", [0.0, 0.0, 0.0]))
-            rb.rotation = tuple(rb_raw.get("rotation", [0.0, 0.0, 0.0]))
-            rb.mass = rb_raw.get("mass", 0.0)
-            rb.velocity_attenuation = rb_raw.get("velocity_attenuation", 0.0)
-            rb.rotation_attenuation = rb_raw.get("rotation_attenuation", 0.0)
-            rb.elasticity = rb_raw.get("elasticity", 0.0)
-            rb.friction = rb_raw.get("friction", 0.0)
-            rb.physics_mode = rb_raw.get("physics_mode", 0)
-            pmx.rigid_bodies.append(rb)
+        pmx.rigid_bodies = _build_pmx_rigid_bodies(rigid_bodies_raw, pmx.header, bone_count)
 
         # --- joints ---
-        for j_raw in joints_raw:
-            joint = PmxJoint(
-                rigid_body_index_size=pmx.header.rigid_body_index_size,
-                encoding=pmx.header.encoding,
-            )
-            joint.name = j_raw.get("name", "Joint")
-            joint.name_english = j_raw.get("name_english", "")
-            joint.joint_type = j_raw.get("joint_type", 0)
-            joint.rigid_body_a_index = j_raw.get("rigid_body_a_index", -1)
-            joint.rigid_body_b_index = j_raw.get("rigid_body_b_index", -1)
-            for attr in ("rigid_body_a_index", "rigid_body_b_index"):
-                rb_index = getattr(joint, attr)
-                if rb_index != -1 and not (0 <= rb_index < rigid_body_count):
-                    raise ValueError(
-                        f"joint {attr} out of range: {rb_index} "
-                        f"(rigid_body_count={rigid_body_count})"
-                    )
-            joint.position = tuple(j_raw.get("position", [0.0, 0.0, 0.0]))
-            joint.rotation = tuple(j_raw.get("rotation", [0.0, 0.0, 0.0]))
-            joint.translation_limit_min = tuple(j_raw.get("translation_limit_min", [0.0, 0.0, 0.0]))
-            joint.translation_limit_max = tuple(j_raw.get("translation_limit_max", [0.0, 0.0, 0.0]))
-            joint.rotation_limit_min = tuple(j_raw.get("rotation_limit_min", [0.0, 0.0, 0.0]))
-            joint.rotation_limit_max = tuple(j_raw.get("rotation_limit_max", [0.0, 0.0, 0.0]))
-            joint.spring_translation = tuple(j_raw.get("spring_translation", [0.0, 0.0, 0.0]))
-            joint.spring_rotation = tuple(j_raw.get("spring_rotation", [0.0, 0.0, 0.0]))
-            pmx.joints.append(joint)
+        pmx.joints = _build_pmx_joints(joints_raw, pmx.header, rigid_body_count)
 
         # --- display frames (required for valid PMX) ---
-        def _append_display_frame(frame_raw):
-            frame_data = normalize_display_frame_dict(frame_raw)
-            frame = PmxDisplayFrame(
-                pmx.header.bone_index_size,
-                pmx.header.morph_index_size,
-                pmx.header.encoding_flag,
-            )
-            frame.name = frame_data["name"]
-            frame.name_english = frame_data["name_english"]
-            frame.special_flag = frame_data["special_flag"]
-            frame.elements = []
-            for element in frame_data["elements"]:
-                element_type = element["type"]
-                index = element["index"]
-                if element_type == 0:
-                    if index < 0 or index >= bone_count:
-                        raise ValueError(
-                            f"display frame bone index out of range: {index} "
-                            f"(bone_count={bone_count})"
-                        )
-                elif element_type == 1:
-                    if index < 0 or index >= len(pmx.morphs):
-                        raise ValueError(
-                            f"display frame morph index out of range: {index} "
-                            f"(morph_count={len(pmx.morphs)})"
-                        )
-                else:
-                    raise ValueError(f"Unsupported display frame element type: {element_type}")
-                frame.elements.append({"type": element_type, "index": index})
-            pmx.display_frames.append(frame)
-
-        if display_frames_raw:
-            for frame_raw in display_frames_raw:
-                _append_display_frame(frame_raw)
-        else:
-            _append_display_frame(
-                {
-                    "name": "Root",
-                    "name_english": "Root",
-                    "special_flag": 1,
-                    "elements": [{"type": 0, "index": 0}],
-                }
-            )
-            _append_display_frame(
-                {
-                    "name": "表情",
-                    "name_english": "Exp",
-                    "special_flag": 1,
-                    "elements": [],
-                }
-            )
+        pmx.display_frames = _build_pmx_display_frames(display_frames_raw, pmx.header, bone_count, len(pmx.morphs))
 
         # --- write ---
         native_bytes = self._try_native_parts_export(pmx)
