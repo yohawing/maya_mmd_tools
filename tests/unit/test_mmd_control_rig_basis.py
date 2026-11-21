@@ -10,8 +10,10 @@ from mmd_tools.core.mmd_control_rig_basis import (
     basis_from_shape_rotation,
     bone_to_control,
     control_to_bone,
+    euler_degrees_from_quaternion,
     matrix_from_quaternion,
     quaternion_conjugate,
+    quaternion_from_euler_degrees,
     quaternion_from_shape_rotation,
     quaternion_inverse,
     quaternion_multiply,
@@ -21,6 +23,27 @@ from mmd_tools.core.mmd_control_rig_basis import (
 
 
 class TestMmdControlRigBasis(unittest.TestCase):
+    def test_xyz_euler_degrees_roundtrip(self):
+        angles = (20.0, -35.0, 50.0)
+        restored = euler_degrees_from_quaternion(quaternion_from_euler_degrees(angles))
+        for actual, expected in zip(restored, angles):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_zyx_euler_degrees_roundtrip(self):
+        try:
+            import maya.api.OpenMaya as om
+        except ImportError:
+            self.skipTest("ZYX conversion requires OpenMaya")
+
+        angles = (20.0, -35.0, 50.0)
+        order = om.MEulerRotation.kZYX
+        quaternion = quaternion_from_euler_degrees(angles, rotate_order=order)
+        xyz = quaternion_from_euler_degrees(angles)
+        self.assertLess(abs(sum(a * b for a, b in zip(quaternion, xyz))), 0.999)
+        restored = euler_degrees_from_quaternion(quaternion, rotate_order=order)
+        for actual, expected in zip(restored, angles):
+            self.assertAlmostEqual(actual, expected)
+
     def test_identity_rotation_persists_explicit_identity_source(self):
         basis = basis_from_shape_rotation(None)
 

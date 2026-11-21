@@ -46,7 +46,9 @@ from mmd_tools.core.mmd_control_rig_basis import (
     MmdControlRigBasisError,
     bone_to_control,
     control_to_bone,
+    euler_degrees_from_quaternion,
     matrix_from_quaternion,
+    quaternion_from_euler_degrees,
     validate_basis_record,
 )
 from mmd_tools.core.mmd_control_rig_channels import (
@@ -3329,9 +3331,9 @@ def _convert_rotation_values_between_bases(
         destination_order = int(cmds.getAttr(f"{destination_node}.rotateOrder"))
     except Exception:
         destination_order = 0
-    quaternion = _quaternion_from_euler_degrees(values, rotate_order=source_order)
+    quaternion = quaternion_from_euler_degrees(values, rotate_order=source_order)
     converted = bone_to_control(quaternion, basis)
-    return _euler_degrees_from_quaternion(
+    return euler_degrees_from_quaternion(
         converted,
         rotate_order=destination_order,
     )
@@ -4156,7 +4158,7 @@ def _sample_control_rotation_group_to_bone(
         target_rotate_order = 0
     for time in times:
         values = [float(cmds.getAttr(f"{control_node}.{axis}", time=time)) for axis in attrs]
-        control_quaternion = _quaternion_from_euler_degrees(
+        control_quaternion = quaternion_from_euler_degrees(
             values,
             rotate_order=control_rotate_order,
         )
@@ -4164,7 +4166,7 @@ def _sample_control_rotation_group_to_bone(
         samples.append(
             (
                 time,
-                _euler_degrees_from_quaternion(
+                euler_degrees_from_quaternion(
                     bone_quaternion,
                     rotate_order=target_rotate_order,
                 ),
@@ -4278,68 +4280,6 @@ def _sample_control_rotation_group_to_bone(
         [result.get(rows_by_attr[attr]["control"]) for attr in attrs],
     )
     return result
-
-
-def _quaternion_from_euler_degrees(
-    values,
-    *,
-    rotate_order: int = 0,
-) -> Tuple[float, float, float, float]:
-    """Convert Maya Euler degrees and rotate order to an xyzw quaternion."""
-
-    try:
-        if int(rotate_order) not in range(6):
-            raise ValueError(f"invalid Maya rotate order: {rotate_order}")
-        rotation = om.MEulerRotation(
-            math.radians(float(values[0])),
-            math.radians(float(values[1])),
-            math.radians(float(values[2])),
-            int(rotate_order),
-        )
-        q = rotation.asQuaternion()
-        return (float(q.x), float(q.y), float(q.z), float(q.w))
-    except Exception:
-        if int(rotate_order) != 0:
-            raise
-        x, y, z = (math.radians(float(value)) * 0.5 for value in values)
-        cx, sx = math.cos(x), math.sin(x)
-        cy, sy = math.cos(y), math.sin(y)
-        cz, sz = math.cos(z), math.sin(z)
-        return (
-            sx * cy * cz - cx * sy * sz,
-            cx * sy * cz + sx * cy * sz,
-            cx * cy * sz - sx * sy * cz,
-            cx * cy * cz + sx * sy * sz,
-        )
-
-
-def _euler_degrees_from_quaternion(
-    quaternion,
-    *,
-    rotate_order: int = 0,
-) -> Tuple[float, float, float]:
-    """Convert an xyzw quaternion to Maya Euler degrees in one rotate order."""
-
-    try:
-        if int(rotate_order) not in range(6):
-            raise ValueError(f"invalid Maya rotate order: {rotate_order}")
-        q = om.MQuaternion(*[float(value) for value in quaternion])
-        rotation = q.asEulerRotation()
-        rotation.reorderIt(int(rotate_order))
-        return tuple(math.degrees(float(value)) for value in (rotation.x, rotation.y, rotation.z))
-    except Exception:
-        if int(rotate_order) != 0:
-            raise
-        x, y, z, w = (float(value) for value in quaternion)
-        sinr = 2.0 * (w * x + y * z)
-        cosr = 1.0 - 2.0 * (x * x + y * y)
-        roll = math.atan2(sinr, cosr)
-        sinp = 2.0 * (w * y - z * x)
-        pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
-        siny = 2.0 * (w * z + x * y)
-        cosy = 1.0 - 2.0 * (y * y + z * z)
-        yaw = math.atan2(siny, cosy)
-        return tuple(math.degrees(value) for value in (roll, pitch, yaw))
 
 
 def _copy_rotation_curve_group(cmds, source_node: str, destination_node: str) -> None:
