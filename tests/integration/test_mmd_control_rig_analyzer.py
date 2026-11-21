@@ -14,6 +14,10 @@ from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_CONTROL_RIG_J
 from mmd_tools.core.mmd_control_rig_anim_layers import (
     capture_mmd_control_rig_anim_layers,
 )
+from mmd_tools.core.mmd_control_rig_basis import (
+    euler_degrees_from_quaternion,
+    quaternion_from_euler_degrees,
+)
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_CONTROL_OWNED,
     CONTROL_RIG_MMD_OWNED,
@@ -26,8 +30,6 @@ from mmd_tools.core.mmd_control_rig_builder import (
 from mmd_tools.core.mmd_control_rig_motion import (
     ROUTE_SAMPLED,
     _commit_control_rotation_group,
-    _euler_degrees_from_quaternion,
-    _quaternion_from_euler_degrees,
     _capture_animation_curve_payload,
     bake_mmd_control_rig,
     control_rig_edit_authoring_bases_for_joints,
@@ -2574,15 +2576,15 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         values = (23.0, -41.0, 67.0)
         for rotate_order in range(6):
             with self.subTest(rotate_order=rotate_order):
-                quaternion = _quaternion_from_euler_degrees(
+                quaternion = quaternion_from_euler_degrees(
                     values,
                     rotate_order=rotate_order,
                 )
-                euler = _euler_degrees_from_quaternion(
+                euler = euler_degrees_from_quaternion(
                     quaternion,
                     rotate_order=rotate_order,
                 )
-                roundtrip = _quaternion_from_euler_degrees(
+                roundtrip = quaternion_from_euler_degrees(
                     euler,
                     rotate_order=rotate_order,
                 )

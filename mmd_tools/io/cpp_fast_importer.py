@@ -160,6 +160,95 @@ def _require_dx11_for_vp2_ownership(cmds) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _fast_import_full_model(
+    filepath, base_name, scale, include_morphs, vp2_ownership, options, progress_callback, cmds
+) -> Optional[str]:
+    """Import a full PMX model with native geometry, or return None to fall back."""
+    # Keep the ordinary authoring contract in one place. Only geometry
+    # construction is replaced by mmdFastLoad; bones, morphs, physics and
+    # ownership use the same converters as a regular PMX import.
+    from mmd_tools.io.mmd_importer import (
+        _record_physics_compatibility_warnings,
+        _scoped_settings_override,
+    )
+    from mmd_tools.io.pmx_importer import import_pmx_file, _require_effective_import_scale
+    from mmd_tools.core import settings, settings_keys
+
+    scale = _require_effective_import_scale(scale)
+    try:
+        pmx = parse_pmx_native(filepath)
+    except Exception as exc:
+        logger.debug("Fast native PMX metadata unavailable: %s", exc)
+        return None
+    if pmx is None:
+        return None
+    command_args = {"f": filepath, "n": base_name, "s": scale, "mo": False}
+    split = bool((options or {}).get(
+        "separate_meshes_by_material",
+        settings.get(settings_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
+    ))
+    if split:
+        command_args["sp"] = True
+    if vp2_ownership:
+        command_args["vp2Ownership"] = True
+    native_mesh = []
+    # Bone-only PMX files still use native parsing and shared authoring,
+    # but have no geometry for MFnMesh to create.
+    if pmx.vertices or pmx.faces:
+        try:
+            native_mesh = cmds.mmdFastLoad(**command_args)
+        except RuntimeError as exc:
+            if vp2_ownership:
+                raise
+            logger.debug("Fast native geometry unavailable: %s", exc)
+            return None
+        expected = 1 if split else (3 if vp2_ownership else 2)
+        if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
+            raise RuntimeError("mmdFastLoad returned an invalid geometry result")
+    if options is not None:
+        _record_physics_compatibility_warnings(pmx, options)
+    import_options = dict(options or {})
+    import_options.update({
+        "import_morphs": include_morphs,
+        "_cpp_fast_load_geometry": native_mesh,
+        "use_cpp_vp2_ownership": vp2_ownership,
+    })
+    native_identity = cmds.ls(native_mesh[0], uuid=True) if native_mesh else []
+    proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
+    if split and native_mesh:
+        # Split source transforms leave their temporary group during
+        # authoring; render shapes can then leave those source transforms.
+        sources = cmds.listRelatives(
+            native_mesh[0], children=True, type="transform", fullPath=True
+        ) or []
+        proxies = cmds.listRelatives(
+            native_mesh[0], allDescendents=True, type="mmdRenderShape", fullPath=True
+        ) or []
+        if sources:
+            native_identity.extend(cmds.ls(sources, uuid=True) or [])
+        if proxies:
+            proxy_identity = cmds.ls(proxies, uuid=True) or []
+    try:
+        with _scoped_settings_override(import_options):
+            return import_pmx_file(
+                pmx, filepath, scale, import_options, progress_callback=progress_callback
+            )
+    except Exception:
+        # Preflight may reject the model before the ordinary pipeline adopts
+        # this geometry. UUIDs retain ownership even if authoring renamed it.
+        remaining = cmds.ls(native_identity, long=True) if native_identity else []
+        # The shared converter may already have moved the proxy into its
+        # own sibling transform. It remains owned by this failed import.
+        for proxy in (cmds.ls(proxy_identity, long=True) if proxy_identity else []):
+            remaining.extend(cmds.listRelatives(proxy, parent=True, fullPath=True) or [])
+        if remaining:
+            try:
+                cmds.delete(list(dict.fromkeys(remaining)))
+            except RuntimeError:
+                logger.warning("Failed to remove rejected Fast Load geometry", exc_info=True)
+        raise
+
+
 def fast_import(
     filepath: str,
     base_name: str = "mmd_fast_model",
@@ -245,89 +334,9 @@ def fast_import(
         _require_dx11_for_vp2_ownership(cmds)
 
     if not mesh_only:
-        # Keep the ordinary authoring contract in one place. Only geometry
-        # construction is replaced by mmdFastLoad; bones, morphs, physics and
-        # ownership use the same converters as a regular PMX import.
-        from mmd_tools.io.mmd_importer import (
-            _record_physics_compatibility_warnings,
-            _scoped_settings_override,
+        return _fast_import_full_model(
+            filepath, base_name, scale, include_morphs, vp2_ownership, options, progress_callback, cmds
         )
-        from mmd_tools.io.pmx_importer import import_pmx_file, _require_effective_import_scale
-        from mmd_tools.core import settings, settings_keys
-
-        scale = _require_effective_import_scale(scale)
-        try:
-            pmx = parse_pmx_native(filepath)
-        except Exception as exc:
-            logger.debug("Fast native PMX metadata unavailable: %s", exc)
-            return None
-        if pmx is None:
-            return None
-        command_args = {"f": filepath, "n": base_name, "s": scale, "mo": False}
-        split = bool((options or {}).get(
-            "separate_meshes_by_material",
-            settings.get(settings_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
-        ))
-        if split:
-            command_args["sp"] = True
-        if vp2_ownership:
-            command_args["vp2Ownership"] = True
-        native_mesh = []
-        # Bone-only PMX files still use native parsing and shared authoring,
-        # but have no geometry for MFnMesh to create.
-        if pmx.vertices or pmx.faces:
-            try:
-                native_mesh = cmds.mmdFastLoad(**command_args)
-            except RuntimeError as exc:
-                if vp2_ownership:
-                    raise
-                logger.debug("Fast native geometry unavailable: %s", exc)
-                return None
-            expected = 1 if split else (3 if vp2_ownership else 2)
-            if not isinstance(native_mesh, (list, tuple)) or len(native_mesh) != expected:
-                raise RuntimeError("mmdFastLoad returned an invalid geometry result")
-        if options is not None:
-            _record_physics_compatibility_warnings(pmx, options)
-        import_options = dict(options or {})
-        import_options.update({
-            "import_morphs": include_morphs,
-            "_cpp_fast_load_geometry": native_mesh,
-            "use_cpp_vp2_ownership": vp2_ownership,
-        })
-        native_identity = cmds.ls(native_mesh[0], uuid=True) if native_mesh else []
-        proxy_identity = cmds.ls(native_mesh[2], uuid=True) if len(native_mesh) == 3 else []
-        if split and native_mesh:
-            # Split source transforms leave their temporary group during
-            # authoring; render shapes can then leave those source transforms.
-            sources = cmds.listRelatives(
-                native_mesh[0], children=True, type="transform", fullPath=True
-            ) or []
-            proxies = cmds.listRelatives(
-                native_mesh[0], allDescendents=True, type="mmdRenderShape", fullPath=True
-            ) or []
-            if sources:
-                native_identity.extend(cmds.ls(sources, uuid=True) or [])
-            if proxies:
-                proxy_identity = cmds.ls(proxies, uuid=True) or []
-        try:
-            with _scoped_settings_override(import_options):
-                return import_pmx_file(
-                    pmx, filepath, scale, import_options, progress_callback=progress_callback
-                )
-        except Exception:
-            # Preflight may reject the model before the ordinary pipeline adopts
-            # this geometry. UUIDs retain ownership even if authoring renamed it.
-            remaining = cmds.ls(native_identity, long=True) if native_identity else []
-            # The shared converter may already have moved the proxy into its
-            # own sibling transform. It remains owned by this failed import.
-            for proxy in (cmds.ls(proxy_identity, long=True) if proxy_identity else []):
-                remaining.extend(cmds.listRelatives(proxy, parent=True, fullPath=True) or [])
-            if remaining:
-                try:
-                    cmds.delete(list(dict.fromkeys(remaining)))
-                except RuntimeError:
-                    logger.warning("Failed to remove rejected Fast Load geometry", exc_info=True)
-            raise
 
     # --- run fast load ----------------------------------------------------
     try:
@@ -656,7 +665,7 @@ def _apply_basic_materials(
 
     try:
         materials = metadata.get("materials") or []
-        used_names = _scene_name_set(cmds_module)
+        used_names = maya_name_utils.collect_scene_names(cmds_module)
         converter = None
         if (native_pmx is not _FAST_NATIVE_PMX_UNSET and native_pmx is not None
                 and len(getattr(native_pmx, "materials", ()) or ()) >= len(materials)):
@@ -1301,7 +1310,7 @@ def _create_standard_material(
 ) -> Optional[str]:
     """Create a Maya standardSurface shader from parsed PMX material metadata."""
     raw_name = material.get("englishName") or material.get("name") or f"material_{material_index}"
-    names = used_names if used_names is not None else _scene_name_set(cmds_module)
+    names = used_names if used_names is not None else maya_name_utils.collect_scene_names(cmds_module)
     shader_name = _allocate_fast_material_name(raw_name, material_index, names)
 
     try:
@@ -1364,20 +1373,6 @@ def _create_standard_material(
 def _sanitize_node_name(raw: str) -> str:
     """Return a Maya-safe name through the shared Unicode conversion policy."""
     return maya_name_utils.sanitize_text(raw)
-
-
-def _scene_name_set(cmds_module) -> set[str]:
-    """Collect existing Maya leaf names for deterministic fast-path allocation."""
-    try:
-        nodes = cmds_module.ls() or []
-    except Exception:
-        return set()
-    names: set[str] = set()
-    for node in nodes:
-        leaf = str(node).rsplit("|", 1)[-1]
-        names.add(leaf)
-        names.add(leaf.rsplit(":", 1)[-1])
-    return names
 
 
 def _allocate_fast_material_name(raw_name, material_index: int, used_names: set[str]) -> str:

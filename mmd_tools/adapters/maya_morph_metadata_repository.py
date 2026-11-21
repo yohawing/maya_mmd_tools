@@ -18,6 +18,7 @@ from mmd_tools.adapters.maya_morph_read_projection import (
     CachedMorphBindingQueryAdapter,
     MayaMorphReadProjectionAdapter,
 )
+from mmd_tools.core.utils import unique_json_object
 from mmd_tools.core.constants import (
     ATTR_MMD_FLIP_MORPH_OFFSETS_JSON,
     ATTR_MMD_IMPULSE_MORPH_OFFSETS_JSON,
@@ -672,7 +673,7 @@ class MayaMorphMetadataRepository:
     ) -> list[dict[str, Any]]:
         raw = self._required_string(node, attr)
         try:
-            value = json.loads(raw, object_pairs_hook=self._unique_json_object)
+            value = json.loads(raw, object_pairs_hook=unique_json_object)
         except (TypeError, ValueError) as exc:
             raise self._error(f"{node}.{attr} must contain strict JSON: {exc}") from exc
         if not isinstance(value, list):
@@ -681,15 +682,6 @@ class MayaMorphMetadataRepository:
             self._normalize_morph_offset(node, attr, morph_type, offset, index)
             for index, offset in enumerate(value)
         ]
-
-    @staticmethod
-    def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError(f"duplicate JSON field {key!r}")
-            value[key] = item
-        return value
 
     def _normalize_morph_offset(
         self,

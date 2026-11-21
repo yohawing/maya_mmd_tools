@@ -60,6 +60,7 @@ from mmd_tools.adapters.native_authoring_command import (
     NativeAuthoringCommandGateway,
 )
 from mmd_tools.adapters.scene_metadata_adapter import SceneMetadataAdapter, SceneMetadataError
+from mmd_tools.core.utils import unique_json_object
 from mmd_tools.core.constants import (
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_BONE_FLAGS,
@@ -179,6 +180,33 @@ class MayaSceneMetadataBackend:
         """Inspect derived controller topology without changing the scene."""
         return self._morph_repository.inspect_morph_topology(model_root)
 
+    def _require_undo_enabled(self, purpose: str) -> None:
+        if not bool(self._call_adapter("undo_info", query=True, state=True)):
+            raise MayaSceneMetadataError(f"Maya undo must be enabled for {purpose}")
+
+    def _open_undo_chunk(self, chunk_name: str) -> None:
+        self._call_adapter("undo_info", openChunk=True, chunkName=chunk_name)
+
+    def _close_undo_chunk(self) -> None:
+        self._call_adapter("undo_info", closeChunk=True)
+        self._write_transaction = None
+
+    def _read_morph_topology_state(self, controller) -> dict:
+        return {
+            "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
+            "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
+            "version_locked": bool(
+                self._call_adapter(
+                    "get_attr", f"{controller}.topologyVersion", lock=True
+                )
+            ),
+            "source_locked": bool(
+                self._call_adapter(
+                    "get_attr", f"{controller}.groupTopology", lock=True
+                )
+            ),
+        }
+
     def begin_morph_topology_repair(self, model_root: str, expected_source: str) -> None:
         """Open an explicit derived-topology-only repair transaction."""
         if self._write_transaction is not None:
@@ -194,23 +222,9 @@ class MayaSceneMetadataBackend:
             f"{root}.mmd_morph_controller", source=True, destination=False
         )
         controller = self._material_identity(controllers[0])
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph topology repair")
-        original = {
-            "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
-            "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
-            "version_locked": bool(
-                self._call_adapter(
-                    "get_attr", f"{controller}.topologyVersion", lock=True
-                )
-            ),
-            "source_locked": bool(
-                self._call_adapter(
-                    "get_attr", f"{controller}.groupTopology", lock=True
-                )
-            ),
-        }
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Topology Repair")
+        self._require_undo_enabled("morph topology repair")
+        original = self._read_morph_topology_state(controller)
+        self._open_undo_chunk("MMD Morph Topology Repair")
         self._write_transaction = {
             "root": root,
             "kind": "morph_topology_repair",
@@ -244,20 +258,7 @@ class MayaSceneMetadataBackend:
         if transaction.get("kind") != "morph_topology_repair":
             raise MayaSceneMetadataError("active transaction is not a morph topology repair")
         controller = transaction["controller"]
-        actual = {
-            "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
-            "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
-            "version_locked": bool(
-                self._call_adapter(
-                    "get_attr", f"{controller}.topologyVersion", lock=True
-                )
-            ),
-            "source_locked": bool(
-                self._call_adapter(
-                    "get_attr", f"{controller}.groupTopology", lock=True
-                )
-            ),
-        }
+        actual = self._read_morph_topology_state(controller)
         expected = {
             "version": TOPOLOGY_VERSION,
             "source": transaction["expected_source"],
@@ -269,8 +270,7 @@ class MayaSceneMetadataBackend:
         inspection = self.inspect_morph_topology(model_root)
         if not inspection.valid:
             raise MayaSceneMetadataError("morph topology remains invalid after repair")
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     _DIFFUSE_ALPHA = "mmd_diffuse_alpha"
     _EDGE_ALPHA = "mmd_edge_alpha"
@@ -508,13 +508,8 @@ class MayaSceneMetadataBackend:
         original_value = (
             self._required_string(root, ATTR_MMD_DISPLAY_FRAMES_JSON) if existed else None
         )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for display frame writes")
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="Edit Display Frames",
-        )
+        self._require_undo_enabled("display frame writes")
+        self._open_undo_chunk("Edit Display Frames")
         self._write_transaction = {
             "root": root,
             "kind": "display_frames",
@@ -568,8 +563,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"display frame metadata readback mismatch: expected {payload!r}, got {actual!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def begin_material_reindex(
         self,
@@ -595,13 +589,8 @@ class MayaSceneMetadataBackend:
         root = self._material_identity(model_root)
         first_index, second_index = sorted((index, new_position))
         original = self._capture_material_reindex_state(root, first_index, second_index)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material reindex")
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Material Reindex",
-        )
+        self._require_undo_enabled("material reindex")
+        self._open_undo_chunk("MMD Material Reindex")
         self._write_transaction = {
             "root": root,
             "kind": "material_reindex",
@@ -674,11 +663,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material create index is not trailing: expected {expected_index}, got {index}"
             )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material creation")
-        self._call_adapter(
-            "undo_info", openChunk=True, chunkName="MMD Material Create"
-        )
+        self._require_undo_enabled("material creation")
+        self._open_undo_chunk("MMD Material Create")
         self._write_transaction = {
             "root": root,
             "kind": "material_create",
@@ -727,9 +713,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"selected bone has stale registration metadata: {joint!r}"
             )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for bone registration")
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Bone Register")
+        self._require_undo_enabled("bone registration")
+        self._open_undo_chunk("MMD Bone Register")
         self._write_transaction = {
             "root": root,
             "kind": "bone_register",
@@ -762,8 +747,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"bone registration readback mismatch: expected {bone.to_mapping()!r}, got {actual.to_mapping()!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def commit_material_create(self, model_root: str, material: MmdMaterialSpec) -> None:
         """Strictly verify one new shader binding and close its undo chunk."""
@@ -792,8 +776,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material create readback mismatch: expected {material.to_mapping()!r}, got {actual.to_mapping()!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def rebase_write_bindings(
         self,
@@ -861,8 +844,7 @@ class MayaSceneMetadataBackend:
         if old_material.index != new_material.index:
             raise MayaSceneMetadataError("material value patch cannot change material index")
         outline_original = self._begin_material_outline_capture(shader, outline_enabled)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material value patches")
+        self._require_undo_enabled("material value patches")
         original = self._read_material_value_attrs(shader)
         expected_old = self._material_value_attrs(old_material)
         diffuse_route = material_diffuse_route(
@@ -875,24 +857,17 @@ class MayaSceneMetadataBackend:
             diffuse_route,
             diffuse_target,
         )
+        self._read_viewport_patch_values(original, diffuse_route, diffuse_target, diffuse_alpha_target)
         if diffuse_route is not None:
-            original["viewport_diffuse"] = self._read_material_diffuse_target(diffuse_target)
             expected_old["viewport_diffuse"] = self._maya_float3(old_material.diffuse[:3])
             if diffuse_alpha_target is not None:
-                original["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                    diffuse_alpha_target
-                )
                 expected_old["viewport_diffuse_alpha"] = old_material.diffuse[3]
         if not self._material_value_attrs_equal(original, expected_old):
             raise MayaSceneMetadataError(
                 f"material value patch preimage mismatch for {shader!r}: "
                 f"expected {expected_old!r}, got {original!r}"
             )
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Material Value Patch",
-        )
+        self._open_undo_chunk("MMD Material Value Patch")
         self._write_transaction = {
             "root": root,
             "kind": "material_value",
@@ -934,13 +909,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"material binding patch preimage mismatch for {shader!r}"
             )
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for material binding patches")
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Material Binding Patch",
-        )
+        self._require_undo_enabled("material binding patches")
+        self._open_undo_chunk("MMD Material Binding Patch")
         self._write_transaction = {
             "root": root,
             "kind": "material_binding",
@@ -972,8 +942,7 @@ class MayaSceneMetadataBackend:
         if old_bone.index != new_bone.index:
             raise MayaSceneMetadataError("bone value patch cannot change bone index")
         self._require_selected_bone(root, joint, old_bone.index)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for bone value patches")
+        self._require_undo_enabled("bone value patches")
         original = self._read_bone_value_attrs(joint)
         expected_old = self._bone_value_attrs(old_bone)
         if original != expected_old:
@@ -981,11 +950,7 @@ class MayaSceneMetadataBackend:
                 f"bone value patch preimage mismatch for {joint!r}: "
                 f"expected {expected_old!r}, got {original!r}"
             )
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Bone Value Patch",
-        )
+        self._open_undo_chunk("MMD Bone Value Patch")
         self._write_transaction = {
             "root": root,
             "kind": "bone_value",
@@ -1015,8 +980,7 @@ class MayaSceneMetadataBackend:
         if old_morph.index != new_morph.index:
             raise MayaSceneMetadataError("morph value patch cannot change morph index")
         self._require_selected_morph(root, node, old_morph.index)
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph value patches")
+        self._require_undo_enabled("morph value patches")
         original = self._morph_value_attrs(MmdMorphSpec.from_mapping(self._read_morph(node, root=root)))
         expected_old = self._morph_value_attrs(old_morph)
         if original != expected_old:
@@ -1024,11 +988,7 @@ class MayaSceneMetadataBackend:
                 f"morph value patch preimage mismatch for {node!r}: "
                 f"expected {expected_old!r}, got {original!r}"
             )
-        self._call_adapter(
-            "undo_info",
-            openChunk=True,
-            chunkName="MMD Morph Value Patch",
-        )
+        self._open_undo_chunk("MMD Morph Value Patch")
         self._write_transaction = {
             "root": root,
             "kind": "morph_value",
@@ -1093,8 +1053,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"morph value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     @staticmethod
     def _morph_value_attrs(morph: MmdMorphSpec) -> dict[str, Any]:
@@ -1132,8 +1091,7 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError(
                 f"bone value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     @staticmethod
     def _bone_value_attrs(bone: MmdBoneSpec) -> dict[str, Any]:
@@ -1196,27 +1154,21 @@ class MayaSceneMetadataBackend:
         shader = self._material_identity(binding)
         if shader != transaction["binding"] or material.binding_identity != shader:
             raise MayaSceneMetadataError("material value patch commit binding mismatch")
-        actual = self._read_material_value_attrs(shader)
+        actual = self._read_viewport_patch_values(
+            self._read_material_value_attrs(shader), transaction.get("diffuse_route"),
+            transaction.get("diffuse_target"), transaction.get("diffuse_alpha_target"),
+        )
         expected = dict(transaction["target_values"])
-        diffuse_route = transaction.get("diffuse_route")
-        if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._read_material_diffuse_target(
-                transaction["diffuse_target"]
-            )
+        if transaction.get("diffuse_route") is not None:
             expected["viewport_diffuse"] = self._maya_float3(material.diffuse[:3])
-            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
-            if diffuse_alpha_target is not None:
-                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                    diffuse_alpha_target
-                )
+            if transaction.get("diffuse_alpha_target") is not None:
                 expected["viewport_diffuse_alpha"] = material.diffuse[3]
         if not self._material_value_attrs_equal(actual, expected):
             raise MayaSceneMetadataError(
                 f"material value patch fingerprint mismatch: expected {expected!r}, got {actual!r}"
             )
         self._verify_material_outline_target(transaction, outline_target, material)
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def commit_material_binding_patch(
         self,
@@ -1240,8 +1192,7 @@ class MayaSceneMetadataBackend:
                 f"material binding patch fingerprint mismatch: expected {material!r}, got {actual!r}"
             )
         self._verify_material_outline_target(transaction, outline_target, material)
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     @staticmethod
     def _material_value_attrs(material: MmdMaterialSpec) -> dict[str, Any]:
@@ -1328,6 +1279,17 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError("Maya float3 values must contain exactly three numbers")
         return converted
 
+    def _read_viewport_patch_values(
+        self, values: dict[str, Any], diffuse_route: MayaMaterialShaderRoute | None,
+        diffuse_target: str | None, diffuse_alpha_target: str | None,
+    ) -> dict[str, Any]:
+        """Add the viewport values owned by this material patch to its semantic values."""
+        if diffuse_route is not None:
+            values["viewport_diffuse"] = self._read_material_diffuse_target(diffuse_target)
+            if diffuse_alpha_target is not None:
+                values["viewport_diffuse_alpha"] = self._read_material_scalar_target(diffuse_alpha_target)
+        return values
+
     def _read_material_value_attrs(self, shader: str) -> dict[str, Any]:
         """Read only patch-safe semantic attrs from one shader binding."""
         draw_flags = self._required_int(shader, ATTR_MMD_DRAW_FLAGS, minimum=0)
@@ -1389,8 +1351,7 @@ class MayaSceneMetadataBackend:
                 raise MayaSceneMetadataError(
                     "material reindex transaction narrow-state mismatch"
                 )
-            self._call_adapter("undo_info", closeChunk=True)
-            self._write_transaction = None
+            self._close_undo_chunk()
             return
         raise MayaSceneMetadataError("active transaction is not a material reindex")
 
@@ -1451,7 +1412,7 @@ class MayaSceneMetadataBackend:
 
     def _parse_material_reindex_offsets(self, node: str, raw: str) -> list[dict[str, Any]]:
         try:
-            value = json.loads(raw, object_pairs_hook=self._unique_json_object)
+            value = json.loads(raw, object_pairs_hook=unique_json_object)
         except (TypeError, ValueError) as exc:
             raise MayaSceneMetadataError(
                 f"{node}.{self._MATERIAL_MORPH_OFFSETS_JSON} must contain strict JSON"
@@ -1533,9 +1494,8 @@ class MayaSceneMetadataBackend:
             raise MayaSceneMetadataError("morph indices must be a contiguous registry-owned range")
         if index not in indices or new_position not in indices:
             raise MayaSceneMetadataError("morph reindex selected indices are not registry-owned")
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph reindex")
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Reindex")
+        self._require_undo_enabled("morph reindex")
+        self._open_undo_chunk("MMD Morph Reindex")
         self._write_transaction = {
             "root": root,
             "kind": "morph_reindex",
@@ -1559,9 +1519,8 @@ class MayaSceneMetadataBackend:
         new_index = len(original["morphs"])
         if set(original["morphs"].values()) != set(range(new_index)):
             raise MayaSceneMetadataError("morph indices must be a contiguous registry-owned range")
-        if not bool(self._call_adapter("undo_info", query=True, state=True)):
-            raise MayaSceneMetadataError("Maya undo must be enabled for morph creation")
-        self._call_adapter("undo_info", openChunk=True, chunkName="MMD Morph Create")
+        self._require_undo_enabled("morph creation")
+        self._open_undo_chunk("MMD Morph Create")
         self._write_transaction = {
             "root": root,
             "kind": "morph_create",
@@ -1620,8 +1579,7 @@ class MayaSceneMetadataBackend:
                     raise MayaSceneMetadataError("existing morph controller alias changed during creation")
         if not actual["aliases"].get(morph.index):
             raise MayaSceneMetadataError("created morph controller alias is missing")
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def _capture_morph_create_state(self, root: str) -> dict[str, Any]:
         members = self._registry_morph_members(root)
@@ -1700,8 +1658,7 @@ class MayaSceneMetadataBackend:
         expected = self._expected_morph_reindex_state(transaction["original_values"], swapped)
         if actual != expected:
             raise MayaSceneMetadataError("morph reindex fingerprint mismatch")
-        self._call_adapter("undo_info", closeChunk=True)
-        self._write_transaction = None
+        self._close_undo_chunk()
 
     def _capture_morph_reindex_state(self, root: str) -> dict[str, Any]:
         members = self._registry_morph_members(root)
@@ -1894,56 +1851,11 @@ class MayaSceneMetadataBackend:
 
     def rollback_write(self, model_root: str) -> None:
         transaction = self._active_transaction(model_root)
-        if transaction.get("kind") == "full_metadata":
+        kind = transaction.get("kind")
+        if kind == "full_metadata":
             self._full_metadata_transaction.rollback_write(model_root)
             return
-        if transaction.get("kind") == "morph_topology_repair":
-            try:
-                if transaction["chunk_open"]:
-                    self._call_adapter("undo_info", closeChunk=True)
-                    transaction["chunk_open"] = False
-                if transaction["mutated"]:
-                    self._call_adapter("undo")
-            finally:
-                self._write_transaction = None
-            controller = transaction["controller"]
-            actual = {
-                "version": self._call_adapter("get_attr", f"{controller}.topologyVersion"),
-                "source": self._call_adapter("get_attr", f"{controller}.groupTopology"),
-                "version_locked": bool(
-                    self._call_adapter(
-                        "get_attr", f"{controller}.topologyVersion", lock=True
-                    )
-                ),
-                "source_locked": bool(
-                    self._call_adapter(
-                        "get_attr", f"{controller}.groupTopology", lock=True
-                    )
-                ),
-            }
-            if actual != transaction["original_values"]:
-                raise MayaSceneMetadataError("morph topology rollback preimage mismatch")
-            return
-        if transaction.get("kind") == "display_frames":
-            try:
-                if transaction["chunk_open"]:
-                    self._call_adapter("undo_info", closeChunk=True)
-                    transaction["chunk_open"] = False
-                if transaction["mutated"]:
-                    self._call_adapter("undo")
-            finally:
-                self._write_transaction = None
-            existed = self._has_attr(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
-            if existed != transaction["attr_existed"]:
-                raise MayaSceneMetadataError("display frame rollback attribute existence mismatch")
-            if existed:
-                actual = self._required_string(
-                    transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON
-                )
-                if actual != transaction["original_value"]:
-                    raise MayaSceneMetadataError("display frame rollback preimage mismatch")
-            return
-        if transaction.get("kind") == "material_value":
+        if kind == "material_value":
             # Native Material commands can fail before Maya records any undo
             # item, or after changing only part of their fixed write set.
             # Decide from the narrow preimage/read-back pair instead of
@@ -1955,7 +1867,7 @@ class MayaSceneMetadataBackend:
                 # harmless.  Preserve the fail-closed rollback behavior; the
                 # subsequent exact preimage check reports any remaining issue.
                 transaction["mutated"] = True
-        if transaction.get("kind") == "material_binding":
+        if kind == "material_binding":
             try:
                 transaction["mutated"] = self.read_material_value(
                     transaction["root"], transaction["binding"], transaction["index"]
@@ -1974,7 +1886,24 @@ class MayaSceneMetadataBackend:
                 self._call_adapter("undo")
         finally:
             self._write_transaction = None
-        if transaction.get("kind") == "bone_value":
+        if kind == "morph_topology_repair":
+            controller = transaction["controller"]
+            actual = self._read_morph_topology_state(controller)
+            if actual != transaction["original_values"]:
+                raise MayaSceneMetadataError("morph topology rollback preimage mismatch")
+            return
+        if kind == "display_frames":
+            existed = self._has_attr(transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON)
+            if existed != transaction["attr_existed"]:
+                raise MayaSceneMetadataError("display frame rollback attribute existence mismatch")
+            if existed:
+                actual = self._required_string(
+                    transaction["root"], ATTR_MMD_DISPLAY_FRAMES_JSON
+                )
+                if actual != transaction["original_value"]:
+                    raise MayaSceneMetadataError("display frame rollback preimage mismatch")
+            return
+        if kind == "bone_value":
             self._require_selected_bone(
                 transaction["root"], transaction["binding"], transaction["index"]
             )
@@ -1982,7 +1911,7 @@ class MayaSceneMetadataBackend:
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("bone value patch rollback fingerprint mismatch")
             return
-        if transaction.get("kind") == "bone_register":
+        if kind == "bone_register":
             members = tuple(self._registry_morph_members(transaction["root"]) or ())
             if members != tuple(transaction["registry_members"]):
                 raise MayaSceneMetadataError("bone registration rollback registry mismatch")
@@ -1997,18 +1926,11 @@ class MayaSceneMetadataBackend:
             if actual_attrs != transaction["original_attrs"]:
                 raise MayaSceneMetadataError("bone registration rollback preimage mismatch")
             return
-        if transaction.get("kind") == "material_value":
-            actual = self._read_material_value_attrs(transaction["binding"])
-            diffuse_route = transaction.get("diffuse_route")
-            if isinstance(diffuse_route, MayaMaterialShaderRoute):
-                actual["viewport_diffuse"] = self._read_material_diffuse_target(
-                    transaction["diffuse_target"]
-                )
-                diffuse_alpha_target = transaction.get("diffuse_alpha_target")
-                if diffuse_alpha_target is not None:
-                    actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                        diffuse_alpha_target
-                    )
+        if kind == "material_value":
+            actual = self._read_viewport_patch_values(
+                self._read_material_value_attrs(transaction["binding"]), transaction.get("diffuse_route"),
+                transaction.get("diffuse_target"), transaction.get("diffuse_alpha_target"),
+            )
             if not self._material_value_attrs_equal(
                 actual, transaction["original_values"]
             ):
@@ -2016,7 +1938,7 @@ class MayaSceneMetadataBackend:
             self._verify_material_outline_rollback(transaction)
             self._discard_failed_material_redo(transaction)
             return
-        if transaction.get("kind") == "material_binding":
+        if kind == "material_binding":
             actual = self.read_material_value(
                 transaction["root"], transaction["binding"], transaction["index"]
             )
@@ -2025,7 +1947,7 @@ class MayaSceneMetadataBackend:
             self._verify_material_outline_rollback(transaction)
             self._discard_failed_material_redo(transaction)
             return
-        if transaction.get("kind") == "material_create":
+        if kind == "material_create":
             members = self._registry_material_members(transaction["root"])
             if members is None:
                 raise MayaSceneMetadataError("material create rollback registry ownership disappeared")
@@ -2033,7 +1955,7 @@ class MayaSceneMetadataBackend:
             if actual != tuple(transaction["original_members"]):
                 raise MayaSceneMetadataError("material create rollback registry mismatch")
             return
-        if transaction.get("kind") == "material_reindex":
+        if kind == "material_reindex":
             actual = self._capture_material_reindex_state(
                 transaction["root"],
                 transaction["first_index"],
@@ -2043,7 +1965,7 @@ class MayaSceneMetadataBackend:
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("material reindex rollback narrow-state mismatch")
             return
-        if transaction.get("kind") == "morph_value":
+        if kind == "morph_value":
             self._require_selected_morph(
                 transaction["root"], transaction["binding"], transaction["index"]
             )
@@ -2055,12 +1977,12 @@ class MayaSceneMetadataBackend:
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("morph value patch rollback fingerprint mismatch")
             return
-        if transaction.get("kind") == "morph_reindex":
+        if kind == "morph_reindex":
             actual = self._capture_morph_reindex_state(transaction["root"])
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("morph reindex rollback fingerprint mismatch")
             return
-        if transaction.get("kind") == "morph_create":
+        if kind == "morph_create":
             actual = self._capture_morph_create_state(transaction["root"])
             if actual != transaction["original_values"]:
                 raise MayaSceneMetadataError("morph creation rollback fingerprint mismatch")
@@ -2089,18 +2011,11 @@ class MayaSceneMetadataBackend:
 
     def _material_value_mutated(self, transaction: Mapping[str, Any]) -> bool:
         """Return whether a narrow Material command changed owned state."""
-        actual = self._read_material_value_attrs(transaction["binding"])
-        diffuse_route = transaction.get("diffuse_route")
+        actual = self._read_viewport_patch_values(
+            self._read_material_value_attrs(transaction["binding"]), transaction.get("diffuse_route"),
+            transaction.get("diffuse_target"), transaction.get("diffuse_alpha_target"),
+        )
         expected = transaction["original_values"]
-        if isinstance(diffuse_route, MayaMaterialShaderRoute):
-            actual["viewport_diffuse"] = self._read_material_diffuse_target(
-                transaction["diffuse_target"]
-            )
-            diffuse_alpha_target = transaction.get("diffuse_alpha_target")
-            if diffuse_alpha_target is not None:
-                actual["viewport_diffuse_alpha"] = self._read_material_scalar_target(
-                    diffuse_alpha_target
-                )
         if not self._material_value_attrs_equal(actual, expected):
             return True
         outline_original = transaction.get("outline_original")
@@ -2126,15 +2041,6 @@ class MayaSceneMetadataBackend:
     def _read_morph(self, node: str, *, root: str | None = None) -> dict[str, Any]:
         """Delegate strict Morph mapping reads used by writer readback checks."""
         return self._morph_repository.read_morph_mapping(node, root=root)
-
-    @staticmethod
-    def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError(f"duplicate JSON field {key!r}")
-            value[key] = item
-        return value
 
     def _registry_material_members(self, root: str) -> list[str] | None:
         return self._material_repository.registry_material_members(root)
@@ -2404,45 +2310,9 @@ class MayaSceneMetadataBackend:
         if route is None:
             return None
         destination = f"{shader}.{route.diffuse_attribute}"
-        sources = self._list_connections(
-            destination,
-            source=True,
-            destination=False,
-            plugs=True,
+        return self._evaluator_base_plug(
+            destination, output_attr="outputDiffuse", base_attr="baseDiffuse", label="diffuse"
         )
-        if not sources:
-            return destination
-        if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
-            raise MayaSceneMetadataError(
-                f"material diffuse target has an ambiguous source: {destination!r}"
-            )
-        source_node, source_attr = sources[0].rsplit(".", 1)
-        if (
-            self._node_type(source_node) != "mmdMaterialMorphEval"
-            or source_attr != "outputDiffuse"
-        ):
-            raise MayaSceneMetadataError(
-                f"material diffuse target is driven by an unsupported source: {sources[0]!r}"
-            )
-        base = f"{source_node}.baseDiffuse"
-        if not self._has_attr(source_node, "baseDiffuse"):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator is missing writable baseDiffuse: {source_node!r}"
-            )
-        if self._list_connections(
-            base,
-            source=True,
-            destination=False,
-            plugs=True,
-        ):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuse is externally driven: {base!r}"
-            )
-        if bool(self._call_adapter("get_attr", base, lock=True)):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuse is locked: {base!r}"
-            )
-        return base
 
     def _resolve_material_diffuse_alpha_target(
         self,
@@ -2457,6 +2327,32 @@ class MayaSceneMetadataBackend:
         if not self._has_attr(shader, route.diffuse_alpha_attribute):
             return None
         destination = f"{shader}.{route.diffuse_alpha_attribute}"
+
+        base = self._evaluator_base_plug(
+            destination,
+            output_attr="outputDiffuseAlpha",
+            base_attr="baseDiffuseA",
+            label="diffuse alpha",
+        )
+        if base != destination:
+            source_node = base.rsplit(".", 1)[0]
+            expected_rgb_target = f"{source_node}.baseDiffuse"
+            if diffuse_target != expected_rgb_target:
+                source = f"{source_node}.outputDiffuseAlpha"
+                raise MayaSceneMetadataError(
+                    f"material diffuse alpha evaluator does not match RGB target: {source!r}"
+                )
+        return base
+
+    def _evaluator_base_plug(
+        self,
+        destination: str,
+        *,
+        output_attr: str,
+        base_attr: str,
+        label: str,
+    ) -> str:
+        """Return the direct destination or the driving evaluator's writable base plug."""
         sources = self._list_connections(
             destination,
             source=True,
@@ -2467,25 +2363,20 @@ class MayaSceneMetadataBackend:
             return destination
         if len(sources) != 1 or not isinstance(sources[0], str) or "." not in sources[0]:
             raise MayaSceneMetadataError(
-                f"material diffuse alpha target has an ambiguous source: {destination!r}"
+                f"material {label} target has an ambiguous source: {destination!r}"
             )
         source_node, source_attr = sources[0].rsplit(".", 1)
         if (
             self._node_type(source_node) != "mmdMaterialMorphEval"
-            or source_attr != "outputDiffuseAlpha"
+            or source_attr != output_attr
         ):
             raise MayaSceneMetadataError(
-                f"material diffuse alpha target is driven by an unsupported source: {sources[0]!r}"
+                f"material {label} target is driven by an unsupported source: {sources[0]!r}"
             )
-        expected_rgb_target = f"{source_node}.baseDiffuse"
-        if diffuse_target != expected_rgb_target:
+        base = f"{source_node}.{base_attr}"
+        if not self._has_attr(source_node, base_attr):
             raise MayaSceneMetadataError(
-                f"material diffuse alpha evaluator does not match RGB target: {sources[0]!r}"
-            )
-        base = f"{source_node}.baseDiffuseA"
-        if not self._has_attr(source_node, "baseDiffuseA"):
-            raise MayaSceneMetadataError(
-                f"material morph evaluator is missing writable baseDiffuseA: {source_node!r}"
+                f"material morph evaluator is missing writable {base_attr}: {source_node!r}"
             )
         if self._list_connections(
             base,
@@ -2494,11 +2385,11 @@ class MayaSceneMetadataBackend:
             plugs=True,
         ):
             raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuseA is externally driven: {base!r}"
+                f"material morph evaluator {base_attr} is externally driven: {base!r}"
             )
         if bool(self._call_adapter("get_attr", base, lock=True)):
             raise MayaSceneMetadataError(
-                f"material morph evaluator baseDiffuseA is locked: {base!r}"
+                f"material morph evaluator {base_attr} is locked: {base!r}"
             )
         return base
 

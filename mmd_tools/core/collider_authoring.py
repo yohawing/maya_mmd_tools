@@ -153,6 +153,38 @@ def connect_collider_authoring_transform(transform: str, shape: str) -> None:
         cmds.connectAttr(matrix_source, matrix_destination, force=True)
 
 
+def _tag_authoring_follow_node(node: str) -> None:
+    """Mark a follow node as collider-authoring owned and record its pose version."""
+    cmds.addAttr(node, longName=_FOLLOW_TAG, attributeType="bool")
+    cmds.setAttr(f"{node}.{_FOLLOW_TAG}", True)
+    cmds.addAttr(
+        node,
+        longName=_POSE_VERSION_ATTR,
+        attributeType="long",
+        defaultValue=_CURRENT_POSE_VERSION,
+    )
+    cmds.setAttr(f"{node}.{_POSE_VERSION_ATTR}", _CURRENT_POSE_VERSION)
+
+
+def _bind_follow_offset(
+    transform: str, shape: str, bone: str, parent_world: om.MMatrix
+) -> om.MMatrix:
+    """Return the collider's offset from its bone, measured in the bind pose."""
+    bone_bind_world = _bind_pose_world_matrix(bone)
+    position = cmds.getAttr(f"{shape}.position")[0]
+    rotation_radians = maya_angle_to_radians(cmds.getAttr(f"{shape}.rotation")[0])
+    display_scale = float(cmds.getAttr(f"{transform}.scaleX"))
+    body_bind_local = om.MTransformationMatrix(
+        _pose_matrix(position, rotation_radians, display_scale, legacy=False)
+    )
+    body_bind_world = body_bind_local.asMatrix() * parent_world
+    if bone_bind_world is None:
+        bone_bind_world = om.MMatrix(
+            cmds.xform(bone, query=True, worldSpace=True, matrix=True)
+        )
+    return body_bind_world * bone_bind_world.inverse()
+
+
 def connect_collider_authoring_follow(
     transform: str,
     shape: str,
@@ -188,19 +220,7 @@ def connect_collider_authoring_follow(
         else om.MMatrix()
     )
     if follow_offset is None:
-        bone_bind_world = _bind_pose_world_matrix(bones[0])
-        position = cmds.getAttr(f"{shape}.position")[0]
-        rotation_radians = maya_angle_to_radians(cmds.getAttr(f"{shape}.rotation")[0])
-        display_scale = float(cmds.getAttr(f"{transform}.scaleX"))
-        body_bind_local = om.MTransformationMatrix(
-            _pose_matrix(position, rotation_radians, display_scale, legacy=False)
-        )
-        body_bind_world = body_bind_local.asMatrix() * parent_world
-        if bone_bind_world is None:
-            bone_bind_world = om.MMatrix(
-                cmds.xform(bones[0], query=True, worldSpace=True, matrix=True)
-            )
-        follow_offset = body_bind_world * bone_bind_world.inverse()
+        follow_offset = _bind_follow_offset(transform, shape, bones[0], parent_world)
 
     if cmds.attributeQuery("offsetParentMatrix", node=transform, exists=True):
         local_matrix = om.MMatrix(
@@ -231,17 +251,7 @@ def connect_collider_authoring_follow(
                 cmds.setAttr(
                     f"{matrix_node}.matrixIn[2]", _IDENTITY_MATRIX, type="matrix"
                 )
-            cmds.addAttr(matrix_node, longName=_FOLLOW_TAG, attributeType="bool")
-            cmds.setAttr(f"{matrix_node}.{_FOLLOW_TAG}", True)
-            cmds.addAttr(
-                matrix_node,
-                longName=_POSE_VERSION_ATTR,
-                attributeType="long",
-                defaultValue=_CURRENT_POSE_VERSION,
-            )
-            cmds.setAttr(
-                f"{matrix_node}.{_POSE_VERSION_ATTR}", _CURRENT_POSE_VERSION
-            )
+            _tag_authoring_follow_node(matrix_node)
             cmds.connectAttr(
                 f"{matrix_node}.matrixSum",
                 f"{transform}.offsetParentMatrix",
@@ -277,15 +287,7 @@ def connect_collider_authoring_follow(
         maintainOffset=True,
         name=f"{short_name}_authoringFollowConstraint",
     )[0]
-    cmds.addAttr(constraint, longName=_FOLLOW_TAG, attributeType="bool")
-    cmds.setAttr(f"{constraint}.{_FOLLOW_TAG}", True)
-    cmds.addAttr(
-        constraint,
-        longName=_POSE_VERSION_ATTR,
-        attributeType="long",
-        defaultValue=_CURRENT_POSE_VERSION,
-    )
-    cmds.setAttr(f"{constraint}.{_POSE_VERSION_ATTR}", _CURRENT_POSE_VERSION)
+    _tag_authoring_follow_node(constraint)
     return constraint
 
 

@@ -368,6 +368,22 @@ def set_bone_keyframes(
             cmds.setAttr(plug, lock=True)
 
 
+def _frame_translate_sample(context, frame, bind_pos) -> tuple:
+    """Return (maya_time, tx, ty, tz) for one VMD bone frame relative to its bind position."""
+    if hasattr(frame, "frame_number"):
+        frame_number = frame.frame_number
+        vmd_pos = frame.position
+    else:
+        frame_number = frame.get("frame_number", 0)
+        vmd_pos = frame.get("position", [0, 0, 0])
+    maya_time = context.vmd_frame_to_maya_time(frame_number)
+
+    tx = float(bind_pos[0]) + float(vmd_pos[0]) * context.motion_scale
+    ty = float(bind_pos[1]) + float(vmd_pos[1]) * context.motion_scale
+    tz = float(bind_pos[2]) - float(vmd_pos[2]) * context.motion_scale
+    return maya_time, tx, ty, tz
+
+
 def _set_bone_keyframes_impl(
     context: VmdBoneAnimationContext,
     joint: str,
@@ -423,17 +439,7 @@ def _set_bone_keyframes_impl(
         channel_samples = {attr: [] for attr in attrs}
         with vmd_profile.scope("channel_sample_build", count=len(frames)):
             for frame in frames:
-                if hasattr(frame, "frame_number"):
-                    frame_number = frame.frame_number
-                    vmd_pos = frame.position
-                else:
-                    frame_number = frame.get("frame_number", 0)
-                    vmd_pos = frame.get("position", [0, 0, 0])
-                maya_time = context.vmd_frame_to_maya_time(frame_number)
-
-                tx = float(bind_pos[0]) + float(vmd_pos[0]) * context.motion_scale
-                ty = float(bind_pos[1]) + float(vmd_pos[1]) * context.motion_scale
-                tz = float(bind_pos[2]) - float(vmd_pos[2]) * context.motion_scale
+                maya_time, tx, ty, tz = _frame_translate_sample(context, frame, bind_pos)
                 rx, ry, rz = rotation_by_time[maya_time]
                 values = {
                     "translateX": tx,
@@ -475,17 +481,7 @@ def _set_bone_keyframes_impl(
     routed_samples: Dict[str, Dict[str, List[tuple]]] = {}
     with vmd_profile.scope("channel_sample_build", count=len(frames)):
         for frame in frames:
-            if hasattr(frame, "frame_number"):
-                frame_number = frame.frame_number
-                vmd_pos = frame.position
-            else:
-                frame_number = frame.get("frame_number", 0)
-                vmd_pos = frame.get("position", [0, 0, 0])
-            maya_time = context.vmd_frame_to_maya_time(frame_number)
-
-            tx = float(bind_pos[0]) + float(vmd_pos[0]) * context.motion_scale
-            ty = float(bind_pos[1]) + float(vmd_pos[1]) * context.motion_scale
-            tz = float(bind_pos[2]) - float(vmd_pos[2]) * context.motion_scale
+            maya_time, tx, ty, tz = _frame_translate_sample(context, frame, bind_pos)
 
             values = {
                 "translateX": tx,

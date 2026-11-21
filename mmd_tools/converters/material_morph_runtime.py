@@ -37,6 +37,15 @@ from mmd_tools.converters.material_shader_parameters import (
 logger = get_logger(__name__)
 
 EVAL_NODE_TYPE = "mmdMaterialMorphEval"
+_NATIVE_MATERIAL_SETTINGS = {
+    "drawFlags": "mmd_draw_flags",
+    "sphereMode": "mmd_sphere_mode",
+    "sharedToon": "mmd_shared_toon_flag",
+    "toonIndex": "mmd_toon_texture_index",
+    "mainTexturePath": "mmd_resolved_texture_path",
+    "sphereTexturePath": "mmd_resolved_sphere_texture_path",
+    "toonTexturePath": "mmd_resolved_toon_texture_path",
+}
 _AUTHORED_MATERIAL_ATTRIBUTES = {
     "DiffuseColorRGB": ATTR_MMD_DIFFUSE_COLOR,
     "DiffuseColorA": "mmd_diffuse_alpha",
@@ -720,6 +729,72 @@ def _release_authored_proxies(shader):
         _copy_input_drivers(base, authored, size)
 
 
+def _bind_native_material_values(
+    render_shape: str,
+    material_index: int,
+    shader: str,
+    evaluator: Optional[str],
+    authored: Dict[str, Any],
+) -> Dict[str, tuple]:
+    """Bind native material value plugs and return authored values by uniform."""
+    value_bindings = {}
+    for route in hardware_morph_routes("dx11Shader"):
+        # DiffuseColorA is the separate indexed materialAlpha route.
+        if route.uniform == "DiffuseColorA":
+            continue
+        values = _native_route_values(route, authored)
+        destinations = _native_material_value_plugs(
+            render_shape,
+            int(material_index),
+            route.uniform,
+            route.size,
+        )
+        if len(destinations) != route.size:
+            raise RuntimeError(
+                f"native material value arity mismatch: {render_shape}.{route.uniform}"
+            )
+        if evaluator:
+            if route.evaluator_base:
+                bases = _native_evaluator_plugs(
+                    evaluator,
+                    route.evaluator_base,
+                    route.size,
+                    edge_alpha=route.uniform == "EdgeColorA",
+                )
+                if len(bases) != route.size:
+                    raise RuntimeError(
+                        f"evaluator base arity mismatch: {evaluator}.{route.evaluator_base}"
+                    )
+                _bind_evaluator_bases(shader, route.uniform, bases, values)
+            outputs = _native_evaluator_plugs(
+                evaluator,
+                route.evaluator_output,
+                route.size,
+                edge_alpha=route.uniform == "EdgeColorA",
+            )
+            if len(outputs) != route.size:
+                raise RuntimeError(
+                    f"evaluator output arity mismatch: {evaluator}.{route.evaluator_output}"
+                )
+            for output, destination in zip(outputs, destinations):
+                _connect_if_needed(output, destination, force=True)
+        else:
+            source_attribute = _AUTHORED_MATERIAL_ATTRIBUTES.get(route.uniform)
+            if source_attribute:
+                # Authored metadata is canonical. A DG connection also
+                # carries edits and Undo without a Python refresh callback.
+                _connect_if_needed(
+                    f"{shader}.{source_attribute}",
+                    f"{render_shape}.materialValues[{material_index}].{route.uniform}",
+                    force=True,
+                )
+            else:
+                for destination, value in zip(destinations, values):
+                    _reset_native_unbound_value(destination, value)
+        value_bindings[route.uniform] = tuple(values)
+    return value_bindings
+
+
 def bind_native_material_alpha(
     root_group: str,
     render_shape: str,
@@ -777,23 +852,14 @@ def bind_native_material_alpha(
     if evaluators_by_shader is None:
         evaluators_by_shader = _collect_existing_evaluators()
     for material_index, shader in sorted(shaders_by_index.items()):
-        settings = {
-            "drawFlags": "mmd_draw_flags",
-            "sphereMode": "mmd_sphere_mode",
-            "sharedToon": "mmd_shared_toon_flag",
-            "toonIndex": "mmd_toon_texture_index",
-            "mainTexturePath": "mmd_resolved_texture_path",
-            "sphereTexturePath": "mmd_resolved_sphere_texture_path",
-            "toonTexturePath": "mmd_resolved_toon_texture_path",
-        }
         # Bind a complete record only; legacy shaders keep their original queue
         # settings instead of replacing missing fields with attribute defaults.
         if cmds.attributeQuery("materialSettings", node=render_shape, exists=True) and all(
             cmds.attributeQuery(attribute, node=shader, exists=True)
-            for attribute in settings.values()
+            for attribute in _NATIVE_MATERIAL_SETTINGS.values()
         ):
             try:
-                for field, attribute in settings.items():
+                for field, attribute in _NATIVE_MATERIAL_SETTINGS.items():
                     _connect_if_needed(
                         f"{shader}.{attribute}",
                         f"{render_shape}.materialSettings[{material_index}].{field}",
@@ -860,61 +926,9 @@ def bind_native_material_alpha(
             continue
 
         try:
-            value_bindings = {}
-            for route in hardware_morph_routes("dx11Shader"):
-                # DiffuseColorA is the separate indexed materialAlpha route.
-                if route.uniform == "DiffuseColorA":
-                    continue
-                values = _native_route_values(route, authored)
-                destinations = _native_material_value_plugs(
-                    render_shape,
-                    int(material_index),
-                    route.uniform,
-                    route.size,
-                )
-                if len(destinations) != route.size:
-                    raise RuntimeError(
-                        f"native material value arity mismatch: {render_shape}.{route.uniform}"
-                    )
-                if evaluator:
-                    if route.evaluator_base:
-                        bases = _native_evaluator_plugs(
-                            evaluator,
-                            route.evaluator_base,
-                            route.size,
-                            edge_alpha=route.uniform == "EdgeColorA",
-                        )
-                        if len(bases) != route.size:
-                            raise RuntimeError(
-                                f"evaluator base arity mismatch: {evaluator}.{route.evaluator_base}"
-                            )
-                        _bind_evaluator_bases(shader, route.uniform, bases, values)
-                    outputs = _native_evaluator_plugs(
-                        evaluator,
-                        route.evaluator_output,
-                        route.size,
-                        edge_alpha=route.uniform == "EdgeColorA",
-                    )
-                    if len(outputs) != route.size:
-                        raise RuntimeError(
-                            f"evaluator output arity mismatch: {evaluator}.{route.evaluator_output}"
-                        )
-                    for output, destination in zip(outputs, destinations):
-                        _connect_if_needed(output, destination, force=True)
-                else:
-                    source_attribute = _AUTHORED_MATERIAL_ATTRIBUTES.get(route.uniform)
-                    if source_attribute:
-                        # Authored metadata is canonical. A DG connection also
-                        # carries edits and Undo without a Python refresh callback.
-                        _connect_if_needed(
-                            f"{shader}.{source_attribute}",
-                            f"{render_shape}.materialValues[{material_index}].{route.uniform}",
-                            force=True,
-                        )
-                    else:
-                        for destination, value in zip(destinations, values):
-                            _reset_native_unbound_value(destination, value)
-                value_bindings[route.uniform] = tuple(values)
+            value_bindings = _bind_native_material_values(
+                render_shape, material_index, shader, evaluator, authored
+            )
             result["material_values"].append(
                 {
                     "material_index": int(material_index),

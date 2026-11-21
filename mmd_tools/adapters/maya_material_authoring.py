@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from mmd_tools.core.utils import unique_json_object
 from mmd_tools.core import model_registry
 from mmd_tools.adapters.maya_material_shader_route import (
     MayaMaterialShaderRoute,
@@ -25,8 +26,10 @@ from mmd_tools.adapters.maya_material_shader_route import (
 from mmd_tools.core.material_authoring import classify_material_change
 from mmd_tools.core.constants import (
     ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_ALPHA,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_ALPHA,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_SIZE,
@@ -63,8 +66,6 @@ ATTR_MMD_RESOLVED_TEXTURE_PATH = "mmd_resolved_texture_path"
 ATTR_MMD_RESOLVED_SPHERE_TEXTURE_PATH = "mmd_resolved_sphere_texture_path"
 ATTR_MMD_RESOLVED_TOON_TEXTURE_PATH = "mmd_resolved_toon_texture_path"
 ATTR_MMD_TOON_TEXTURE_PATH = ATTR_MMD_TOON_PATH
-ATTR_MMD_DIFFUSE_ALPHA = "mmd_diffuse_alpha"
-ATTR_MMD_EDGE_ALPHA = "mmd_edge_alpha"
 ATTR_MMD_MATERIAL_MORPH_OFFSETS = "mmd_material_morph_offsets_json"
 _STANDARD_PREVIEW_SHADER_LINK = "mmdStandardPreviewShader"
 _STANDARD_PREVIEW_TEXTURE_LINK = "mmdStandardPreviewTexture"
@@ -1185,7 +1186,7 @@ class MayaMaterialAuthoring:
                 )
             raw = self._get_attr(node, ATTR_MMD_MATERIAL_MORPH_OFFSETS)
             try:
-                offsets = json.loads(raw, object_pairs_hook=self._unique_json_object)
+                offsets = json.loads(raw, object_pairs_hook=unique_json_object)
             except (TypeError, ValueError) as exc:
                 raise MayaMaterialAuthoringError(
                     f"material morph {node!r} contains invalid offsets JSON"
@@ -1215,15 +1216,6 @@ class MayaMaterialAuthoring:
                     )
                 )
         return updates
-
-    @staticmethod
-    def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError(f"duplicate JSON field {key!r}")
-            value[key] = item
-        return value
 
     def _validate_adjacent_reindex(
         self,
@@ -1996,51 +1988,7 @@ class MayaMaterialAuthoring:
                 f"shader {shader!r} has ambiguous {slot.semantic} texture file nodes"
             )
         if not resolved_path:
-            if file_nodes:
-                file_node = file_nodes[0]
-                if preview_utility:
-                    for channel, axis in zip("RGB", "XYZ"):
-                        utility_input = f"{preview_utility}.input1{axis}"
-                        for source in self._call(
-                            "list_connections",
-                            utility_input,
-                            source=True,
-                            destination=False,
-                            plugs=True,
-                        ) or []:
-                            if str(source).rsplit(".", 1)[0] == file_node:
-                                self._call("disconnect_attr", str(source), utility_input)
-                    for utility in self._owned_standard_preview_utilities(shader):
-                        if self._call("node_type", utility) in {"multDoubleLinear", "multDL"}:
-                            alpha_input = f"{utility}.input1"
-                            for source in self._call(
-                                "list_connections",
-                                alpha_input,
-                                source=True,
-                                destination=False,
-                                plugs=True,
-                            ) or []:
-                                if str(source).rsplit(".", 1)[0] == file_node:
-                                    self._call("disconnect_attr", str(source), alpha_input)
-                        self._call("delete", utility)
-                else:
-                    self._call("disconnect_attr", f"{file_node}.outColor", destination)
-                remaining = self._call(
-                    "list_connections",
-                    f"{file_node}.outColor",
-                    source=False,
-                    destination=True,
-                    plugs=True,
-                ) or []
-                if not remaining:
-                    self._call("delete", file_node)
-            if slot.presence_attribute is not None:
-                self._set_attr(
-                    shader,
-                    slot.presence_attribute,
-                    0,
-                    "long",
-                )
+            self._clear_texture_slot(shader, slot, destination, file_nodes, preview_utility)
             return
         if file_nodes:
             file_node = file_nodes[0]
@@ -2086,6 +2034,61 @@ class MayaMaterialAuthoring:
                 shader,
                 slot.presence_attribute,
                 1,
+                "long",
+            )
+
+    def _clear_texture_slot(
+        self,
+        shader: str,
+        slot: MayaMaterialTextureSlotRoute,
+        destination: str,
+        file_nodes: list[str],
+        preview_utility: str | None,
+    ) -> None:
+        """Disconnect the slot's texture graph and clear its presence flag."""
+        if file_nodes:
+            file_node = file_nodes[0]
+            if preview_utility:
+                for channel, axis in zip("RGB", "XYZ"):
+                    utility_input = f"{preview_utility}.input1{axis}"
+                    for source in self._call(
+                        "list_connections",
+                        utility_input,
+                        source=True,
+                        destination=False,
+                        plugs=True,
+                    ) or []:
+                        if str(source).rsplit(".", 1)[0] == file_node:
+                            self._call("disconnect_attr", str(source), utility_input)
+                for utility in self._owned_standard_preview_utilities(shader):
+                    if self._call("node_type", utility) in {"multDoubleLinear", "multDL"}:
+                        alpha_input = f"{utility}.input1"
+                        for source in self._call(
+                            "list_connections",
+                            alpha_input,
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        ) or []:
+                            if str(source).rsplit(".", 1)[0] == file_node:
+                                self._call("disconnect_attr", str(source), alpha_input)
+                    self._call("delete", utility)
+            else:
+                self._call("disconnect_attr", f"{file_node}.outColor", destination)
+            remaining = self._call(
+                "list_connections",
+                f"{file_node}.outColor",
+                source=False,
+                destination=True,
+                plugs=True,
+            ) or []
+            if not remaining:
+                self._call("delete", file_node)
+        if slot.presence_attribute is not None:
+            self._set_attr(
+                shader,
+                slot.presence_attribute,
+                0,
                 "long",
             )
 

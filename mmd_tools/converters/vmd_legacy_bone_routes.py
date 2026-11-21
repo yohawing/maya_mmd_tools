@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 import maya.cmds as cmds
 
+from ..core.maya_identity import unique_long_name
 from ..core.mmd_control_rig_motion import (
     control_rig_edit_authoring_bases_for_joints,
     control_rig_edit_routes_for_joints,
@@ -29,16 +30,6 @@ _PHYSICS_PRE_INPUT_ATTRS = {
 }
 
 
-def _canonical_dag_path(node: str) -> Optional[str]:
-    """Return one unambiguous long DAG path, or ``None``."""
-
-    try:
-        matches = cmds.ls(node, long=True) or []
-    except Exception:
-        return None
-    return str(matches[0]) if len(matches) == 1 else None
-
-
 def _physics_pre_input_routes(
     joints,
 ) -> tuple[Dict[str, Dict[str, tuple[str, str]]], Dict[str, str]]:
@@ -52,7 +43,7 @@ def _physics_pre_input_routes(
 
     mapped = {}
     for joint in joints:
-        canonical = _canonical_dag_path(str(joint))
+        canonical = unique_long_name(cmds, str(joint))
         if canonical:
             mapped[canonical] = str(joint)
     if not mapped:
@@ -79,7 +70,7 @@ def _physics_pre_input_routes(
         canonical_roots = {
             value
             for root in roots
-            if (value := _canonical_dag_path(str(root))) is not None
+            if (value := unique_long_name(cmds, str(root))) is not None
         }
         direct_root = (
             next(iter(canonical_roots))
@@ -100,7 +91,7 @@ def _physics_pre_input_routes(
             canonical_registry_roots = {
                 value
                 for root in registry_roots
-                if (value := _canonical_dag_path(str(root))) is not None
+                if (value := unique_long_name(cmds, str(root))) is not None
             }
             if len(registry_roots) == 1 and len(canonical_registry_roots) == 1:
                 candidate_root = next(iter(canonical_registry_roots))
@@ -147,7 +138,7 @@ def _physics_pre_input_routes(
         canonical_targets = [
             value
             for target in targets
-            if (value := _canonical_dag_path(str(target))) is not None
+            if (value := unique_long_name(cmds, str(target))) is not None
         ]
         mapped_targets = [target for target in canonical_targets if target in mapped]
         if not mapped_targets:

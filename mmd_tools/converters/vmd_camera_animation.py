@@ -9,7 +9,7 @@ import maya.cmds as cmds
 
 from ..core.constants import ATTR_MMD_CAMERA, DEFAULT_CAMERA_NAME
 from ..core.coordinate_transform import mmd_point_to_maya
-from .vmd_context import VmdCameraAnimationContext
+from .vmd_context import VmdCameraAnimationContext, vmd_frame_value
 
 ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 ATTR_MMD_CAMERA_TARGET_NODE = "mmd_camera_target_node"
@@ -252,18 +252,8 @@ def _maya_camera_zxy_aim_euler_from_eye_target(
 
 
 def _camera_frame_range(camera_frames) -> Tuple[float, float]:
-    frame_numbers = [float(_frame_value(frame, "frame_number", "frame", 0.0)) for frame in camera_frames]
+    frame_numbers = [float(vmd_frame_value(frame, "frame_number", "frame", 0.0)) for frame in camera_frames]
     return min(frame_numbers), max(frame_numbers)
-
-
-def _frame_value(frame, attr_name: str, key_name: str, default):
-    if hasattr(frame, attr_name):
-        return getattr(frame, attr_name)
-    if hasattr(frame, key_name):
-        return getattr(frame, key_name)
-    if isinstance(frame, dict):
-        return frame.get(key_name, frame.get(attr_name, default))
-    return default
 
 
 def _resolve_camera_animation_context(
@@ -328,15 +318,15 @@ def _camera_samples_from_runtime(
 def _sparse_camera_samples_from_frames(context: VmdCameraAnimationContext, camera_frames) -> List[dict]:
     samples = []
     for frame in camera_frames:
-        frame_number = _frame_value(frame, "frame_number", "frame", 0)
+        frame_number = vmd_frame_value(frame, "frame_number", "frame", 0)
         samples.append(
             {
                 "maya_time": context.vmd_frame_to_maya_time(frame_number),
-                "position": tuple(_frame_value(frame, "position", "position", (0, 0, 0))),
-                "rotation": tuple(_frame_value(frame, "rotation", "rotation", (0, 0, 0))),
-                "distance": float(_frame_value(frame, "distance", "distance", 0.0)),
-                "viewing_angle": float(_frame_value(frame, "viewing_angle", "fov", 45)),
-                "perspective": int(_frame_value(frame, "perspective", "perspective", 0)),
+                "position": tuple(vmd_frame_value(frame, "position", "position", (0, 0, 0))),
+                "rotation": tuple(vmd_frame_value(frame, "rotation", "rotation", (0, 0, 0))),
+                "distance": float(vmd_frame_value(frame, "distance", "distance", 0.0)),
+                "viewing_angle": float(vmd_frame_value(frame, "viewing_angle", "fov", 45)),
+                "perspective": int(vmd_frame_value(frame, "perspective", "perspective", 0)),
                 "runtime_sampled": False,
             }
         )
@@ -452,7 +442,7 @@ def _store_camera_interpolation(
     """Keep arriving-key VMD interpolation for sparse CameraRig export."""
     records = []
     for frame in camera_frames:
-        raw = _frame_value(frame, "interpolation", "interpolation", b"")
+        raw = vmd_frame_value(frame, "interpolation", "interpolation", b"")
         try:
             raw = bytes(raw)
         except (TypeError, ValueError):
@@ -463,7 +453,7 @@ def _store_camera_interpolation(
             {
                 "maya_time": float(
                     context.vmd_frame_to_maya_time(
-                        _frame_value(frame, "frame_number", "frame", 0)
+                        vmd_frame_value(frame, "frame_number", "frame", 0)
                     )
                 ),
                 "bytes": list(raw),

@@ -1,9 +1,30 @@
 # Utility関数
 
 import struct
-from typing import List
+from collections.abc import Mapping
+from typing import Any, Dict, List, Tuple
 
 from mmd_tools.core.pmx_data.header import PmxEncoding
+
+
+def copy_diagnostics(value: Any) -> Any:
+    """Return a detached copy of nested diagnostics: mappings get str keys, tuples become lists."""
+
+    if isinstance(value, Mapping):
+        return {str(key): copy_diagnostics(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [copy_diagnostics(item) for item in value]
+    return value
+
+
+def unique_json_object(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """Build a JSON object from pairs, rejecting duplicate field names."""
+    value: Dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON field {key!r}")
+        value[key] = item
+    return value
 
 
 def _is_pmx_utf16le_encoding(encoding) -> bool:
@@ -384,18 +405,3 @@ def normalize_vector(vector):
     if length < 1e-6:  # ゼロベクトルのチェック
         return [0.0, 0.0, 0.0]
     return [vector[0] / length, vector[1] / length, vector[2] / length]
-
-
-def pmx_to_maya_vector(pmx_vector):
-    """
-    PMXの右手座標系ベクトルをMayaの左手座標系に変換する。
-    PMX: X(右), Y(上), Z(手前)
-    Maya: X(右), Y(上), Z(奥)
-
-    Args:
-        pmx_vector (list): PMXベクトル [x, y, z]
-
-    Returns:
-        list: Mayaベクトル [x, y, -z]
-    """
-    return [pmx_vector[0], pmx_vector[1], -pmx_vector[2]]

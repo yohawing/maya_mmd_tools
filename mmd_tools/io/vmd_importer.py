@@ -75,6 +75,62 @@ def _try_recover_physics_drivers(target_model, logger, profile):
         logger.debug("Physics driver recovery failed: %s", exc, exc_info=True)
 
 
+def _refresh_collider_authoring_poses(target_model):
+    """Refresh the authoring pose of each collider on the model."""
+    from ..core.collider_authoring import refresh_collider_authoring_pose
+
+    try:
+        collider_shapes = (
+            cmds.listRelatives(
+                target_model,
+                allDescendents=True,
+                fullPath=True,
+                type="mmdRigidBodyShape",
+            )
+            if cmds.objExists(target_model)
+            else []
+        ) or []
+    except RuntimeError:
+        # mayapy can import/animate a rig without loading the
+        # optional Python collider-shape registration.
+        collider_shapes = []
+    for shape in collider_shapes:
+        transforms = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        if transforms:
+            display_scale = float(cmds.getAttr(f"{transforms[0]}.scaleX"))
+            refresh_collider_authoring_pose(
+                transforms[0], shape, display_scale
+            )
+
+
+def _connect_live_runtime_node(target_model, pmx_path, filepath, logger):
+    """Create the live runtime node and connect its outputs to the model."""
+    if not pmx_path or not os.path.exists(pmx_path):
+        logger.warning(
+            "Skipping live runtime node creation: PMX file path could not be resolved"
+        )
+    else:
+        try:
+            from mmd_tools.core.native.mmd_anim_runtime import (
+                connect_runtime_node_outputs_to_model,
+                create_runtime_node_for_model,
+            )
+            node = create_runtime_node_for_model(target_model, pmx_path, filepath)
+            logger.debug(f"Created live runtime node: {node}")
+            dg_result = connect_runtime_node_outputs_to_model(node, target_model, pmx_path=pmx_path)
+            logger.info(
+                "Live runtime DG connection: bones=%d morphs=%d skipped=%d warnings=%d",
+                len(dg_result.get("connected_bones", [])),
+                len(dg_result.get("connected_morphs", [])),
+                len(dg_result.get("skipped", [])),
+                len(dg_result.get("warnings", [])),
+            )
+            for warning in dg_result.get("warnings", []):
+                logger.warning(f"Live runtime DG connection warning: {warning}")
+        except Exception as e:
+            logger.warning(f"Failed to create live node: {e}")
+
+
 def import_vmd_file(
     parser: Any,
     filepath: str,
@@ -239,30 +295,7 @@ def import_vmd_file(
             logger.info("VMD file import completed")
             if not scene_animation_only:
                 _try_recover_physics_drivers(target_model, logger, profile)
-                from ..core.collider_authoring import refresh_collider_authoring_pose
-
-                try:
-                    collider_shapes = (
-                        cmds.listRelatives(
-                            target_model,
-                            allDescendents=True,
-                            fullPath=True,
-                            type="mmdRigidBodyShape",
-                        )
-                        if cmds.objExists(target_model)
-                        else []
-                    ) or []
-                except RuntimeError:
-                    # mayapy can import/animate a rig without loading the
-                    # optional Python collider-shape registration.
-                    collider_shapes = []
-                for shape in collider_shapes:
-                    transforms = cmds.listRelatives(shape, parent=True, fullPath=True) or []
-                    if transforms:
-                        display_scale = float(cmds.getAttr(f"{transforms[0]}.scaleX"))
-                        refresh_collider_authoring_pose(
-                            transforms[0], shape, display_scale
-                        )
+                _refresh_collider_authoring_poses(target_model)
             native_physics_used = bool(
                 (profile.get("vmd_converter") or {})
                 .get("native_physics_bake", {})
@@ -273,30 +306,7 @@ def import_vmd_file(
             if not scene_animation_only and is_mmd_runtime_available():
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:
-                    if not pmx_path or not os.path.exists(pmx_path):
-                        logger.warning(
-                            "Skipping live runtime node creation: PMX file path could not be resolved"
-                        )
-                    else:
-                        try:
-                            from mmd_tools.core.native.mmd_anim_runtime import (
-                                connect_runtime_node_outputs_to_model,
-                                create_runtime_node_for_model,
-                            )
-                            node = create_runtime_node_for_model(target_model, pmx_path, filepath)
-                            logger.debug(f"Created live runtime node: {node}")
-                            dg_result = connect_runtime_node_outputs_to_model(node, target_model, pmx_path=pmx_path)
-                            logger.info(
-                                "Live runtime DG connection: bones=%d morphs=%d skipped=%d warnings=%d",
-                                len(dg_result.get("connected_bones", [])),
-                                len(dg_result.get("connected_morphs", [])),
-                                len(dg_result.get("skipped", [])),
-                                len(dg_result.get("warnings", [])),
-                            )
-                            for warning in dg_result.get("warnings", []):
-                                logger.warning(f"Live runtime DG connection warning: {warning}")
-                        except Exception as e:
-                            logger.warning(f"Failed to create live node: {e}")
+                    _connect_live_runtime_node(target_model, pmx_path, filepath, logger)
 
             cmds.inViewMessage(
                 amg=f"VMD animation imported successfully from: {filepath}",

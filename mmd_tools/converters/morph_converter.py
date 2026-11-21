@@ -119,20 +119,6 @@ def _order_morphs_by_index_if_grouped(
     return ordered
 
 
-def _scene_name_set() -> Set[str]:
-    """Return conservative leaf-name reservations from the current scene."""
-    try:
-        nodes = cmds.ls() or []
-    except Exception:
-        return set()
-    names = set()
-    for node in nodes:
-        leaf = str(node).rsplit("|", 1)[-1]
-        names.add(leaf)
-        names.add(leaf.rsplit(":", 1)[-1])
-    return names
-
-
 class MorphConverter:
     """MMDのモーフデータをMayaのblendShapeに変換するクラス"""
 
@@ -145,7 +131,7 @@ class MorphConverter:
         self.scale = float(scale)
         self.profile = {}
         self.progress_callback = None
-        self._morph_node_name_used = _scene_name_set()
+        self._morph_node_name_used = maya_name_utils.collect_scene_names(cmds)
 
     def _add_profile_time(self, key: str, start: float) -> None:
         """Accumulate timing in the converter profile."""

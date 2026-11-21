@@ -144,6 +144,33 @@ class MaterialTab(BaseTab):
         layout = QVBoxLayout(content_widget)
         layout.setContentsMargins(5, 5, 5, 5)
 
+        layout.addWidget(self._create_basic_group())
+        layout.addWidget(self._create_texture_group())
+        layout.addWidget(self._create_flags_group())
+        layout.addWidget(self._create_edge_group())
+
+        # ストレッチを追加して上に詰める
+        layout.addStretch()
+
+        # スクロールエリアに設定
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
+
+        # ボタンバー
+        button_layout = QHBoxLayout()
+        self.apply_btn = QPushButton(self.tr("apply", "buttons"))
+        self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setObjectName("materialApplyButton")
+        self.reset_btn.setObjectName("materialResetButton")
+        button_layout.addStretch()
+        button_layout.addWidget(self.apply_btn)
+        button_layout.addWidget(self.reset_btn)
+
+        main_layout.addLayout(button_layout)
+
+        return widget
+
+    def _create_basic_group(self):
         # Basic Properties
         self.basic_group = QGroupBox(self.tr("basic_properties", "groups"))
         basic_layout = QGridLayout()
@@ -220,8 +247,9 @@ class MaterialTab(BaseTab):
         basic_layout.addWidget(self.ambient_color_widget, 6, 1, 1, 2)
 
         self.basic_group.setLayout(basic_layout)
-        layout.addWidget(self.basic_group)
+        return self.basic_group
 
+    def _create_texture_group(self):
         # Texture Properties
         self.texture_group = QGroupBox(self.tr("textures", "groups"))
         texture_layout = QGridLayout()
@@ -296,8 +324,9 @@ class MaterialTab(BaseTab):
         texture_layout.addWidget(self.original_pmx_path_edit, 7, 1, 1, 2)
 
         self.texture_group.setLayout(texture_layout)
-        layout.addWidget(self.texture_group)
+        return self.texture_group
 
+    def _create_flags_group(self):
         # Rendering Flags
         self.flags_group = QGroupBox(self.tr("rendering_flags", "groups"))
         flags_layout = QVBoxLayout()
@@ -329,8 +358,9 @@ class MaterialTab(BaseTab):
         flags_layout.addWidget(self.line_draw_check)
 
         self.flags_group.setLayout(flags_layout)
-        layout.addWidget(self.flags_group)
+        return self.flags_group
 
+    def _create_edge_group(self):
         # Edge Properties
         self.edge_group = QGroupBox(self.tr("edge_properties", "groups"))
         edge_layout = QGridLayout()
@@ -362,28 +392,7 @@ class MaterialTab(BaseTab):
         edge_layout.addWidget(self.shader_outline_check, 2, 0, 1, 3)
 
         self.edge_group.setLayout(edge_layout)
-        layout.addWidget(self.edge_group)
-
-        # ストレッチを追加して上に詰める
-        layout.addStretch()
-
-        # スクロールエリアに設定
-        scroll_area.setWidget(content_widget)
-        main_layout.addWidget(scroll_area)
-
-        # ボタンバー
-        button_layout = QHBoxLayout()
-        self.apply_btn = QPushButton(self.tr("apply", "buttons"))
-        self.reset_btn = QPushButton(self.tr("reset", "buttons"))
-        self.apply_btn.setObjectName("materialApplyButton")
-        self.reset_btn.setObjectName("materialResetButton")
-        button_layout.addStretch()
-        button_layout.addWidget(self.apply_btn)
-        button_layout.addWidget(self.reset_btn)
-
-        main_layout.addLayout(button_layout)
-
-        return widget
+        return self.edge_group
 
     def _create_color_widget(self):
         """Create a clickable color display widget"""

@@ -35,6 +35,13 @@ MATERIAL_INDEX_ROLE = Qt.UserRole + 1
 MATERIAL_ASSIGNMENT_ROLE = Qt.UserRole + 2
 
 
+def _texture_slot_paths(slot, fallback_source, fallback_resolved):
+    """Return (source, resolved, effective) paths, preferring the authored texture slot."""
+    source =slot.source_path if slot is not None else fallback_source
+    resolved = slot.resolved_path if slot is not None else fallback_resolved
+    return source, resolved, resolved or source or ""
+
+
 def _is_absolute_texture_path(value: str) -> bool:
     """Recognize native and Windows absolute paths on every host OS."""
     return Path(value).is_absolute() or PureWindowsPath(value).is_absolute()
@@ -712,26 +719,18 @@ class MaterialPresenter:
 
         texture_by_slot = {texture.slot: texture for texture in detail.textures}
         main = texture_by_slot.get(MaterialTextureSlot.MAIN)
-        main_source = main.source_path if main is not None else material.texture_path
-        main_resolved = (
-            main.resolved_path if main is not None else material.resolved_texture_path
+        main_source, _, main_effective = _texture_slot_paths(
+            main, material.texture_path, material.resolved_texture_path
         )
-        main_effective = main_resolved or main_source or ""
         self.material_data["texture"] = main_effective
         self.material_data["original_pmx_texture_path"] = main_source or ""
         self.view.texture_path_edit.setText(main_effective)
         self._set_texture_provenance_fields(main_source or "")
 
         sphere = texture_by_slot.get(MaterialTextureSlot.SPHERE)
-        sphere_source = (
-            sphere.source_path if sphere is not None else material.sphere_texture_path
+        _, _, sphere_effective = _texture_slot_paths(
+            sphere, material.sphere_texture_path, material.resolved_sphere_texture_path
         )
-        sphere_resolved = (
-            sphere.resolved_path
-            if sphere is not None
-            else material.resolved_sphere_texture_path
-        )
-        sphere_effective = sphere_resolved or sphere_source or ""
         self.material_data["sphere_map"] = sphere_effective
         self.view.sphere_map_path_edit.setText(sphere_effective)
         self.material_data["sphere_mode"] = material.sphere_mode
@@ -744,11 +743,9 @@ class MaterialPresenter:
             else -1
         )
         toon = texture_by_slot.get(MaterialTextureSlot.TOON)
-        toon_source = toon.source_path if toon is not None else material.toon_texture_path
-        toon_resolved = (
-            toon.resolved_path if toon is not None else material.resolved_toon_texture_path
+        _, _, toon_effective = _texture_slot_paths(
+            toon, material.toon_texture_path, material.resolved_toon_texture_path
         )
-        toon_effective = toon_resolved or toon_source or ""
         self.material_data["shared_toon_flag"] = shared_toon_flag
         self.material_data["toon_index"] = toon_index
         self.view.toon_texture_combo.setCurrentIndex(

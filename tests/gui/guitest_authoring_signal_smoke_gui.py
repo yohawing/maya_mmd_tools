@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import maya.cmds as cmds
 
-from mmd_tools.adapters.maya_authoring_e2e import normalize_spec_payload
+from tools.gates.maya_authoring_e2e import normalize_spec_payload
 from mmd_tools.core import model_registry
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME_EN,

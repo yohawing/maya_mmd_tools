@@ -403,18 +403,7 @@ class BoneTab(BaseTab):
         self.ik_links_table = QTableWidget()
         self.ik_links_table.setObjectName("boneIkLinksTable")
         self.ik_links_table.setColumnCount(8)
-        self.ik_links_table.setHorizontalHeaderLabels(
-            [
-                self.tr("bone", "table_headers"),
-                self.tr("angle_limit", "table_headers"),
-                self.tr("lower_x", "table_headers"),
-                self.tr("lower_y", "table_headers"),
-                self.tr("lower_z", "table_headers"),
-                self.tr("upper_x", "table_headers"),
-                self.tr("upper_y", "table_headers"),
-                self.tr("upper_z", "table_headers"),
-            ]
-        )
+        self.ik_links_table.setHorizontalHeaderLabels(self._ik_link_headers())
         self.ik_links_table.horizontalHeader().setStretchLastSection(True)
         links_layout.addWidget(self.ik_links_table)
 
@@ -425,6 +414,18 @@ class BoneTab(BaseTab):
         self.ik_links_group.setVisible(False)
 
         return layout
+
+    def _ik_link_headers(self):
+        return [
+            self.tr("bone", "table_headers"),
+            self.tr("angle_limit", "table_headers"),
+            self.tr("lower_x", "table_headers"),
+            self.tr("lower_y", "table_headers"),
+            self.tr("lower_z", "table_headers"),
+            self.tr("upper_x", "table_headers"),
+            self.tr("upper_y", "table_headers"),
+            self.tr("upper_z", "table_headers"),
+        ]
 
     def _create_grant_settings_layout(self):
         """付与設定レイアウトを作成"""
@@ -482,6 +483,21 @@ class BoneTab(BaseTab):
 
         return layout
 
+    @staticmethod
+    def _create_axis_spin():
+        spin = QDoubleSpinBox()
+        spin.setRange(-1.0, 1.0)
+        spin.setDecimals(4)
+        spin.setSingleStep(0.1)
+        return spin
+
+    @staticmethod
+    def _add_xyz_row(grid, spins, start_col):
+        for index, (label, spin) in enumerate(zip(("X:", "Y:", "Z:"), spins)):
+            col = start_col + 2 * index
+            grid.addWidget(QLabel(label), 0, col)
+            grid.addWidget(spin, 0, col + 1)
+
     def _create_axis_limit_layout(self):
         """軸制限レイアウトを作成"""
         layout = QVBoxLayout()
@@ -495,28 +511,18 @@ class BoneTab(BaseTab):
         self.fixed_axis_group = QGroupBox(self.tr("fixed_axis", "groups"))
         axis_layout = QGridLayout()
 
-        self.fixed_axis_x_spin = QDoubleSpinBox()
-        self.fixed_axis_y_spin = QDoubleSpinBox()
-        self.fixed_axis_z_spin = QDoubleSpinBox()
+        self.fixed_axis_x_spin = self._create_axis_spin()
+        self.fixed_axis_y_spin = self._create_axis_spin()
+        self.fixed_axis_z_spin = self._create_axis_spin()
         self.fixed_axis_x_spin.setObjectName("boneFixedAxisXSpin")
         self.fixed_axis_y_spin.setObjectName("boneFixedAxisYSpin")
         self.fixed_axis_z_spin.setObjectName("boneFixedAxisZSpin")
 
-        for spin in [
-            self.fixed_axis_x_spin,
-            self.fixed_axis_y_spin,
-            self.fixed_axis_z_spin,
-        ]:
-            spin.setRange(-1.0, 1.0)
-            spin.setDecimals(4)
-            spin.setSingleStep(0.1)
-
-        axis_layout.addWidget(QLabel("X:"), 0, 0)
-        axis_layout.addWidget(self.fixed_axis_x_spin, 0, 1)
-        axis_layout.addWidget(QLabel("Y:"), 0, 2)
-        axis_layout.addWidget(self.fixed_axis_y_spin, 0, 3)
-        axis_layout.addWidget(QLabel("Z:"), 0, 4)
-        axis_layout.addWidget(self.fixed_axis_z_spin, 0, 5)
+        self._add_xyz_row(
+            axis_layout,
+            (self.fixed_axis_x_spin, self.fixed_axis_y_spin, self.fixed_axis_z_spin),
+            start_col=0,
+        )
 
         self.fixed_axis_group.setLayout(axis_layout)
         layout.addWidget(self.fixed_axis_group)
@@ -535,57 +541,37 @@ class BoneTab(BaseTab):
 
         # X軸
         x_axis_layout = QGridLayout()
-        self.local_x_axis_x_spin = QDoubleSpinBox()
-        self.local_x_axis_y_spin = QDoubleSpinBox()
-        self.local_x_axis_z_spin = QDoubleSpinBox()
+        self.local_x_axis_x_spin = self._create_axis_spin()
+        self.local_x_axis_y_spin = self._create_axis_spin()
+        self.local_x_axis_z_spin = self._create_axis_spin()
         self.local_x_axis_x_spin.setObjectName("boneLocalXAxisXSpin")
         self.local_x_axis_y_spin.setObjectName("boneLocalXAxisYSpin")
         self.local_x_axis_z_spin.setObjectName("boneLocalXAxisZSpin")
 
-        for spin in [
-            self.local_x_axis_x_spin,
-            self.local_x_axis_y_spin,
-            self.local_x_axis_z_spin,
-        ]:
-            spin.setRange(-1.0, 1.0)
-            spin.setDecimals(4)
-            spin.setSingleStep(0.1)
-
         self.x_axis_direction_label = QLabel(self.tr("x_axis_direction", "fields"))
         x_axis_layout.addWidget(self.x_axis_direction_label, 0, 0)
-        x_axis_layout.addWidget(QLabel("X:"), 0, 1)
-        x_axis_layout.addWidget(self.local_x_axis_x_spin, 0, 2)
-        x_axis_layout.addWidget(QLabel("Y:"), 0, 3)
-        x_axis_layout.addWidget(self.local_x_axis_y_spin, 0, 4)
-        x_axis_layout.addWidget(QLabel("Z:"), 0, 5)
-        x_axis_layout.addWidget(self.local_x_axis_z_spin, 0, 6)
+        self._add_xyz_row(
+            x_axis_layout,
+            (self.local_x_axis_x_spin, self.local_x_axis_y_spin, self.local_x_axis_z_spin),
+            start_col=1,
+        )
 
         # Z軸
         z_axis_layout = QGridLayout()
-        self.local_z_axis_x_spin = QDoubleSpinBox()
-        self.local_z_axis_y_spin = QDoubleSpinBox()
-        self.local_z_axis_z_spin = QDoubleSpinBox()
+        self.local_z_axis_x_spin = self._create_axis_spin()
+        self.local_z_axis_y_spin = self._create_axis_spin()
+        self.local_z_axis_z_spin = self._create_axis_spin()
         self.local_z_axis_x_spin.setObjectName("boneLocalZAxisXSpin")
         self.local_z_axis_y_spin.setObjectName("boneLocalZAxisYSpin")
         self.local_z_axis_z_spin.setObjectName("boneLocalZAxisZSpin")
 
-        for spin in [
-            self.local_z_axis_x_spin,
-            self.local_z_axis_y_spin,
-            self.local_z_axis_z_spin,
-        ]:
-            spin.setRange(-1.0, 1.0)
-            spin.setDecimals(4)
-            spin.setSingleStep(0.1)
-
         self.z_axis_direction_label = QLabel(self.tr("z_axis_direction", "fields"))
         z_axis_layout.addWidget(self.z_axis_direction_label, 0, 0)
-        z_axis_layout.addWidget(QLabel("X:"), 0, 1)
-        z_axis_layout.addWidget(self.local_z_axis_x_spin, 0, 2)
-        z_axis_layout.addWidget(QLabel("Y:"), 0, 3)
-        z_axis_layout.addWidget(self.local_z_axis_y_spin, 0, 4)
-        z_axis_layout.addWidget(QLabel("Z:"), 0, 5)
-        z_axis_layout.addWidget(self.local_z_axis_z_spin, 0, 6)
+        self._add_xyz_row(
+            z_axis_layout,
+            (self.local_z_axis_x_spin, self.local_z_axis_y_spin, self.local_z_axis_z_spin),
+            start_col=1,
+        )
 
         local_layout.addLayout(x_axis_layout)
         local_layout.addLayout(z_axis_layout)
@@ -632,15 +618,4 @@ class BoneTab(BaseTab):
         )
 
         # Table headers - IK Links
-        self.ik_links_table.setHorizontalHeaderLabels(
-            [
-                self.tr("bone", "table_headers"),
-                self.tr("angle_limit", "table_headers"),
-                self.tr("lower_x", "table_headers"),
-                self.tr("lower_y", "table_headers"),
-                self.tr("lower_z", "table_headers"),
-                self.tr("upper_x", "table_headers"),
-                self.tr("upper_y", "table_headers"),
-                self.tr("upper_z", "table_headers"),
-            ]
-        )
+        self.ik_links_table.setHorizontalHeaderLabels(self._ik_link_headers())

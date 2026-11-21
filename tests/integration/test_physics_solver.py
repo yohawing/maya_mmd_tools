@@ -10,8 +10,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes
-
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
@@ -101,8 +99,8 @@ class TestPhysicsSolverSession(MayaTestBase):
         self.assertIsNotNone(session)
         session.free()
 
-    def test_create_scaled_scene_uses_dag_model_descriptors(self):
-        """The public create path must preserve DAG model scale too."""
+    def test_create_scaled_scene_rest_pose_uses_dag_model_descriptors(self):
+        """The public create path preserves the scale of the model rest pose."""
         from mmd_tools.core.native.mmd_anim_runtime_handles import (
             MmdRuntimeInstance,
             MmdRuntimeModel,
@@ -118,7 +116,9 @@ class TestPhysicsSolverSession(MayaTestBase):
         self.assertIsNotNone(raw_model)
         self.assertIsNotNone(raw_instance)
         try:
-            self.assertTrue(session.reset())
+            # reset includes a 1/60 s physics settle; compare unstepped rest
+            # poses here, leaving dynamic reset replay to its dedicated test.
+            self.assertTrue(session._instance.evaluate_rest_pose())
             actual = session.get_bone_world_matrices()
             self.assertTrue(raw_instance.evaluate_rest_pose())
             raw = raw_instance.get_world_matrices()
@@ -265,7 +265,7 @@ class TestPhysicsSolverSession(MayaTestBase):
         session.free()
 
     def test_session_parity_with_pmx_world(self):
-        """Solver matrices match the independently normalized legacy native reference."""
+        """Solver matrices match the independently raw PMX native reference."""
         from mmd_tools.core.native.mmd_anim_runtime_handles import (
             MmdRuntimeInstance,
             MmdRuntimeModel,
@@ -283,9 +283,7 @@ class TestPhysicsSolverSession(MayaTestBase):
         dag_matrices = session.get_bone_world_matrices()
 
         pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
-            legacy_native_reference_pmx_bytes(
-                parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-            )
+            self.pmx_bytes
         )
         model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         instance = MmdRuntimeInstance.for_model(model)

@@ -1180,7 +1180,7 @@ class MeshConverter:
         # precomputed from per-material UV-region texture alpha (atlas-safe).
         self._transparency_modes = {}
         self._material_name_by_index = {}
-        self._material_name_used = self._scene_name_set()
+        self._material_name_used = maya_name_utils.collect_scene_names(cmds)
         self._material_name_scene_check = True
         # The optional C++ command is preferred when the native plugin is
         # already loaded.  The O(V+F) Python topology builder remains the
@@ -1212,20 +1212,6 @@ class MeshConverter:
             "native_uv_weld_meshes": [],
         }
         self.texture_dir = os.path.dirname(pmx_filepath or "")
-
-    @staticmethod
-    def _scene_name_set():
-        """Return conservative leaf-name reservations from the current scene."""
-        try:
-            nodes = cmds.ls() or []
-        except Exception:
-            return set()
-        names = set()
-        for node in nodes:
-            leaf = str(node).rsplit("|", 1)[-1]
-            names.add(leaf)
-            names.add(leaf.rsplit(":", 1)[-1])
-        return names
 
     def _allocate_material_name(self, material, material_index=None):
         """Allocate one safe base for a material and all derived node names."""
@@ -2170,6 +2156,21 @@ class MeshConverter:
 
         return created_mesh
 
+    def _finish_uv_weld(
+        self, created_mesh, all_vertices, source_vertex_indices, mesh_data,
+        native_welded_count, additional_uv_count,
+    ):
+        """Persist additional UVs and record weld counts for a material split mesh."""
+        post_weld_source_indices = self._post_weld_source_indices(
+            created_mesh, source_vertex_indices, native_welded_count,
+        )
+        self._persist_additional_uvs(
+            created_mesh, all_vertices, post_weld_source_indices, additional_uv_count,
+        )
+        self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
+        if native_welded_count is not None:
+            self.profile["uv_welded_vertex_count"] += native_welded_count
+
     def _create_material_split_meshes(
         self,
         model_name,
@@ -2296,20 +2297,10 @@ class MeshConverter:
                         created_mesh,
                         mesh_data["source_vertex_indices"],
                     )
-                    post_weld_source_indices = self._post_weld_source_indices(
-                        created_mesh,
-                        mesh_data["source_vertex_indices"],
-                        native_welded_count,
+                    self._finish_uv_weld(
+                        created_mesh, all_vertices, mesh_data["source_vertex_indices"],
+                        mesh_data, native_welded_count, additional_uv_count,
                     )
-                    self._persist_additional_uvs(
-                        created_mesh,
-                        all_vertices,
-                        post_weld_source_indices,
-                        additional_uv_count,
-                    )
-                    self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
-                    if native_welded_count is not None:
-                        self.profile["uv_welded_vertex_count"] += native_welded_count
             self.profile["face_count"] += num_material_faces
             _set_mesh_double_sided(created_mesh, _material_is_double_sided(material))
             maya_attribute_utils.set_custom_attributes(
@@ -2380,19 +2371,10 @@ class MeshConverter:
                         0,
                         int(result["oldVertexCount"]) - int(result["newVertexCount"]),
                     )
-                    post_weld_source_indices = self._post_weld_source_indices(
-                        created_mesh,
-                        payload["source_vertex_indices"],
-                        native_welded_count,
+                    self._finish_uv_weld(
+                        created_mesh, all_vertices, payload["source_vertex_indices"],
+                        mesh_data, native_welded_count, additional_uv_count,
                     )
-                    self._persist_additional_uvs(
-                        created_mesh,
-                        all_vertices,
-                        post_weld_source_indices,
-                        additional_uv_count,
-                    )
-                    self.profile["uv_welded_vertex_count"] += mesh_data["welded_vertex_count"]
-                    self.profile["uv_welded_vertex_count"] += native_welded_count
             except Exception:
                 for payload in pending_native_welds:
                     mesh = payload["mesh"]

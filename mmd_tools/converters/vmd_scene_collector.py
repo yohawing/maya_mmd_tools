@@ -32,6 +32,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_ROOT,
     ATTR_MMD_MODEL_NAME,
 )
+from mmd_tools.core.maya_identity import unique_long_name
+from mmd_tools.core.maya_name_utils import dag_leaf_name
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_EDIT,
     read_mmd_control_rig_metadata,
@@ -47,9 +49,12 @@ from mmd_tools.core.mmd_control_rig_motion import (
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.core.secondary_bone_controls import secondary_control_input_route
+from mmd_tools.core.utils import copy_diagnostics
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from mmd_tools.converters.vmd_camera_animation import (
+    ATTR_MMD_CAMERA_INTERPOLATION_JSON as _ATTR_MMD_CAMERA_INTERPOLATION_JSON,
+    ATTR_MMD_CAMERA_RIG_TYPE as _ATTR_MMD_CAMERA_RIG_TYPE,
     ATTR_MMD_CAMERA_ROOT_NODE,
     ATTR_MMD_CAMERA_TARGET_NODE,
     MMD_CAMERA_EXPR_SCALE_ATTR,
@@ -66,6 +71,7 @@ from mmd_tools.converters.vmd_redirected_authoring_proxy import (
     redirected_authority_matches,
     resolve_redirected_authoring_proxy_authority,
 )
+from mmd_tools.converters.vmd_timeline import FPS_TIME_UNIT_MAPPING
 from mmd_tools.validation.snapshot import fingerprint_payload
 from mmd_tools.converters.vmd_curve_fit import fit_scene_track, fit_step_track, validation_times
 
@@ -101,8 +107,6 @@ _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
 _LIGHT_SHAPE_COLOR_ATTRS = ("colorR", "colorG", "colorB")
 _DEFAULT_CAMERA_INTERPOLATION = b"\x14" * 24
-_ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
-_ATTR_MMD_CAMERA_INTERPOLATION_JSON = "mmd_camera_interpolation_json"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 _BAKE_TIMELINE_TRACK_TARGETS = frozenset({"character", "camera", "light"})
 
@@ -215,25 +219,7 @@ _MAYA_DAG_NODE_TYPES = frozenset(
 )
 _MAX_TRACK_SELECTION_EVIDENCE = 128
 _MAX_KEY_REDUCTION_WITNESSES = 64
-_MAYA_TIME_UNIT_FPS = {
-    "game": 15.0,
-    "film": 24.0,
-    "pal": 25.0,
-    "ntsc": 30.0,
-    "show": 48.0,
-    "palf": 50.0,
-    "ntscf": 60.0,
-}
-
-
-def _copy_diagnostics(value: Any) -> Any:
-    """Detach nested timing/count diagnostics from the collector."""
-
-    if isinstance(value, Mapping):
-        return {str(key): _copy_diagnostics(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_copy_diagnostics(item) for item in value]
-    return value
+_MAYA_TIME_UNIT_FPS = {name: fps for fps, name in FPS_TIME_UNIT_MAPPING.items()}
 
 
 def _new_key_reduction_report(enabled: bool) -> dict[str, Any]:
@@ -519,8 +505,8 @@ def _bake_timeline_validate_anim_blend(
         rotate_order_node, rotate_order_attr = incoming["rotateOrder"].split(".", 1)
         if (
             rotate_order_attr != "rotateOrder"
-            or _canonical_dag_path(rotate_order_node)
-            != _canonical_dag_path(physical_node)
+            or unique_long_name(cmds, rotate_order_node)
+            != unique_long_name(cmds, physical_node)
         ):
             return None
     if not layers:
@@ -569,6 +555,20 @@ def _bake_timeline_authored_input_plug(
     if not physical_attr.startswith(prefix) or not physical_attr.endswith(suffix):
         return False
     return physical_attr[len(prefix) : -len(suffix)].isdigit()
+
+
+def _single_key_selection_reason(is_default: bool, static_keyless: bool, layered: bool, routed: bool) -> str:
+    """Return the reason recorded for a single-key bone track."""
+    suffix = "default"
+    if not is_default:
+        suffix = "non_default"
+    if static_keyless:
+        return f"keyless_static_{suffix}"
+    if not routed:
+        return f"direct_single_key_{suffix}"
+    if layered:
+        return f"layered_direct_single_key_{suffix}"
+    return f"routed_direct_single_key_{suffix}"
 
 
 def _bake_timeline_single_key_bone_route(
@@ -694,20 +694,9 @@ def _normalize_track_selection_identity(section: Any, name: Any) -> tuple[str, s
     return str(section).strip().lower(), normalized_name
 
 
-def _canonical_dag_path(node: str) -> Optional[str]:
-    """Resolve one Maya node to an unambiguous long DAG path."""
-    try:
-        matches = cmds.ls(node, long=True) or []
-    except Exception:
-        return None
-    if len(matches) != 1:
-        return None
-    return str(matches[0])
-
-
 def _dag_path_is_under_root(node: str, root_path: str) -> bool:
     """Return whether a DAG node is the root or a descendant of it."""
-    node_path = _canonical_dag_path(node)
+    node_path = unique_long_name(cmds, node)
     if not node_path:
         return False
     return node_path == root_path or node_path.startswith(f"{root_path}|")
@@ -721,10 +710,10 @@ def _dependency_node_model_local(node: str, target_model: str) -> bool:
     a short name before this boundary; it never crosses an ambiguous parent.
     """
 
-    root_path = _canonical_dag_path(target_model) or str(target_model)
+    root_path = unique_long_name(cmds, target_model) or str(target_model)
     if _dag_path_is_under_root(node, root_path):
         return True
-    current = _canonical_dag_path(node) or str(node)
+    current = unique_long_name(cmds, node) or str(node)
     seen = set()
     while current and current not in seen:
         seen.add(current)
@@ -740,7 +729,7 @@ def _dependency_node_model_local(node: str, target_model: str) -> bool:
             parents = [parents]
         if len(parents) != 1:
             return False
-        parent = _canonical_dag_path(str(parents[0])) or str(parents[0])
+        parent = unique_long_name(cmds, str(parents[0])) or str(parents[0])
         if parent == root_path or parent == str(target_model):
             return True
         current = parent
@@ -771,8 +760,8 @@ def _dependency_node_has_model_marker(node: str, target_model: str) -> bool:
         if len(sources) == 1:
             source_node = str(sources[0]).split(".", 1)[0]
             if _dependency_node_model_local(source_node, target_model) or (
-                _canonical_dag_path(source_node)
-                == _canonical_dag_path(target_model)
+                unique_long_name(cmds, source_node)
+                == unique_long_name(cmds, target_model)
             ):
                 return True
             continue
@@ -786,7 +775,7 @@ def _dependency_node_has_model_marker(node: str, target_model: str) -> bool:
         if value is not None and not isinstance(value, (list, tuple, dict)):
             if str(value) in {
                 str(target_model),
-                _canonical_dag_path(target_model) or str(target_model),
+                unique_long_name(cmds, target_model) or str(target_model),
             }:
                 return True
     return False
@@ -825,7 +814,7 @@ def _classify_unsupported_bone_dependency(
 
     joint = str(joint)
     target_model = str(target_model)
-    root_path = _canonical_dag_path(target_model) or target_model
+    root_path = unique_long_name(cmds, target_model) or target_model
     visited: set[str] = set()
     visiting: set[str] = {joint}
     visited_destinations: set[str] = set()
@@ -860,16 +849,10 @@ def _classify_unsupported_bone_dependency(
         }
 
     def canonical(node: str) -> Optional[str]:
-        value = _canonical_dag_path(node)
+        value = unique_long_name(cmds, node)
         if value:
             return value
-        try:
-            matches = cmds.ls(node, long=True) or []
-        except Exception:
-            return None
-        if len(matches) != 1:
-            return None
-        return str(matches[0])
+        return unique_long_name(cmds, node)
 
     def inspect(source_plug: str, destination_plug: str) -> Optional[dict[str, Any]]:
         source_node, separator, _source_attr = str(source_plug).rpartition(".")
@@ -1111,7 +1094,7 @@ def _runtime_route_node_matches(node: str, runtime_nodes: Sequence[str]) -> bool
     """Return whether a route source is one of the proven runtime nodes."""
 
     node = str(node)
-    canonical = _canonical_dag_path(node) or node
+    canonical = unique_long_name(cmds, node) or node
     return canonical in {str(value) for value in runtime_nodes} or node in {
         str(value) for value in runtime_nodes
     }
@@ -1139,7 +1122,7 @@ def _runtime_route_group_complete(
         return False
     if any(not _runtime_route_node_matches(value[0], runtime_nodes) for value in values):
         return False
-    route_nodes = {_canonical_dag_path(str(value[0])) or str(value[0]) for value in values}
+    route_nodes = {unique_long_name(cmds, str(value[0])) or str(value[0]) for value in values}
     if len(route_nodes) != 1:
         return False
     node_types = []
@@ -1219,6 +1202,20 @@ def _write_stream_frame(sink: Any, section: str, frame: Mapping[str, Any]) -> No
     method(frame)
 
 
+def _dense_track_decision(
+    keyless_reason: Optional[str], source_key_count: int, has_route: bool
+) -> tuple[Optional[str], str, int]:
+    """Return the diagnostic decision, reason, and source key count for a dense bone track."""
+    if keyless_reason:
+        return "dependency_baked", keyless_reason, 0
+    if source_key_count:
+        if has_route:
+            return "dependency_baked", "routed_dependency", source_key_count
+        reason = "multiple_source_keys" if source_key_count > 1 else "conservative_dense_path"
+        return "authored_sampled", reason, source_key_count
+    return None, "", 0
+
+
 def _should_emit_morph_frame(frame: Mapping[str, Any]) -> bool:
     """Return whether a Morph frame has a name representable by standard VMD."""
 
@@ -1269,7 +1266,7 @@ class VmdSceneCollector:
                 "count": len(identities),
                 "fingerprint": fingerprint_payload(identities),
             }
-        return _copy_diagnostics(self._diagnostics)
+        return copy_diagnostics(self._diagnostics)
 
     @property
     def diagnostics_copy(self) -> dict[str, Any]:
@@ -1293,7 +1290,7 @@ class VmdSceneCollector:
 
         if isinstance(value, Mapping):
             merged = dict(self._diagnostics.get("native_sampler", {}))
-            merged.update(_copy_diagnostics(value))
+            merged.update(copy_diagnostics(value))
             self._diagnostics["native_sampler"] = merged
             self._emit_diagnostics()
 
@@ -1969,6 +1966,53 @@ class VmdSceneCollector:
         )
         return {_vmd_frame_number(frame, time_converter) for frame in maya_frames}
 
+    def _is_native_dense_joint(
+        self, joint, keyed_times_by_joint, keyless_dependency_joints, single_key_joints
+    ) -> bool:
+        """Return whether a keyed or dependency-driven joint needs native dense sampling."""
+        if not (
+            keyed_times_by_joint.get(joint) or joint in keyless_dependency_joints
+        ) or joint in single_key_joints:
+            return False
+        long_name = str((cmds.ls(joint, long=True) or [joint])[0])
+        return long_name not in self._bake_timeline_physics_output_excluded_targets
+
+    def _prepare_native_sampler_preflight(
+        self, bone_channel_sampler, native_joints, input_routes, dense_frames
+    ):
+        """Report native sampler availability and register its diagnostics sink."""
+        route_inventory = _native_route_inventory(
+            native_joints,
+            input_routes,
+        )
+        sampler_available = getattr(
+            bone_channel_sampler,
+            "available",
+            None,
+        )
+        if callable(sampler_available):
+            try:
+                sampler_available = sampler_available()
+            except Exception:
+                sampler_available = False
+        self._diagnostics["native_sampler"] = {
+            "status": "preflight",
+            "available": bool(sampler_available),
+            "used": False,
+            "frame_count": len(dense_frames),
+            "logical_channel_count": len(native_joints) * len(_BONE_EXPORT_ATTRS),
+            **route_inventory,
+        }
+        self._emit_diagnostics()
+        set_native_sink = getattr(
+            bone_channel_sampler,
+            "set_diagnostics_sink",
+            None,
+        )
+        if callable(set_native_sink):
+            set_native_sink(self._accept_native_diagnostics)
+        return sampler_available
+
     def collect_bone_frames(
         self,
         joints: Sequence[str],
@@ -2155,13 +2199,9 @@ class VmdSceneCollector:
                 and dense_frames
                 and bone_channel_sampler is None
                 and any(
-                    (
-                        keyed_times_by_joint.get(joint)
-                        or joint in keyless_dependency_joints
+                    self._is_native_dense_joint(
+                        joint, keyed_times_by_joint, keyless_dependency_joints, single_key_joints
                     )
-                    and joint not in single_key_joints
-                    and str((cmds.ls(joint, long=True) or [joint])[0])
-                    not in self._bake_timeline_physics_output_excluded_targets
                     for joint in joints
                 )
             ):
@@ -2183,13 +2223,9 @@ class VmdSceneCollector:
                 native_joints = [
                     joint
                     for joint in joints
-                    if (
-                        keyed_times_by_joint.get(joint)
-                        or joint in keyless_dependency_joints
+                    if self._is_native_dense_joint(
+                        joint, keyed_times_by_joint, keyless_dependency_joints, single_key_joints
                     )
-                    and joint not in single_key_joints
-                    and str((cmds.ls(joint, long=True) or [joint])[0])
-                    not in self._bake_timeline_physics_output_excluded_targets
                 ]
                 if not native_joints:
                     self._diagnostics["native_sampler"] = {
@@ -2200,36 +2236,9 @@ class VmdSceneCollector:
                         "fallback_reason": "no eligible dense bone channels",
                     }
                 else:
-                    route_inventory = _native_route_inventory(
-                        native_joints,
-                        input_routes,
+                    sampler_available = self._prepare_native_sampler_preflight(
+                        bone_channel_sampler, native_joints, input_routes, dense_frames
                     )
-                    sampler_available = getattr(
-                        bone_channel_sampler,
-                        "available",
-                        None,
-                    )
-                    if callable(sampler_available):
-                        try:
-                            sampler_available = sampler_available()
-                        except Exception:
-                            sampler_available = False
-                    self._diagnostics["native_sampler"] = {
-                        "status": "preflight",
-                        "available": bool(sampler_available),
-                        "used": False,
-                        "frame_count": len(dense_frames),
-                        "logical_channel_count": len(native_joints) * len(_BONE_EXPORT_ATTRS),
-                        **route_inventory,
-                    }
-                    self._emit_diagnostics()
-                    set_native_sink = getattr(
-                        bone_channel_sampler,
-                        "set_diagnostics_sink",
-                        None,
-                    )
-                    if callable(set_native_sink):
-                        set_native_sink(self._accept_native_diagnostics)
                     native_started = time.perf_counter()
                     try:
                         if sampler_available is False:
@@ -2683,33 +2692,7 @@ class VmdSceneCollector:
                             "bone",
                             bone_name,
                             "omitted_default" if is_default else "constant_one_key",
-                            (
-                                "keyless_static_default"
-                                if static_keyless
-                                else (
-                                    (
-                                        "layered_direct_single_key_default"
-                                        if single_key_kinds.get(joint) == "layered"
-                                        else "routed_direct_single_key_default"
-                                    )
-                                    if route
-                                    else "direct_single_key_default"
-                                )
-                            )
-                            if is_default
-                            else (
-                                "keyless_static_non_default"
-                                if static_keyless
-                                else (
-                                    (
-                                        "layered_direct_single_key_non_default"
-                                        if single_key_kinds.get(joint) == "layered"
-                                        else "routed_direct_single_key_non_default"
-                                    )
-                                    if route
-                                    else "direct_single_key_non_default"
-                                )
-                            ),
+                            _single_key_selection_reason(is_default, static_keyless, single_key_kinds.get(joint) == "layered", bool(route)),
                             0 if static_keyless else len(sparse_frames),
                             0 if is_default else 1,
                         )
@@ -2734,22 +2717,9 @@ class VmdSceneCollector:
                         emit_stream_payload(payload)
                 if force_dense_sample and not single_key and not direct_multi_key:
                     keyless_reason = keyless_dependency_joints.get(joint)
-                    if keyless_reason:
-                        decision = "dependency_baked"
-                        reason = keyless_reason
-                        source_key_count = 0
-                    elif sparse_frames:
-                        decision = "dependency_baked" if route else "authored_sampled"
-                        reason = "routed_dependency" if route else (
-                            "multiple_source_keys"
-                            if len(sparse_frames) > 1
-                            else "conservative_dense_path"
-                        )
-                        source_key_count = len(sparse_frames)
-                    else:
-                        decision = None
-                        reason = ""
-                        source_key_count = 0
+                    decision, reason, source_key_count = _dense_track_decision(
+                        keyless_reason, len(sparse_frames), bool(route)
+                    )
                     if decision is None:
                         continue
                     planned_key_count = (
@@ -2848,6 +2818,27 @@ class VmdSceneCollector:
                     _close_native_samples(native_samples)
                 finally:
                     native_samples = None
+        return self._finalize_bone_frames(
+            frames,
+            frame_sink,
+            bone_dense_diagnostic_rows,
+            bone_output_providers,
+            direct_multi_key_candidates,
+            dense_sample,
+            dense_frames,
+        )
+
+    def _finalize_bone_frames(
+        self,
+        frames: Optional[list[dict]],
+        frame_sink,
+        bone_dense_diagnostic_rows: dict[str, tuple[str, str, int, int]],
+        bone_output_providers: dict[str, set[str]],
+        direct_multi_key_candidates: dict[str, list[tuple[str, int]]],
+        dense_sample: bool,
+        dense_frames: Optional[Sequence[float]],
+    ) -> list[dict]:
+        """Record track selection and collapse constant tracks in buffered bone frames."""
         for name, (decision, reason, source_key_count, planned_key_count) in (
             bone_dense_diagnostic_rows.items()
         ):
@@ -3125,7 +3116,7 @@ class VmdSceneCollector:
         long_joint = str((cmds.ls(joint, long=True) or [joint])[0])
 
         def matching(mapping: Mapping[str, Any]) -> Any:
-            for key in (long_joint, str(joint), str(joint).rsplit("|", 1)[-1]):
+            for key in (long_joint, str(joint), dag_leaf_name(joint)):
                 if key in mapping:
                     return mapping[key]
             for candidate in mapping.values():
@@ -3736,7 +3727,7 @@ class VmdSceneCollector:
 
         if not target_model:
             return
-        root_path = _canonical_dag_path(target_model)
+        root_path = unique_long_name(cmds, target_model)
         if not root_path:
             return
         joints_by_path = {
@@ -3784,7 +3775,7 @@ class VmdSceneCollector:
             if len(target_connections) != 1:
                 continue
             target_joint = target_connections[0]
-            target_path = _canonical_dag_path(target_joint)
+            target_path = unique_long_name(cmds, target_joint)
             if strict_bake_timeline and (
                 not target_path
                 or not _dag_path_is_under_root(target_path, root_path)
@@ -5022,7 +5013,7 @@ class VmdSceneCollector:
         if not target_model:
             return self._require_single_tagged_track(nodes, attr, "targetless automatic")
 
-        root_path = _canonical_dag_path(target_model)
+        root_path = unique_long_name(cmds, target_model)
         if not root_path:
             return []
         scoped = [
@@ -6144,7 +6135,7 @@ def _physics_solvers_owned_by_model(
         root_matches = [
             value
             for value in roots
-            if _canonical_dag_path(value) == root_path
+            if unique_long_name(cmds, value) == root_path
         ]
         selected_registry_matches = [
             value

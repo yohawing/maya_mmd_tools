@@ -6,6 +6,17 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, MutableMapping, MutableSet, Optional, Tuple, Union
 
 
+def vmd_frame_value(frame, attr_name: str, key_name: str, default):
+    """Read a VMD value from attributes first, then dictionary keys."""
+    if hasattr(frame, attr_name):
+        return getattr(frame, attr_name)
+    if hasattr(frame, key_name):
+        return getattr(frame, key_name)
+    if isinstance(frame, dict):
+        return frame.get(key_name, frame.get(attr_name, default))
+    return default
+
+
 @dataclass(frozen=True)
 class VmdKeyingContext:
     """Minimal state needed by scene keying helpers."""
@@ -243,3 +254,24 @@ class VmdMorphAnimationContext:
     vmd_frame_to_maya_time: Callable[[float], float]
     samples_as_anim_layer_deltas: Callable[[str, Dict[str, List[Tuple[float, float]]]], Dict[str, List[Tuple[float, float]]]]
     batch_key_scalar_channels: Callable[[str, Dict[str, List[Tuple[float, float]]], Optional[str]], bool]
+
+
+def resolve_morph_animation_context(
+    converter_or_context: Union[Any, VmdMorphAnimationContext],
+) -> VmdMorphAnimationContext:
+    """Resolve a morph context from a context, factory, or legacy converter."""
+    if isinstance(converter_or_context, VmdMorphAnimationContext):
+        return converter_or_context
+    factory = getattr(converter_or_context, "_morph_animation_context", None)
+    if callable(factory):
+        return factory()
+    return VmdMorphAnimationContext(
+        logger=converter_or_context.logger,
+        morph_name_mapping=converter_or_context.morph_name_mapping,
+        anim_layer=converter_or_context.anim_layer,
+        use_animation_layers=converter_or_context.use_animation_layers,
+        iter_morph_mappings=converter_or_context._iter_morph_mappings,
+        vmd_frame_to_maya_time=converter_or_context.vmd_frame_to_maya_time,
+        samples_as_anim_layer_deltas=converter_or_context._samples_as_anim_layer_deltas,
+        batch_key_scalar_channels=converter_or_context._batch_key_scalar_channels,
+    )

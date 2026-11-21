@@ -5,19 +5,11 @@ the format header, parser acceptance, and the basic section counts that can be
 compared with the validated model payload before an atomic target replace.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, List, Optional
 
-from .export_validator import ExportValidationIssue, ExportValidationReport
-
-
-_TEXT_SEQUENCE_TYPES = (str, bytes, bytearray)
-
-
-def _is_sequence(value: Any) -> bool:
-    """Return whether *value* is a non-text sequence."""
-    return isinstance(value, Sequence) and not isinstance(value, _TEXT_SEQUENCE_TYPES)
+from .export_validator import ExportValidationIssue, ExportValidationReport, blocking_issue, is_sequence
 
 
 def _issue(
@@ -28,11 +20,9 @@ def _issue(
     details: Optional[Mapping[str, Any]] = None,
 ) -> ExportValidationIssue:
     """Build one blocking output-verifier issue."""
-    issue_details = dict(details or {})
-    issue_details.setdefault("field", path)
     if code == "OUTPUT_VERIFY_FAILED":
-        issue_details.setdefault("phase", "verify")
-    return ExportValidationIssue(code, "fatal", True, path, message, details=issue_details)
+        details = {"phase": "verify", **(details or {})}
+    return blocking_issue(code, path, message, details=details)
 
 
 def _expected_sequence_count(
@@ -46,7 +36,7 @@ def _expected_sequence_count(
     if field_name not in model_data or model_data[field_name] is None:
         return default
     value = model_data[field_name]
-    if not _is_sequence(value):
+    if not is_sequence(value):
         return None
     if empty_uses_default and not value:
         return default
@@ -58,11 +48,11 @@ def _expected_face_count(model_data: Mapping) -> Optional[int]:
     if "faces" not in model_data or model_data["faces"] is None:
         return None
     faces = model_data["faces"]
-    if not _is_sequence(faces):
+    if not is_sequence(faces):
         return None
     triangles = 0
     for face in faces:
-        if not _is_sequence(face) or len(face) < 3:
+        if not is_sequence(face) or len(face) < 3:
             return None
         triangles += 1 if len(face) == 3 else len(face) - 2
     return triangles

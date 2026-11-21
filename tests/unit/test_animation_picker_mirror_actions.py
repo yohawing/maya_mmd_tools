@@ -9,6 +9,7 @@ from mmd_tools.ui.mirror_actions import (
     MirrorEntry,
     MirrorMapping,
     MirrorPoseTransaction,
+    bind_world_contexts,
     build_mirror_pairs,
     mirrored_transform_values,
 )
@@ -125,6 +126,31 @@ class _FakeAdapter:
     def undo_info(self, **kwargs):
         if kwargs.get("openChunk"):
             self.undo_chunks.append(kwargs.get("chunkName"))
+
+
+class TestBindWorldContexts(unittest.TestCase):
+    def test_child_translation_is_scaled_in_parent_bind_space(self):
+        from maya.api import OpenMaya as om
+
+        root = om.MTransformationMatrix()
+        root.setScale((2, 1, 1), om.MSpace.kTransform)
+        child = om.MTransformationMatrix()
+        child.setTranslation(om.MVector(3, 0, 0), om.MSpace.kTransform)
+        orient = om.MQuaternion()
+        contexts = bind_world_contexts(
+            {1: "child", 0: "root"},
+            {1: 0, 0: None},
+            {1: None, 0: "|model"},
+            {1: (child.asMatrix(), orient, (3, 0, 0)), 0: (root.asMatrix(), orient, (0, 0, 0))},
+        )
+        self.assertEqual(contexts["child"]["bind_world_matrix"][12:15], (6, 0, 0))
+        self.assertEqual(contexts["child"]["bind_space_node"], "|model")
+        self.assertEqual(contexts["child"]["joint_orient"], (0, 0, 0, 1))
+
+    def test_missing_parent_raises_key_error(self):
+        with self.assertRaises(KeyError) as error:
+            bind_world_contexts({0: "child"}, {0: 9}, {0: None}, {0: (None, None, None)})
+        self.assertEqual(error.exception.args, (9,))
 
 
 class TestMirrorPairing(unittest.TestCase):

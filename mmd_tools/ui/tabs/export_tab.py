@@ -408,8 +408,6 @@ class _ExportPage(QWidget):
         if self.pane == self.owner.CAMERA_PANE:
             light_check = getattr(self, "light_export_check", None)
             return "camera+light" if light_check is not None and light_check.isChecked() else "camera"
-        if self.pane != self.owner.MOTION_PANE:
-            return "character"
         return "character"
 
     def invalidate(self) -> None:
@@ -543,6 +541,12 @@ class ExportTab(BaseTab):
     MODEL_PANE = "model"
     MOTION_PANE = "motion"
     CAMERA_PANE = "camera"
+    _PANES = (MODEL_PANE, MOTION_PANE, CAMERA_PANE)
+    _OUTPUT_PATH_KEYS = {
+        MODEL_PANE: "export_model_path",
+        MOTION_PANE: "export_motion_path",
+        CAMERA_PANE: "export_camera_path",
+    }
 
     def __init__(
         self,
@@ -600,22 +604,12 @@ class ExportTab(BaseTab):
 
     def _load_output_path(self, pane: str) -> str:
         """Load one pane's exact output text from the view-only state store."""
-        key = {
-            self.MODEL_PANE: "export_model_path",
-            self.MOTION_PANE: "export_motion_path",
-            self.CAMERA_PANE: "export_camera_path",
-        }[pane]
-        value = self.view_state.get(key, "")
+        value = self.view_state.get(self._OUTPUT_PATH_KEYS[pane], "")
         return str(value or "")
 
     def _save_output_path(self, pane: str, value: str) -> None:
         """Persist one pane's exact output text without extension coercion."""
-        key = {
-            self.MODEL_PANE: "export_model_path",
-            self.MOTION_PANE: "export_motion_path",
-            self.CAMERA_PANE: "export_camera_path",
-        }[pane]
-        self.view_state.set(key, str(value or ""))
+        self.view_state.set(self._OUTPUT_PATH_KEYS[pane], str(value or ""))
 
     def _timeline_range(self):
         """Return Maya playback range lazily, with a Maya-independent fallback."""
@@ -642,11 +636,7 @@ class ExportTab(BaseTab):
 
     def _on_pane_changed(self, index: int) -> None:
         """Update the active format when the shared selector changes."""
-        self._active_pane = (
-            self.MODEL_PANE,
-            self.MOTION_PANE,
-            self.CAMERA_PANE,
-        )[int(index)]
+        self._active_pane = self._PANES[int(index)]
 
     @property
     def active_pane(self) -> str:
@@ -782,11 +772,7 @@ class ExportTab(BaseTab):
             # on the accidentally selected page and loses the operation
             # context.  The owner is a page object, so this also keeps model
             # and motion results independent when both pages exist.
-            owner_index = {
-                self.MODEL_PANE: 0,
-                self.MOTION_PANE: 1,
-                self.CAMERA_PANE: 2,
-            }[owner_page.pane]
+            owner_index = self._PANES.index(owner_page.pane)
             if self.category_stack.currentIndex() != owner_index:
                 self.category_stack.setCurrentIndex(owner_index)
             owner_page.set_result(result)

@@ -6,8 +6,7 @@ Maya環境に最適化されたロガーシステムを提供します。
 """
 
 import logging
-import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core.settings import settings
@@ -139,61 +138,6 @@ class MayaLogger:
         else:
             level = logging.INFO
         self._logger.setLevel(level)
-
-    def _get_writable_log_path(self, preferred_path: str) -> Optional[str]:
-        """
-        書き込み可能なログファイルパスを取得します
-
-        Args:
-            preferred_path: 希望するログファイルパス
-
-        Returns:
-            書き込み可能なログファイルパス、失敗した場合はNone
-        """
-        import tempfile
-
-        # まず希望するパスでディレクトリ作成を試行
-        log_dir = os.path.dirname(preferred_path)
-        if log_dir:
-            try:
-                os.makedirs(log_dir, exist_ok=True)
-                # ディレクトリが作成できた場合、ファイルの書き込みテスト
-                test_file = preferred_path + ".test"
-                try:
-                    with open(test_file, "w") as f:
-                        f.write("test")
-                    os.remove(test_file)
-                    return preferred_path
-                except (OSError, IOError):
-                    pass
-            except (OSError, IOError, PermissionError):
-                pass
-
-        # 希望するパスでディレクトリ作成に失敗した場合、一時ディレクトリを使用
-        try:
-            temp_dir = tempfile.gettempdir()
-            temp_log_dir = os.path.join(temp_dir, "maya_mmd_tools")
-            os.makedirs(temp_log_dir, exist_ok=True)
-
-            log_filename = os.path.basename(preferred_path)
-            if not log_filename:
-                log_filename = "mmd_tools.log"
-
-            fallback_path = os.path.join(temp_log_dir, log_filename)
-
-            # 一時ディレクトリでの書き込みテスト
-            test_file = fallback_path + ".test"
-            with open(test_file, "w") as f:
-                f.write("test")
-            os.remove(test_file)
-
-            print(f"警告: ログファイルを一時ディレクトリに作成します: {fallback_path}")
-            return fallback_path
-
-        except (OSError, IOError, PermissionError):
-            # 一時ディレクトリでも失敗した場合、ファイルハンドラーを無効化
-            print("警告: ログファイルの作成に失敗しました。ファイルログは無効です。")
-            return None
 
     def _safe_log(self, level: int, message: str, *args, **kwargs) -> None:
         """

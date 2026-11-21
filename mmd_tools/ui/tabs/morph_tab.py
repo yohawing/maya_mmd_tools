@@ -259,6 +259,34 @@ class MorphTab(BaseTab):
         layout.addLayout(work_layout)
         return widget
 
+    def _panel_labels(self):
+        return [
+            self.tr("none", "morph_panels"),
+            self.tr("eyebrows_lower_left", "morph_panels"),
+            self.tr("eyes_upper_left", "morph_panels"),
+            self.tr("mouth_upper_right", "morph_panels"),
+            self.tr("other_lower_right", "morph_panels"),
+        ]
+
+    def _morph_type_labels(self):
+        return [
+            self.tr("vertex", "morph_types"),
+            "UV",
+            "UV1",
+            "UV2",
+            "UV3",
+            "UV4",
+            self.tr("additional_uv1", "morph_types"),
+            self.tr("additional_uv2", "morph_types"),
+            self.tr("additional_uv3", "morph_types"),
+            self.tr("additional_uv4", "morph_types"),
+            self.tr("bone", "morph_types"),
+            self.tr("material", "morph_types"),
+            self.tr("group", "morph_types"),
+            self.tr("flip", "morph_types"),
+            self.tr("impulse", "morph_types"),
+        ]
+
     def _create_basic_info_tab(self):
         """基本情報タブを作成"""
         widget = QWidget()
@@ -278,15 +306,7 @@ class MorphTab(BaseTab):
         panel_layout = QHBoxLayout()
         self.panel_combo = QComboBox()
         self.panel_combo.setObjectName("morphPanelCombo")
-        self.panel_combo.addItems(
-            [
-                self.tr("none", "morph_panels"),
-                self.tr("eyebrows_lower_left", "morph_panels"),
-                self.tr("eyes_upper_left", "morph_panels"),
-                self.tr("mouth_upper_right", "morph_panels"),
-                self.tr("other_lower_right", "morph_panels"),
-            ]
-        )
+        self.panel_combo.addItems(self._panel_labels())
         panel_layout.addWidget(self.panel_combo)
         self.panel_label = QLabel(self.tr("panel", "fields"))
         layout.addRow(self.panel_label, panel_layout)
@@ -294,25 +314,7 @@ class MorphTab(BaseTab):
         # モーフタイプ
         self.morph_type_combo = QComboBox()
         self.morph_type_combo.setObjectName("morphTypeCombo")
-        self.morph_type_combo.addItems(
-            [
-                self.tr("vertex", "morph_types"),
-                "UV",
-                "UV1",
-                "UV2",
-                "UV3",
-                "UV4",
-                self.tr("additional_uv1", "morph_types"),
-                self.tr("additional_uv2", "morph_types"),
-                self.tr("additional_uv3", "morph_types"),
-                self.tr("additional_uv4", "morph_types"),
-                self.tr("bone", "morph_types"),
-                self.tr("material", "morph_types"),
-                self.tr("group", "morph_types"),
-                self.tr("flip", "morph_types"),
-                self.tr("impulse", "morph_types"),
-            ]
-        )
+        self.morph_type_combo.addItems(self._morph_type_labels())
         self.morph_type_label = QLabel(self.tr("type", "fields"))
         layout.addRow(self.morph_type_label, self.morph_type_combo)
 
@@ -440,34 +442,8 @@ class MorphTab(BaseTab):
 
         # ComboBox items - Panel
         self.panel_combo.clear()
-        self.panel_combo.addItems(
-            [
-                self.tr("none", "morph_panels"),
-                self.tr("eyebrows_lower_left", "morph_panels"),
-                self.tr("eyes_upper_left", "morph_panels"),
-                self.tr("mouth_upper_right", "morph_panels"),
-                self.tr("other_lower_right", "morph_panels"),
-            ]
-        )
+        self.panel_combo.addItems(self._panel_labels())
 
         # ComboBox items - Morph Type
         self.morph_type_combo.clear()
-        self.morph_type_combo.addItems(
-            [
-                self.tr("vertex", "morph_types"),
-                "UV",
-                "UV1",
-                "UV2",
-                "UV3",
-                "UV4",
-                self.tr("additional_uv1", "morph_types"),
-                self.tr("additional_uv2", "morph_types"),
-                self.tr("additional_uv3", "morph_types"),
-                self.tr("additional_uv4", "morph_types"),
-                self.tr("bone", "morph_types"),
-                self.tr("material", "morph_types"),
-                self.tr("group", "morph_types"),
-                self.tr("flip", "morph_types"),
-                self.tr("impulse", "morph_types"),
-            ]
-        )
+        self.morph_type_combo.addItems(self._morph_type_labels())

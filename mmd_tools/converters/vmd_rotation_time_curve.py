@@ -330,7 +330,7 @@ def record_vmd_rotation_time_curve_metadata(
 
 def capture_vmd_rotation_time_curve_snapshot(metadata: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     """Capture UUID-owned time curves before an Experimental re-import."""
-    from mmd_tools.core.mmd_control_rig_motion import _capture_animation_curve_payload
+    from mmd_tools.core.animation_curve_snapshot import capture_animation_curve_payload
 
     snapshot = []
     for record in (metadata or {}).get("rotationTimeCurves", []) or []:
@@ -342,7 +342,7 @@ def capture_vmd_rotation_time_curve_snapshot(metadata: Mapping[str, Any] | None)
             {
                 "uuid": uuid,
                 "node": node,
-                "payload": _capture_animation_curve_payload(cmds, node),
+                "payload": capture_animation_curve_payload(cmds, node),
                 "destinations": list(
                     cmds.listConnections(
                         f"{node}.output",
@@ -370,9 +370,9 @@ def restore_vmd_rotation_time_curve_snapshot(
     attempted_records: Iterable[Mapping[str, Any]] = (),
 ) -> None:
     """Restore prior TT payloads and remove nodes created by a failed import."""
-    from mmd_tools.core.mmd_control_rig_motion import (
-        _clear_animation_curve_keys,
-        _restore_animation_curve_payload,
+    from mmd_tools.core.animation_curve_snapshot import (
+        clear_animation_curve_keys,
+        restore_animation_curve_payload,
     )
 
     rows = list(snapshot or [])
@@ -410,14 +410,14 @@ def restore_vmd_rotation_time_curve_snapshot(
                 cmds.connectAttr(output, destination, force=False)
         payload = row.get("payload") or {}
         if not payload.get("captureFailed") and "keys" in payload:
-            _clear_animation_curve_keys(cmds, node)
+            clear_animation_curve_keys(cmds, node)
             for key in payload.get("keys", []):
                 cmds.setKeyframe(
                     node,
                     time=float(key.get("time", 0.0)),
                     value=float(key.get("value", 0.0)),
                 )
-            _restore_animation_curve_payload(cmds, node, payload)
+            restore_animation_curve_payload(cmds, node, payload)
         for attr, value in (row.get("markers") or {}).items():
             _set_marker(node, str(attr), value, "string")
 

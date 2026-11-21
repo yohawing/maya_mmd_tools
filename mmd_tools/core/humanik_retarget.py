@@ -347,6 +347,25 @@ def diff_humanik_connections(
     return rows
 
 
+def _read_probe_scalar(cmds, joint, plug, axis, legacy):
+    """Return the scalar and, for compound reads, its translate vector."""
+    if legacy:
+        vector = _get_vector_attr(cmds, joint, "translate")
+        return float(vector[axis]), vector
+    return _get_scalar_attr(cmds, plug), None
+
+
+def _write_probe_scalar(cmds, joint, plug, axis, legacy, value, vector=None):
+    """Reuse the initial vector for the probe and read the current vector for restoration."""
+    if legacy:
+        if vector is None:
+            vector = _get_vector_attr(cmds, joint, "translate")
+        vector[axis] = value
+        cmds.setAttr(f"{joint}.translate", vector[0], vector[1], vector[2], type="double3")
+    else:
+        cmds.setAttr(plug, value)
+
+
 def verify_root_locomotion(
     driver_joint: str,
     affected_joints: Mapping[str, Sequence[str]] | Sequence[str],
@@ -490,37 +509,20 @@ def verify_root_locomotion(
     selected_joint = str(selected["candidate"])
     selected_axis = int(selected["selectedAxis"])
     selected_plug = str(selected["selectedPlug"])
+    probe = (cmds, selected_joint, selected_plug, selected_axis, legacy_vector_fallback)
     original_scalar: Optional[float] = None
     after_matrices: Dict[str, List[float]] = {}
     write_error: Optional[str] = None
     try:
-        if legacy_vector_fallback:
-            original_vector = _get_vector_attr(cmds, selected_joint, "translate")
-            original_scalar = float(original_vector[selected_axis])
-            base_report["originalScalar"] = original_scalar
-            updated_vector = list(original_vector)
-            updated_vector[selected_axis] += float(delta[selected_axis])
-            base_report["requestedScalar"] = updated_vector[selected_axis]
-            cmds.setAttr(
-                f"{selected_joint}.translate",
-                updated_vector[0],
-                updated_vector[1],
-                updated_vector[2],
-                type="double3",
-            )
-        else:
-            original_scalar = _get_scalar_attr(cmds, selected_plug)
-            base_report["originalScalar"] = original_scalar
-            base_report["requestedScalar"] = original_scalar + float(delta[selected_axis])
-            cmds.setAttr(selected_plug, original_scalar + float(delta[selected_axis]))
+        original_scalar, original_vector = _read_probe_scalar(*probe)
+        base_report["originalScalar"] = original_scalar
+        requested_scalar = original_scalar + float(delta[selected_axis])
+        base_report["requestedScalar"] = requested_scalar
+        _write_probe_scalar(*probe, requested_scalar, original_vector)
         # This flag is intentionally set before the finally restoration so a
         # successful temporary write cannot be lost from the diagnostic.
         base_report["writeSucceeded"] = True
-        if legacy_vector_fallback:
-            readback_vector = _get_vector_attr(cmds, selected_joint, "translate")
-            readback = float(readback_vector[selected_axis])
-        else:
-            readback = _get_scalar_attr(cmds, selected_plug)
+        readback, _ = _read_probe_scalar(*probe)
         base_report["readback"] = readback
         expected_readback = float(original_scalar) + float(delta[selected_axis])
         base_report["writeReadbackPassed"] = abs(readback - expected_readback) <= float(tolerance)
@@ -532,24 +534,9 @@ def verify_root_locomotion(
         if original_scalar is not None:
             base_report["restoreAttempted"] = True
             try:
-                if legacy_vector_fallback:
-                    restore_vector = _get_vector_attr(cmds, selected_joint, "translate")
-                    restore_vector[selected_axis] = original_scalar
-                    cmds.setAttr(
-                        f"{selected_joint}.translate",
-                        restore_vector[0],
-                        restore_vector[1],
-                        restore_vector[2],
-                        type="double3",
-                    )
-                else:
-                    cmds.setAttr(selected_plug, original_scalar)
+                _write_probe_scalar(*probe, original_scalar)
                 _force_evaluation(cmds)
-                if legacy_vector_fallback:
-                    restored_vector = _get_vector_attr(cmds, selected_joint, "translate")
-                    restore_readback = float(restored_vector[selected_axis])
-                else:
-                    restore_readback = _get_scalar_attr(cmds, selected_plug)
+                restore_readback, _ = _read_probe_scalar(*probe)
                 base_report["restoreReadback"] = restore_readback
                 restore_matches = abs(restore_readback - float(original_scalar)) <= float(tolerance)
                 base_report["restoreReadbackPassed"] = bool(restore_matches)

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+from mmd_tools.core.maya_name_utils import dag_leaf_name as _node_leaf
 from mmd_tools.core.maya_name_utils import sanitize_bone_name, sanitize_text, sanitize_unique_name
 from mmd_tools.core.unicode_converter import get_converter
 
@@ -197,10 +198,6 @@ def build_translation_plan(
 
 def _entry_sort_key(entry: NameEntry) -> Tuple[str, int, str]:
     return (entry.kind, entry.index if entry.index is not None else 2**31 - 1, entry.node)
-
-
-def _node_leaf(node: str) -> str:
-    return str(node).rsplit("|", 1)[-1]
 
 
 def collect_name_entries(model_root: str, *, cmds_module=None) -> Tuple[NameEntry, ...]:

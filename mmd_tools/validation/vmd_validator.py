@@ -7,7 +7,7 @@ import struct
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..core.vmd_data import VmdData
-from .export_validator import ExportValidationIssue, ExportValidationReport
+from .export_validator import ExportValidationIssue, ExportValidationReport, blocking_issue
 
 
 VMD_EXPORT_BAKE_TIMELINE = "bake_timeline"
@@ -37,6 +37,7 @@ _STREAM_METADATA_NAMES = {
     "shadow_frames": "shadows",
     "ik_show_hide_frames": "ik",
 }
+_STREAM_METADATA_KEYS = frozenset(_STREAM_METADATA_NAMES.values())
 _VMD_SIGNATURE = b"Vocaloid Motion Data"
 _VMD_SIGNATURE_V2 = b"Vocaloid Motion Data 0002"
 
@@ -49,18 +50,9 @@ def _issue(
     details: Optional[Mapping[str, Any]] = None,
 ) -> ExportValidationIssue:
     """Create a deterministic blocking VMD issue."""
-    issue_details = dict(details or {})
-    issue_details.setdefault("field", path)
     if code == "OUTPUT_VERIFY_FAILED":
-        issue_details.setdefault("phase", "verify")
-    return ExportValidationIssue(
-        code,
-        "fatal",
-        True,
-        path,
-        message,
-        details=issue_details,
-    )
+        details = {"phase": "verify", **(details or {})}
+    return blocking_issue(code, path, message, details=details)
 
 
 def _normalize_frame_range(
@@ -500,32 +492,73 @@ def _stream_finite(
         )
 
 
-def verify_vmd_output_streaming(
-    file_path: str,
-    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
-    *,
-    expected_counts: Optional[Mapping[str, int]] = None,
-    expected_bounds: Optional[Mapping[str, Any]] = None,
-    expected_sha256: Optional[str] = None,
-    expected_size: Optional[int] = None,
-    expected_frame_range: Optional[Tuple[int, int]] = None,
-) -> ExportValidationReport:
-    """Verify a VMD file one wire record at a time.
+def _stream_check_fixed_record(
+    section: str,
+    raw: bytes,
+    path: str,
+    issues: List[ExportValidationIssue],
+) -> int:
+    """Validate a fixed-length VMD record and return its frame number."""
+    if section == "bone_frames":
+        _stream_name(raw[:15], path + ".bone_name", issues)
+        frame_number = struct.unpack_from("<I", raw, 15)[0]
+        position = struct.unpack_from("<fff", raw, 19)
+        rotation = struct.unpack_from("<ffff", raw, 31)
+        _stream_finite(position, path + ".position", issues)
+        _stream_finite(rotation, path + ".rotation", issues)
+        norm = math.sqrt(sum(value * value for value in rotation))
+        if not math.isfinite(norm) or norm <= 1.0e-12:
+            _stream_issue(
+                issues,
+                "OUTPUT_VERIFY_FAILED",
+                path + ".rotation",
+                "VMD quaternion must not be zero",
+            )
+    elif section == "morph_frames":
+        _stream_name(raw[:15], path + ".morph_name", issues)
+        frame_number = struct.unpack_from("<I", raw, 15)[0]
+        _stream_finite((struct.unpack_from("<f", raw, 19)[0],), path + ".value", issues)
+    elif section == "camera_frames":
+        frame_number = struct.unpack_from("<I", raw, 0)[0]
+        distance = struct.unpack_from("<f", raw, 4)[0]
+        position = struct.unpack_from("<fff", raw, 8)
+        rotation = struct.unpack_from("<fff", raw, 20)
+        _stream_finite((distance,), path + ".distance", issues)
+        _stream_finite(position, path + ".position", issues)
+        _stream_finite(rotation, path + ".rotation", issues)
+        perspective = raw[60]
+        if perspective not in (0, 1):
+            _stream_issue(
+                issues,
+                "OUTPUT_VERIFY_FAILED",
+                path + ".perspective",
+                "VMD perspective must be 0 or 1",
+            )
+    elif section == "light_frames":
+        frame_number = struct.unpack_from("<I", raw, 0)[0]
+        _stream_finite(struct.unpack_from("<fff", raw, 4), path + ".color", issues)
+        _stream_finite(struct.unpack_from("<fff", raw, 16), path + ".position", issues)
+    else:
+        frame_number = struct.unpack_from("<I", raw, 0)[0]
+        if raw[4] not in (0, 1, 2):
+            _stream_issue(
+                issues,
+                "OUTPUT_VERIFY_FAILED",
+                path + ".mode",
+                "VMD shadow mode must be 0, 1, or 2",
+            )
+        _stream_finite((struct.unpack_from("<f", raw, 5)[0],), path + ".distance", issues)
+    return frame_number
 
-    Unlike :func:`verify_vmd_output`, this verifier never constructs
-    ``VmdData`` or retains frame/name objects.  It accepts the optional tail
-    sections used by legacy VMD writers, while requiring each section that is
-    present to have a complete count and complete records.  The stream writer
-    emits all six canonical count fields, including an empty IK section.
-    """
-    normalized_strategy = str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
-    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
-        normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
-    issues: List[ExportValidationIssue] = []
-    metadata_names = frozenset(_STREAM_METADATA_NAMES.values())
+
+def _canonical_stream_counts(
+    expected_counts: Optional[Mapping[str, int]],
+    issues: List[ExportValidationIssue],
+) -> Optional[Dict[str, int]]:
+    """Validate expected counts and return them keyed by VMD section."""
     canonical_counts: Optional[Dict[str, int]] = None
     if expected_counts is not None:
-        counts_are_canonical = isinstance(expected_counts, Mapping) and set(expected_counts) == metadata_names
+        counts_are_canonical = isinstance(expected_counts, Mapping) and set(expected_counts) == _STREAM_METADATA_KEYS
         if counts_are_canonical:
             canonical_counts = {
                 section: expected_counts[name]
@@ -543,14 +576,21 @@ def verify_vmd_output_streaming(
                 "expected_counts",
                 "VMD stream counts must declare exactly six canonical unsigned 32-bit counts",
                 details={
-                    "expected_count_contract": sorted(metadata_names),
+                    "expected_count_contract": sorted(_STREAM_METADATA_KEYS),
                     "actual_type": type(expected_counts).__name__,
                 },
             )
+    return canonical_counts
 
+
+def _canonical_stream_bounds(
+    expected_bounds: Optional[Mapping[str, Any]],
+    issues: List[ExportValidationIssue],
+) -> Optional[Dict[str, Tuple[Optional[int], Optional[int]]]]:
+    """Validate expected bounds and return them keyed by VMD section."""
     canonical_bounds: Optional[Dict[str, Tuple[Optional[int], Optional[int]]]] = None
     if expected_bounds is not None:
-        bounds_are_canonical = isinstance(expected_bounds, Mapping) and set(expected_bounds) == metadata_names
+        bounds_are_canonical = isinstance(expected_bounds, Mapping) and set(expected_bounds) == _STREAM_METADATA_KEYS
         if bounds_are_canonical:
             try:
                 canonical_bounds = {
@@ -577,10 +617,37 @@ def verify_vmd_output_streaming(
                 "expected_bounds",
                 "VMD stream bounds must declare six canonical minimum/maximum pairs",
                 details={
-                    "expected_bounds_contract": sorted(metadata_names),
+                    "expected_bounds_contract": sorted(_STREAM_METADATA_KEYS),
                     "actual_type": type(expected_bounds).__name__,
                 },
             )
+    return canonical_bounds
+
+
+def verify_vmd_output_streaming(
+    file_path: str,
+    export_strategy: str = VMD_EXPORT_BAKE_TIMELINE,
+    *,
+    expected_counts: Optional[Mapping[str, int]] = None,
+    expected_bounds: Optional[Mapping[str, Any]] = None,
+    expected_sha256: Optional[str] = None,
+    expected_size: Optional[int] = None,
+    expected_frame_range: Optional[Tuple[int, int]] = None,
+) -> ExportValidationReport:
+    """Verify a VMD file one wire record at a time.
+
+    Unlike :func:`verify_vmd_output`, this verifier never constructs
+    ``VmdData`` or retains frame/name objects.  It accepts the optional tail
+    sections used by legacy VMD writers, while requiring each section that is
+    present to have a complete count and complete records.  The stream writer
+    emits all six canonical count fields, including an empty IK section.
+    """
+    normalized_strategy = str(export_strategy or VMD_EXPORT_BAKE_TIMELINE).lower()
+    if normalized_strategy not in VMD_EXPORT_STRATEGIES:
+        normalized_strategy = VMD_EXPORT_BAKE_TIMELINE
+    issues: List[ExportValidationIssue] = []
+    canonical_counts = _canonical_stream_counts(expected_counts, issues)
+    canonical_bounds = _canonical_stream_bounds(expected_bounds, issues)
 
     normalized_frame_range, frame_range_issue = _normalize_frame_range(expected_frame_range)
     if frame_range_issue is not None:
@@ -765,55 +832,7 @@ def verify_vmd_output_streaming(
                             if raw is None:
                                 stopped = True
                                 break
-                            if section == "bone_frames":
-                                _stream_name(raw[:15], path + ".bone_name", issues)
-                                frame_number = struct.unpack_from("<I", raw, 15)[0]
-                                position = struct.unpack_from("<fff", raw, 19)
-                                rotation = struct.unpack_from("<ffff", raw, 31)
-                                _stream_finite(position, path + ".position", issues)
-                                _stream_finite(rotation, path + ".rotation", issues)
-                                norm = math.sqrt(sum(value * value for value in rotation))
-                                if not math.isfinite(norm) or norm <= 1.0e-12:
-                                    _stream_issue(
-                                        issues,
-                                        "OUTPUT_VERIFY_FAILED",
-                                        path + ".rotation",
-                                        "VMD quaternion must not be zero",
-                                    )
-                            elif section == "morph_frames":
-                                _stream_name(raw[:15], path + ".morph_name", issues)
-                                frame_number = struct.unpack_from("<I", raw, 15)[0]
-                                _stream_finite((struct.unpack_from("<f", raw, 19)[0],), path + ".value", issues)
-                            elif section == "camera_frames":
-                                frame_number = struct.unpack_from("<I", raw, 0)[0]
-                                distance = struct.unpack_from("<f", raw, 4)[0]
-                                position = struct.unpack_from("<fff", raw, 8)
-                                rotation = struct.unpack_from("<fff", raw, 20)
-                                _stream_finite((distance,), path + ".distance", issues)
-                                _stream_finite(position, path + ".position", issues)
-                                _stream_finite(rotation, path + ".rotation", issues)
-                                perspective = raw[60]
-                                if perspective not in (0, 1):
-                                    _stream_issue(
-                                        issues,
-                                        "OUTPUT_VERIFY_FAILED",
-                                        path + ".perspective",
-                                        "VMD perspective must be 0 or 1",
-                                    )
-                            elif section == "light_frames":
-                                frame_number = struct.unpack_from("<I", raw, 0)[0]
-                                _stream_finite(struct.unpack_from("<fff", raw, 4), path + ".color", issues)
-                                _stream_finite(struct.unpack_from("<fff", raw, 16), path + ".position", issues)
-                            else:
-                                frame_number = struct.unpack_from("<I", raw, 0)[0]
-                                if raw[4] not in (0, 1, 2):
-                                    _stream_issue(
-                                        issues,
-                                        "OUTPUT_VERIFY_FAILED",
-                                        path + ".mode",
-                                        "VMD shadow mode must be 0, 1, or 2",
-                                    )
-                                _stream_finite((struct.unpack_from("<f", raw, 5)[0],), path + ".distance", issues)
+                            frame_number = _stream_check_fixed_record(section, raw, path, issues)
                             record_frame(section, frame_number, path)
                         if stopped:
                             consume_remaining(handle)

@@ -5,22 +5,16 @@ It normalizes command availability, exit codes, JSON diagnostics, roundtrip
 status, and basic counts into the local ``ExportValidationReport`` contract.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 import json
 from pathlib import Path
 import subprocess
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .export_validator import ExportValidationIssue, ExportValidationReport
+from .export_validator import ExportValidationIssue, ExportValidationReport, is_sequence
 
 
-_TEXT_SEQUENCE_TYPES = (str, bytes, bytearray)
 _Runner = Callable[..., Any]
-
-
-def _is_sequence(value: Any) -> bool:
-    """Return whether *value* is a non-text sequence."""
-    return isinstance(value, Sequence) and not isinstance(value, _TEXT_SEQUENCE_TYPES)
 
 
 def _issue(
@@ -42,11 +36,11 @@ def _issue(
 
 def _triangulated_face_count(faces: Any) -> Optional[int]:
     """Return writer-equivalent triangle count for a collector face table."""
-    if not _is_sequence(faces):
+    if not is_sequence(faces):
         return None
     triangles = 0
     for face in faces:
-        if not _is_sequence(face) or len(face) < 3:
+        if not is_sequence(face) or len(face) < 3:
             return None
         triangles += 1 if len(face) == 3 else len(face) - 2
     return triangles
@@ -58,18 +52,18 @@ def _expected_counts(model_data: Optional[Mapping]) -> Dict[str, int]:
         return {}
     counts: Dict[str, int] = {}
     vertices = model_data.get("vertices")
-    if _is_sequence(vertices):
+    if is_sequence(vertices):
         counts["vertices"] = len(vertices)
     faces = _triangulated_face_count(model_data.get("faces"))
     if faces is not None:
         counts["faces"] = faces
     materials = model_data.get("materials")
-    if _is_sequence(materials):
+    if is_sequence(materials):
         counts["materials"] = len(materials) if materials else 1
     bones = model_data.get("bones")
     if bones is None:
         counts["bones"] = 1
-    elif _is_sequence(bones):
+    elif is_sequence(bones):
         counts["bones"] = len(bones)
     for source_name, report_name in (
         ("morphs", "morphs"),
@@ -77,7 +71,7 @@ def _expected_counts(model_data: Optional[Mapping]) -> Dict[str, int]:
         ("joints", "joints"),
     ):
         value = model_data.get(source_name)
-        if _is_sequence(value):
+        if is_sequence(value):
             counts[report_name] = len(value)
     return counts
 

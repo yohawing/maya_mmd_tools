@@ -10,8 +10,6 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from tests.common.physics_rotation_oracle import legacy_native_reference_pmx_bytes
-
 from maya import cmds
 
 from mmd_tools.core.constants import (
@@ -32,6 +30,7 @@ from tests.integration.test_physics_solver_node import (
     _connect_enabled_world,
     _model_physics_solvers,
     _solver_world_gravity,
+    _solver_world_tick_config,
 )
 
 
@@ -117,12 +116,10 @@ class TestImportRoutePhysics(MayaTestBase):
                 msg=f"{label}[{index}]",
             )
 
-    def _native_live_oracle(self, gravity):
+    def _native_live_oracle(self, gravity, tick_config):
         """Reuse the DAG parity split-evaluation helper for the PMX oracle."""
         world = MmdRuntimePhysicsWorld.from_pmx_bytes(
-            legacy_native_reference_pmx_bytes(
-                parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
-            )
+            self.pmx_bytes
         )
         self.assertIsNotNone(world, "native PMX physics world creation")
         try:
@@ -131,6 +128,7 @@ class TestImportRoutePhysics(MayaTestBase):
                 self,
                 world,
                 num_steps=LIVE_STEPS,
+                tick_config=tick_config,
             )
         finally:
             world.free()
@@ -209,7 +207,7 @@ class TestImportRoutePhysics(MayaTestBase):
                 changed_bones += 1
         self.assertGreater(changed_bones, 0, f"{route.value} live physics response")
 
-        oracle = self._native_live_oracle(gravity)
+        oracle = self._native_live_oracle(gravity, _solver_world_tick_config(solver))
         self._assert_matrices_close(
             after,
             oracle,
@@ -270,7 +268,7 @@ class TestImportRoutePhysics(MayaTestBase):
         )
 
     def test_python_and_cpp_routes_match_live_physics_and_native_oracle(self):
-        """Both routes agree with the normalized legacy native reference and reopen."""
+        """Both routes agree with the raw PMX native reference and reopen."""
         results = {}
         for route in ImportRoute:
             with self.subTest(route=route.value):

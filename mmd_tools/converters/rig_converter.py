@@ -613,37 +613,9 @@ class RigConverter:
                     grant_rate = bone.grant_rate
                     offset_flag = not is_local_given  # ローカル付与の場合はオフセットを維持しない
 
-                    if grant_rate == -1:
-                        # -1は付与親の回転の逆を適用する。 （一時的にUpベクトルに固定。）
-                        grant_reference = self._get_grant_reference_node(maya_joints, grant_reference)
-                        constraint = cmds.orientConstraint(
-                            [grant_reference, parent_joint],
-                            joint,
-                            maintainOffset=offset_flag,
-                        )[0]
-                        self._mark_mmd_grant_constraint(constraint)
-                        self._set_constraint_target_weights(constraint, [1.0, 0.0])
-                    elif 0 <= grant_rate < 1:
-                        # ０～１のときは、付与親の回転を部分的に適用する。
-                        grant_reference = self._get_grant_reference_node(maya_joints, grant_reference)
-                        constraint = cmds.orientConstraint(
-                            [grant_reference, parent_joint],
-                            joint,
-                            maintainOffset=offset_flag,
-                        )[0]
-                        self._mark_mmd_grant_constraint(constraint)
-                        self._set_constraint_target_weights(constraint, [1.0 - grant_rate, grant_rate])
-                    elif grant_rate == 1:
-                        constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=1.0)[0]
-                        self._mark_mmd_grant_constraint(constraint)
-                    else:
-                        constraint = cmds.orientConstraint(
-                            parent_joint,
-                            joint,
-                            maintainOffset=offset_flag,
-                            weight=grant_rate,
-                        )[0]
-                        self._mark_mmd_grant_constraint(constraint)
+                    constraint, grant_reference = self._create_rotation_grant_constraint(
+                        joint, parent_joint, grant_rate, offset_flag, maya_joints, grant_reference
+                    )
 
                     constraints.append(constraint)
                     given_type = "local append" if is_local_given else "global append"
@@ -668,6 +640,25 @@ class RigConverter:
                     )
 
         return constraints
+
+    def _create_rotation_grant_constraint(self, joint, parent_joint, grant_rate, maintain_offset, maya_joints, grant_reference):
+        """Create a legacy rotation grant and return its constraint and cached reference."""
+        # -1 applies the inverse of the grant parent's rotation (temporarily
+        # pinned to the up vector); 0..1 applies it partially.  Both blend
+        # against the shared reference node.
+        uses_reference = grant_rate == -1 or 0 <= grant_rate < 1
+        if uses_reference:
+            grant_reference = self._get_grant_reference_node(maya_joints, grant_reference)
+            constraint = cmds.orientConstraint([grant_reference, parent_joint], joint, maintainOffset=maintain_offset)[0]
+        else:
+            weight = 1.0 if grant_rate == 1 else grant_rate
+            constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=maintain_offset, weight=weight)[0]
+
+        self._mark_mmd_grant_constraint(constraint)
+        if uses_reference:
+            weights = [1.0, 0.0] if grant_rate == -1 else [1.0 - grant_rate, grant_rate]
+            self._set_constraint_target_weights(constraint, weights)
+        return constraint, grant_reference
 
     def _drop_cycle_closing_grants(
         self,
@@ -984,6 +975,20 @@ class RigConverter:
             # provide world matrices.
             return
 
+    def _redirect_append_target_channel(self, node: str, target_joint: str, channel: str) -> None:
+        """各軸の既存入力を付与ノードに移し、その出力をジョイントに接続する。"""
+        suffix = channel.capitalize()
+        target_plug = f"{target_joint}.{channel}"
+        for axis in ("X", "Y", "Z"):
+            axis_plug = f"{target_plug}{axis}"
+            anim_src = cmds.listConnections(axis_plug, s=True, d=False, p=True)
+            if anim_src:
+                cmds.disconnectAttr(anim_src[0], axis_plug)
+                cmds.connectAttr(anim_src[0], f"{node}.base{suffix}{axis}")
+
+        for axis in "XYZ":
+            cmds.connectAttr(f"{node}.output{suffix}{axis}", f"{target_plug}{axis}")
+
     def _create_append_nodes_from_manifest(
         self,
         manifest,
@@ -1096,18 +1101,7 @@ class RigConverter:
                             cmds.disconnectAttr(conn, f"{target_joint}.rotate")
                         except Exception:
                             pass
-                    # Wire: baseRotate from animation (if curves exist),
-                    # then node.outputRotate → joint.rotate.
-                    for axis in ("X", "Y", "Z"):
-                        anim_src = cmds.listConnections(
-                            f"{target_joint}.rotate{axis}", s=True, d=False, p=True
-                        )
-                        if anim_src:
-                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.rotate{axis}")
-                            cmds.connectAttr(anim_src[0], f"{node}.baseRotate{axis}")
-
-                    for axis in "XYZ":
-                        cmds.connectAttr(f"{node}.outputRotate{axis}", f"{target_joint}.rotate{axis}")
+                    self._redirect_append_target_channel(node, target_joint, "rotate")
 
                 if affect_translation:
                     target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
@@ -1118,16 +1112,7 @@ class RigConverter:
                         target_rest_translate[2],
                         type="double3",
                     )
-                    for axis in ("X", "Y", "Z"):
-                        anim_src = cmds.listConnections(
-                            f"{target_joint}.translate{axis}", s=True, d=False, p=True
-                        )
-                        if anim_src:
-                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
-                            cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
-
-                    for axis in "XYZ":
-                        cmds.connectAttr(f"{node}.outputTranslate{axis}", f"{target_joint}.translate{axis}")
+                    self._redirect_append_target_channel(node, target_joint, "translate")
 
                 if not cmds.attributeQuery("mmd_grant_node", node=node, exists=True):
                     cmds.addAttr(node, longName="mmd_grant_node", attributeType="bool")

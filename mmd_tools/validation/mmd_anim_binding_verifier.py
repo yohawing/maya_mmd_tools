@@ -13,7 +13,7 @@ from pathlib import Path
 import sys
 from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
-from .export_validator import ExportValidationIssue, ExportValidationReport
+from .export_validator import ExportValidationIssue, ExportValidationReport, blocking_issue
 
 
 MAX_ERROR_LENGTH = 256
@@ -28,16 +28,7 @@ def _issue(
     details: Optional[Mapping[str, Any]] = None,
 ) -> ExportValidationIssue:
     """Build one blocking binding issue with bounded human-facing text."""
-    issue_details = dict(details or {})
-    issue_details.setdefault("field", path)
-    return ExportValidationIssue(
-        code,
-        "fatal",
-        True,
-        path,
-        str(message)[:MAX_ERROR_LENGTH],
-        details=issue_details,
-    )
+    return blocking_issue(code, path, str(message)[:MAX_ERROR_LENGTH], details=details)
 
 
 def _report(issues: Sequence[ExportValidationIssue]) -> ExportValidationReport:

@@ -139,17 +139,7 @@ def _create_keyframes_for_namespace(namespace: Optional[str], frame: float) -> N
 
     joints = cmds.ls(pattern, type="joint")
 
-    for joint in joints:
-        # 回転のキーフレームを作成
-        cmds.setKeyframe(joint, attribute="rotateX", time=frame)
-        cmds.setKeyframe(joint, attribute="rotateY", time=frame)
-        cmds.setKeyframe(joint, attribute="rotateZ", time=frame)
-
-        # 移動可能なジョイント（センターなど）の場合は位置もキーフレーム化
-        if _is_movable_joint(joint):
-            cmds.setKeyframe(joint, attribute="translateX", time=frame)
-            cmds.setKeyframe(joint, attribute="translateY", time=frame)
-            cmds.setKeyframe(joint, attribute="translateZ", time=frame)
+    _key_joints(joints, frame)
 
     logger.debug(f"Created keyframes for {len(joints)} joints at frame {frame}")
 
@@ -166,17 +156,23 @@ def _create_keyframes_for_target(
     if cmds.nodeType(target_model) == "joint":
         joints.append(target_model)
 
+    _key_joints(joints, frame)
+
+    logger.debug(f"Created keyframes for {len(joints)} target joints at frame {frame}")
+
+
+def _key_joints(joints, frame):
     for joint in joints:
+        # 回転のキーフレームを作成
         cmds.setKeyframe(joint, attribute="rotateX", time=frame)
         cmds.setKeyframe(joint, attribute="rotateY", time=frame)
         cmds.setKeyframe(joint, attribute="rotateZ", time=frame)
 
+        # 移動可能なジョイント（センターなど）の場合は位置もキーフレーム化
         if _is_movable_joint(joint):
             cmds.setKeyframe(joint, attribute="translateX", time=frame)
             cmds.setKeyframe(joint, attribute="translateY", time=frame)
             cmds.setKeyframe(joint, attribute="translateZ", time=frame)
-
-    logger.debug(f"Created keyframes for {len(joints)} target joints at frame {frame}")
 
 
 def _is_movable_joint(joint_name: str) -> bool:

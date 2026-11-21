@@ -47,6 +47,7 @@ from ..translations import UITranslator
 
 if TYPE_CHECKING:
     from ..application_state import ApplicationState
+    from ..widgets.morph_editor_widgets import MorphRowWidget
 
 logger = get_logger(__name__)
 
@@ -875,44 +876,28 @@ class AnimationPresenter:
                 if resolved:
                     known_joints.add(resolved)
 
-        cmds_module = getattr(self.maya_adapter, "_cmds", None)
-        control_inspection = None
-        control_error = False
-        if root and cmds_module is not None:
-            try:
-                control_inspection = inspect_mmd_control_rig(
-                    root, cmds_module=cmds_module
-                )
-            except Exception:
-                control_error = True
+        boundary = self._control_rig_selection_boundary(root)
+        if boundary:
+            boundaries.append(boundary)
+        return tuple(boundaries), known_joints
 
-        if control_inspection is not None:
-            control_group = getattr(control_inspection, "control_group", None)
-            if isinstance(control_group, str) and control_group:
-                controls = set()
-                for node in getattr(control_inspection, "controls", {}).values():
-                    resolved = self._resolve_selection_path(node)
-                    if resolved:
-                        controls.add(resolved)
-                boundaries.append(
-                    {
-                        "group": control_group,
-                        "state": self._read_selection_group_state(control_group),
-                        "owned": controls,
-                    }
-                )
-        elif control_error and cmds_module is not None:
-            # A failed topology inspection must not turn validated UUIDs into
-            # selectable nodes.  Readable metadata is only used to resolve
-            # exact control identities; its topology/group is not trusted.
+    def _control_rig_selection_boundary(self, root: str) -> dict | None:
+        """Resolve the Control Rig selection boundary for the current model."""
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        if not root or cmds_module is None:
+            return None
+
+        try:
+            inspection = inspect_mmd_control_rig(root, cmds_module=cmds_module)
+        except Exception:
+            # Readable metadata can identify controls, but cannot establish
+            # their group or its visibility after a failed topology inspection.
             try:
                 from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
 
-                metadata = read_mmd_control_rig_metadata(
-                    root, cmds_module=cmds_module
-                )
+                metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds_module)
             except Exception:
-                metadata = None
+                return None
             if isinstance(metadata, dict):
                 owned = set()
                 for uuid in (metadata.get("controls") or {}).values():
@@ -920,14 +905,22 @@ class AnimationPresenter:
                     if resolved:
                         owned.add(resolved)
                 if owned:
-                    boundaries.append(
-                        {
-                            "group": None,
-                            "state": _SELECTION_UNKNOWN,
-                            "owned": owned,
-                        }
-                    )
-        return tuple(boundaries), known_joints
+                    return {"group": None, "state": _SELECTION_UNKNOWN, "owned": owned}
+            return None
+
+        control_group = getattr(inspection, "control_group", None)
+        if not isinstance(control_group, str) or not control_group:
+            return None
+        controls = set()
+        for node in getattr(inspection, "controls", {}).values():
+            resolved = self._resolve_selection_path(node)
+            if resolved:
+                controls.add(resolved)
+        return {
+            "group": control_group,
+            "state": self._read_selection_group_state(control_group),
+            "owned": controls,
+        }
 
     def _read_selection_group_state(self, group: str) -> str:
         """Read raw visibility/override plugs with fail-closed error handling."""
@@ -1109,6 +1102,8 @@ class AnimationPresenter:
 
         import maya.api.OpenMaya as om
 
+        from ..mirror_actions import bind_world_contexts
+
         cmds = self.maya_adapter._cmds
         canonical = {}
         pending = list(joints)
@@ -1165,42 +1160,43 @@ class AnimationPresenter:
             transform.setRotation(orient)
             local_records[index] = (transform.asMatrix(), orient, translation)
 
-        bind_worlds = {}
-        resolved_spaces = {}
+        return bind_world_contexts(canonical, parent_by_index, bind_space_by_index, local_records)
 
-        def resolve(index):
-            if index in bind_worlds:
-                return bind_worlds[index]
-            local, _orient, _translation = local_records[index]
-            parent_index = parent_by_index[index]
-            world = local * resolve(parent_index) if parent_index is not None else local
-            bind_worlds[index] = world
-            return world
+    @staticmethod
+    def _mirror_control_bases(cmds, metadata) -> dict:
+        """Map each Control Rig control's long path to its validated authoring basis."""
+        from ...core.mmd_control_rig_basis import validate_basis_record
 
-        def resolve_space(index):
-            if index in resolved_spaces:
-                return resolved_spaces[index]
-            parent_index = parent_by_index[index]
-            space = (
-                bind_space_by_index[index]
-                if parent_index is None
-                else resolve_space(parent_index)
-            )
-            resolved_spaces[index] = space
-            return space
+        control_bases = {}
+        basis_records = metadata.get("authoringBases") or {}
+        for role, control_uuid in (metadata.get("controls") or {}).items():
+            control_paths = cmds.ls(control_uuid, long=True) or []
+            record = basis_records.get(role)
+            if len(control_paths) != 1 or record is None:
+                raise RuntimeError(f"Control Rig mirror basis is unavailable: {role}")
+            path = str(control_paths[0])
+            basis = validate_basis_record(record).quaternion
+            previous = control_bases.get(path)
+            if previous is not None and previous != basis:
+                raise RuntimeError(f"ambiguous Control Rig mirror basis: {path}")
+            control_bases[path] = basis
+        return control_bases
 
-        result = {}
-        for index, joint in canonical.items():
-            world = resolve(index)
-            _local, orient, _translation = local_records[index]
-            result[joint] = {
-                "joint_orient": tuple(
-                    float(getattr(orient, component)) for component in ("x", "y", "z", "w")
-                ),
-                "bind_world_matrix": tuple(float(value) for value in world),
-                "bind_space_node": resolve_space(index),
-            }
-        return result
+    def _mirror_entry_names(self, candidate) -> list[str]:
+        """Return a joint's Japanese/English bone names, falling back to the name map."""
+        names = []
+        for attr in (ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN):
+            try:
+                value = self.maya_adapter.get_attr(f"{candidate}.{attr}")
+            except Exception:
+                value = None
+            if value:
+                names.append(str(value))
+        if not names:
+            for bone_name, mapped in self._bone_name_to_joint.items():
+                if mapped == candidate:
+                    names.append(str(bone_name))
+        return names
 
     def _mirror_entries(self):
         """Build UUID-authoritative joint/control entries for this model."""
@@ -1231,20 +1227,7 @@ class AnimationPresenter:
 
         control_bases = {}
         if owner == "CONTROL_OWNED" and cmds is not None:
-            from ...core.mmd_control_rig_basis import validate_basis_record
-
-            basis_records = metadata.get("authoringBases") or {}
-            for role, control_uuid in (metadata.get("controls") or {}).items():
-                control_paths = cmds.ls(control_uuid, long=True) or []
-                record = basis_records.get(role)
-                if len(control_paths) != 1 or record is None:
-                    raise RuntimeError(f"Control Rig mirror basis is unavailable: {role}")
-                path = str(control_paths[0])
-                basis = validate_basis_record(record).quaternion
-                previous = control_bases.get(path)
-                if previous is not None and previous != basis:
-                    raise RuntimeError(f"ambiguous Control Rig mirror basis: {path}")
-                control_bases[path] = basis
+            control_bases = self._mirror_control_bases(cmds, metadata)
 
         entries = []
         seen = set()
@@ -1269,18 +1252,7 @@ class AnimationPresenter:
                 # once through the name map; it is still one authoritative
                 # node, not an ambiguous pair.
                 continue
-            names = []
-            for attr in (ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN):
-                try:
-                    value = self.maya_adapter.get_attr(f"{candidate}.{attr}")
-                except Exception:
-                    value = None
-                if value:
-                    names.append(str(value))
-            if not names:
-                for bone_name, mapped in self._bone_name_to_joint.items():
-                    if mapped == candidate:
-                        names.append(str(bone_name))
+            names = self._mirror_entry_names(candidate)
             if not names:
                 continue
             joint_orient = (0.0, 0.0, 0.0, 1.0)
@@ -1459,8 +1431,10 @@ class AnimationPresenter:
         bone_map = self._build_bone_index_map(model_root)
         self._all_model_joints = [bone_map[index] for index in sorted(bone_map)]
         self._bone_name_to_joint = self._build_bone_name_map(model_root)
-        self._ik_nodes_by_side = self._collect_leg_ik_nodes(model_root)
-        self._toe_ik_nodes_by_side = self._collect_toe_ik_nodes(model_root)
+        self._ik_nodes_by_side = self._collect_ik_nodes_by_side(model_root, _IK_BONE_NAMES, "IK")
+        self._toe_ik_nodes_by_side = self._collect_ik_nodes_by_side(
+            model_root, _TOE_IK_BONE_NAMES, "toe IK"
+        )
         (
             control_ik_nodes,
             control_toe_ik_nodes,
@@ -1556,41 +1530,24 @@ class AnimationPresenter:
         if hasattr(self.view.finger_picker, "set_enabled_regions"):
             self.view.finger_picker.set_enabled_regions(finger_ids)
 
-    def _collect_leg_ik_nodes(self, model_root: str) -> dict[str, str]:
-        """Resolve the current model's owned left/right foot IK solvers."""
+    def _collect_ik_nodes_by_side(
+        self, model_root: str, bone_names: dict[str, str], label: str
+    ) -> dict[str, str]:
+        """Resolve the current model's owned left/right IK solvers."""
 
         try:
             from ...converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
 
             nodes = collect_ik_nodes_by_bone_name(target_model=model_root)
         except Exception as exc:
-            logger.debug("Failed to collect IK nodes for %s: %s", model_root, exc)
+            logger.debug("Failed to collect %s nodes for %s: %s", label, model_root, exc)
             return {}
         normalized = {
             normalize_mmd_bone_name(name) or name: node for name, node in nodes.items()
         }
         return {
             side: normalized[name]
-            for side, raw_name in _IK_BONE_NAMES.items()
-            if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
-        }
-
-    def _collect_toe_ik_nodes(self, model_root: str) -> dict[str, str]:
-        """Resolve the current model's owned left/right toe IK solvers."""
-
-        try:
-            from ...converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
-
-            nodes = collect_ik_nodes_by_bone_name(target_model=model_root)
-        except Exception as exc:
-            logger.debug("Failed to collect toe IK nodes for %s: %s", model_root, exc)
-            return {}
-        normalized = {
-            normalize_mmd_bone_name(name) or name: node for name, node in nodes.items()
-        }
-        return {
-            side: normalized[name]
-            for side, raw_name in _TOE_IK_BONE_NAMES.items()
+            for side, raw_name in bone_names.items()
             if (name := normalize_mmd_bone_name(raw_name) or raw_name) in normalized
         }
 
@@ -1734,6 +1691,16 @@ class AnimationPresenter:
             self._last_ik_states = {}
             self._sync_picker_regions()
 
+    def _read_ik_enabled_states(self, nodes: dict[str, str], attribute: str) -> dict[str, bool]:
+        """Read each side's IK enabled flag, treating unreadable plugs as disabled."""
+        states = {}
+        for side, node in nodes.items():
+            try:
+                states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
+            except Exception:
+                states[side] = False
+        return states
+
     def _sync_ik_picker_state(self, *, force: bool = False) -> None:
         """Hide a side's FK controls while its evaluated leg IK is enabled."""
 
@@ -1741,18 +1708,8 @@ class AnimationPresenter:
         active_foot_nodes = self._active_ik_nodes_by_side()
         active_toe_nodes = self._active_toe_ik_nodes_by_side()
         attribute = self._active_ik_attribute()
-        states = {}
-        for side, node in active_foot_nodes.items():
-            try:
-                states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
-            except Exception:
-                states[side] = False
-        toe_states = {}
-        for side, node in active_toe_nodes.items():
-            try:
-                toe_states[side] = bool(self.maya_adapter.get_attr(f"{node}.{attribute}"))
-            except Exception:
-                toe_states[side] = False
+        states = self._read_ik_enabled_states(active_foot_nodes, attribute)
+        toe_states = self._read_ik_enabled_states(active_toe_nodes, attribute)
         combined_states = {
             **{f"foot:{side}": enabled for side, enabled in states.items()},
             **{f"toe:{side}": enabled for side, enabled in toe_states.items()},
@@ -2346,16 +2303,8 @@ class AnimationPresenter:
         from ..qt_compat import (
             QGridLayout,
             QPushButton,
-            QSlider,
             QVBoxLayout,
             QWidget,
-            Qt,
-        )
-        from ..widgets.morph_editor_widgets import (
-            ElidedMorphLabel,
-            MorphRowWidget,
-            MorphWeightSpinBox,
-            create_morph_type_icon,
         )
 
         layout = self.view.morph_groups_layout
@@ -2391,57 +2340,9 @@ class AnimationPresenter:
             self._morph_groups[category_key] = (group, content_layout, header, cat_name)
 
             for row_index, morph in enumerate(morphs):
-                language = UITranslator.instance().get_language()
-                display_name = preferred_pmx_display_name(
-                    morph.name,
-                    morph.name_english,
-                    fallback=lambda: morph_name_fallback(morph.name, morph.index, include_index=True),
-                    language=language,
-                )
-                tooltip_parts = [display_name]
-                tooltip_parts.append(f"Type: {morph.morph_type}")
-                tooltip = "\n".join(tooltip_parts)
-                icon = create_morph_type_icon(morph.morph_type)
-                label = ElidedMorphLabel(display_name, tooltip)
-
-                slider = QSlider(Qt.Horizontal)
-                slider.setRange(0, 100)
-                slider.setStyleSheet(
-                    "QSlider::groove:horizontal { height: 3px; background: #252525; } "
-                    "QSlider::sub-page:horizontal { background: #5d8faa; } "
-                    "QSlider::handle:horizontal { width: 10px; margin: -4px 0; "
-                    "border-radius: 5px; background: #aeb4b8; } "
-                    "QSlider::handle:horizontal:hover { background: #79cfff; }"
-                )
-                editor = MorphWeightSpinBox()
-                plugs = self._morph_plugs(morph.name)
-                enabled = bool(plugs)
-                slider.setEnabled(enabled)
-                editor.setEnabled(enabled)
-
+                row_widgets = self._create_morph_row(morph)
                 morph_name = morph.name
-                slider.valueChanged.connect(
-                    lambda value, name=morph_name: self._on_morph_weight_changed(
-                        name, value / 100.0
-                    )
-                )
-                editor.edit_started.connect(self._begin_morph_edit)
-                editor.edit_finished.connect(self._end_morph_edit)
-                editor.valueChanged.connect(
-                    lambda value, name=morph_name: self._on_morph_weight_changed(
-                        name, value
-                    )
-                )
-                row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
-                row_widgets.slider_edit_started.connect(self._begin_morph_edit)
-                row_widgets.slider_edit_finished.connect(self._end_morph_edit)
-                row_widgets.set_value(self._morph_value(morph_name))
-                row_widgets.set_animation_state(self._morph_animation_state(plugs))
-                row_widgets.activated.connect(
-                    lambda modifiers, name=morph_name, row=row_widgets: self._on_morph_row_activated(name, modifiers, row)
-                )
-                row_widgets.multi_key_requested.connect(self._key_selected_morphs)
-                self._morph_sliders[morph_name] = slider
+                self._morph_sliders[morph_name] = row_widgets.slider
                 self._morph_rows.setdefault(morph_name, row_widgets)
                 self._morph_instances.append((morph_name, row_widgets))
                 content_layout.addWidget(row_widgets, row_index, 0, 1, 4)
@@ -2464,6 +2365,68 @@ class AnimationPresenter:
             layout.insertWidget(insert_pos, group)
 
         self._filter_morph_rows()
+
+    def _create_morph_row(self, morph: MorphInfo) -> MorphRowWidget:
+        """Build and connect the editor widgets for one morph."""
+        from ..qt_compat import QSlider, Qt
+        from ..widgets.morph_editor_widgets import (
+            ElidedMorphLabel,
+            MorphRowWidget,
+            MorphWeightSpinBox,
+            create_morph_type_icon,
+        )
+
+        language = UITranslator.instance().get_language()
+        display_name = preferred_pmx_display_name(
+            morph.name,
+            morph.name_english,
+            fallback=lambda: morph_name_fallback(morph.name, morph.index, include_index=True),
+            language=language,
+        )
+        tooltip_parts = [display_name]
+        tooltip_parts.append(f"Type: {morph.morph_type}")
+        tooltip = "\n".join(tooltip_parts)
+        icon = create_morph_type_icon(morph.morph_type)
+        label = ElidedMorphLabel(display_name, tooltip)
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setStyleSheet(
+            "QSlider::groove:horizontal { height: 3px; background: #252525; } "
+            "QSlider::sub-page:horizontal { background: #5d8faa; } "
+            "QSlider::handle:horizontal { width: 10px; margin: -4px 0; "
+            "border-radius: 5px; background: #aeb4b8; } "
+            "QSlider::handle:horizontal:hover { background: #79cfff; }"
+        )
+        editor = MorphWeightSpinBox()
+        plugs = self._morph_plugs(morph.name)
+        enabled = bool(plugs)
+        slider.setEnabled(enabled)
+        editor.setEnabled(enabled)
+
+        morph_name = morph.name
+        slider.valueChanged.connect(
+            lambda value, name=morph_name: self._on_morph_weight_changed(
+                name, value / 100.0
+            )
+        )
+        editor.edit_started.connect(self._begin_morph_edit)
+        editor.edit_finished.connect(self._end_morph_edit)
+        editor.valueChanged.connect(
+            lambda value, name=morph_name: self._on_morph_weight_changed(
+                name, value
+            )
+        )
+        row_widgets = MorphRowWidget(icon, label, slider, editor, plugs)
+        row_widgets.slider_edit_started.connect(self._begin_morph_edit)
+        row_widgets.slider_edit_finished.connect(self._end_morph_edit)
+        row_widgets.set_value(self._morph_value(morph_name))
+        row_widgets.set_animation_state(self._morph_animation_state(plugs))
+        row_widgets.activated.connect(
+            lambda modifiers, name=morph_name, row=row_widgets: self._on_morph_row_activated(name, modifiers, row)
+        )
+        row_widgets.multi_key_requested.connect(self._key_selected_morphs)
+        return row_widgets
 
     def _filter_morph_rows(self, *_args) -> None:
         """Hide unmatched rows and drop only selection that became hidden."""

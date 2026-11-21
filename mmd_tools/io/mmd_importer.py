@@ -145,6 +145,19 @@ def _schedule_uv_editor_refresh() -> None:
         logger.debug("Failed to schedule UV Editor refresh", exc_info=True)
 
 
+def _control_rig_warning(model_root: str, code: str, fallback: str, exc: Exception) -> Dict[str, Any]:
+    """Build the import warning recorded when an opt-in Control Rig step fails."""
+    return {
+        "source": "mmd_importer",
+        "code": code,
+        "message": str(exc),
+        "model_root": model_root,
+        "exception_type": type(exc).__name__,
+        "severity": "warning",
+        "fallback": fallback,
+    }
+
+
 def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any]) -> Optional[Any]:
     """Build and bind the opt-in MMD Control Rig after model import.
 
@@ -173,15 +186,9 @@ def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any])
     try:
         result = build_mmd_control_rig(model_root)
     except Exception as exc:
-        warning = {
-            "source": "mmd_importer",
-            "code": "control_rig_create_failed",
-            "message": str(exc),
-            "model_root": model_root,
-            "exception_type": type(exc).__name__,
-            "severity": "warning",
-            "fallback": "model_imported_without_control_rig",
-        }
+        warning = _control_rig_warning(
+            model_root, "control_rig_create_failed", "model_imported_without_control_rig", exc
+        )
         rig_profile["succeeded"] = False
         rig_profile["error"] = str(exc)
         # ImportModelAction consumes this top-level list when classifying a
@@ -205,15 +212,9 @@ def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any])
     try:
         metadata = enter_mmd_control_rig_edit(model_root)
     except Exception as exc:
-        warning = {
-            "source": "mmd_importer",
-            "code": "control_rig_bind_failed",
-            "message": str(exc),
-            "model_root": model_root,
-            "exception_type": type(exc).__name__,
-            "severity": "warning",
-            "fallback": "model_imported_with_attached_control_rig",
-        }
+        warning = _control_rig_warning(
+            model_root, "control_rig_bind_failed", "model_imported_with_attached_control_rig", exc
+        )
         rig_profile["succeeded"] = False
         rig_profile["bound"] = False
         rig_profile["state"] = result.state
@@ -256,6 +257,95 @@ def _scoped_settings_override(options: Dict[str, Any]):
             settings.set(settings_key, original_value)
 
 
+def _emit_progress(progress_callback: Optional[Callable[[int], None]], value: int) -> None:
+    if progress_callback is not None:
+        try:
+            progress_callback(value)
+        except Exception:
+            logger.debug("Progress callback failed", exc_info=True)
+
+
+def _import_pmx_fast_load(
+    filepath: str,
+    import_scale: float,
+    options: Dict[str, Any],
+    progress_callback: Optional[Callable[[int], None]],
+    vp2_ownership_requested: bool,
+) -> Optional[Any]:
+    """Import PMX geometry and run the model post-import steps."""
+    _emit_progress(progress_callback, 10)
+    mesh_only = options.get("cpp_fast_load_mesh_only", False)
+    if options.get("create_mmd_control_rig", False):
+        # The control-rig analyzer needs the indexed joints emitted by
+        # the shared PMX authoring path.  A requested rig therefore takes
+        # precedence over the mesh-only performance option.
+        mesh_only = False
+    base_name = options.get("custom_namespace") or Path(filepath).stem
+    include_morphs = options.get(
+        "import_morphs",
+        settings.get(settings_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
+    )
+    fast_kwargs = {
+        "base_name": base_name,
+        "scale": import_scale,
+        "mesh_only": mesh_only,
+        "include_morphs": include_morphs,
+    }
+    # VP2 ownership remains a separate option until its API is retired.
+    # The UI chooses it from the active viewport device.
+    if options.get("use_cpp_vp2_ownership", False):
+        fast_kwargs["vp2_ownership"] = True
+    if not mesh_only:
+        fast_kwargs["options"] = options
+        if progress_callback is not None:
+            fast_kwargs["progress_callback"] = progress_callback
+    try:
+        fast_root = fast_import(filepath, **fast_kwargs)
+    except Exception as exc:
+        if vp2_ownership_requested:
+            _raise_native_vp2_failure(options, f"fast importer error: {exc}", exc)
+        raise
+    if fast_root is not None:
+        # Fast Load returns before the Python importer's scene setup.
+        # Reuse its shared light policy, including get-or-create and opt-out.
+        light_controller = ModelImportPipeline(
+            logger=logger,
+            filepath=filepath,
+            scale=import_scale,
+            options=options,
+        ).create_light_controller()
+        if light_controller:
+            from maya import cmds
+
+            cmds.select(fast_root, replace=True)
+        _emit_progress(progress_callback, 97)
+        if vp2_ownership_requested:
+            diagnostics = _native_route_profile(options)
+            diagnostics.update(
+                {
+                    "requested": True,
+                    "route": "cpp_fast_load_vp2",
+                    "status": "succeeded",
+                    "fallback": "not_used",
+                }
+            )
+        if vp2_ownership_requested and settings.get(
+            settings_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True
+        ):
+            # Native MMD output is authored sRGB and must retain gamma-space
+            # alpha blending.  The Python dx11Shader path uses the separate
+            # CM-on/de-gamma contract in ModelImportPipeline.setup_view().
+            maya_viewport_utils.setup_mmd_native_color_management()
+        logger.info("C++ fast import succeeded: %s", fast_root)
+        return _post_model_import_control_rig(fast_root, options)
+    if vp2_ownership_requested:
+        _raise_native_vp2_failure(options, "fast importer returned no model root")
+    raise MMDImportException(
+        "PMX import requires C++ Fast Load, but the native importer returned no model root. "
+        "Check that the matching mmd_tools_cpp plugin and native runtime are installed."
+    )
+
+
 def import_mmd_file(
     filepath: str,
     scale: Optional[float] = None,
@@ -283,14 +373,7 @@ def import_mmd_file(
     if options is None:
         options = {}
 
-    def _emit_progress(value: int) -> None:
-        if progress_callback is not None:
-            try:
-                progress_callback(value)
-            except Exception:
-                logger.debug("Progress callback failed", exc_info=True)
-
-    _emit_progress(5)
+    _emit_progress(progress_callback, 5)
     strategy = resolve_model_import_strategy(filepath, options)
     suffix = strategy.suffix
     # Precedence: explicit scale= kwarg > options["scale"] > mode-aware policy
@@ -308,76 +391,8 @@ def import_mmd_file(
     # PMX always uses C++ geometry; PMD/VMD retain their format-specific parsers.
     vp2_ownership_requested = bool(options.get("use_cpp_vp2_ownership", False))
     if suffix == ".pmx":
-        _emit_progress(10)
-        mesh_only = options.get("cpp_fast_load_mesh_only", False)
-        if options.get("create_mmd_control_rig", False):
-            # The control-rig analyzer needs the indexed joints emitted by
-            # the shared PMX authoring path.  A requested rig therefore takes
-            # precedence over the mesh-only performance option.
-            mesh_only = False
-        base_name = options.get("custom_namespace") or Path(filepath).stem
-        include_morphs = options.get(
-            "import_morphs",
-            settings.get(settings_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
-        )
-        fast_kwargs = {
-            "base_name": base_name,
-            "scale": import_scale,
-            "mesh_only": mesh_only,
-            "include_morphs": include_morphs,
-        }
-        # VP2 ownership remains a separate option until its API is retired.
-        # The UI chooses it from the active viewport device.
-        if options.get("use_cpp_vp2_ownership", False):
-            fast_kwargs["vp2_ownership"] = True
-        if not mesh_only:
-            fast_kwargs["options"] = options
-            if progress_callback is not None:
-                fast_kwargs["progress_callback"] = progress_callback
-        try:
-            fast_root = fast_import(filepath, **fast_kwargs)
-        except Exception as exc:
-            if vp2_ownership_requested:
-                _raise_native_vp2_failure(options, f"fast importer error: {exc}", exc)
-            raise
-        if fast_root is not None:
-            # Fast Load returns before the Python importer's scene setup.
-            # Reuse its shared light policy, including get-or-create and opt-out.
-            light_controller = ModelImportPipeline(
-                logger=logger,
-                filepath=filepath,
-                scale=import_scale,
-                options=options,
-            ).create_light_controller()
-            if light_controller:
-                from maya import cmds
-
-                cmds.select(fast_root, replace=True)
-            _emit_progress(97)
-            if vp2_ownership_requested:
-                diagnostics = _native_route_profile(options)
-                diagnostics.update(
-                    {
-                        "requested": True,
-                        "route": "cpp_fast_load_vp2",
-                        "status": "succeeded",
-                        "fallback": "not_used",
-                    }
-                )
-            if vp2_ownership_requested and settings.get(
-                settings_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True
-            ):
-                # Native MMD output is authored sRGB and must retain gamma-space
-                # alpha blending.  The Python dx11Shader path uses the separate
-                # CM-on/de-gamma contract in ModelImportPipeline.setup_view().
-                maya_viewport_utils.setup_mmd_native_color_management()
-            logger.info("C++ fast import succeeded: %s", fast_root)
-            return _post_model_import_control_rig(fast_root, options)
-        if vp2_ownership_requested:
-            _raise_native_vp2_failure(options, "fast importer returned no model root")
-        raise MMDImportException(
-            "PMX import requires C++ Fast Load, but the native importer returned no model root. "
-            "Check that the matching mmd_tools_cpp plugin and native runtime are installed."
+        return _import_pmx_fast_load(
+            filepath, import_scale, options, progress_callback, vp2_ownership_requested
         )
 
     parse_completed = False
@@ -394,7 +409,7 @@ def import_mmd_file(
             vmd_profile.set_extra("vmd_path", str(Path(filepath).resolve()))
             for attr in ("bone_frames", "morph_frames", "camera_frames", "light_frames"):
                 vmd_profile.set_extra(attr, len(getattr(parsed_data, attr, []) or []))
-        _emit_progress(12)
+        _emit_progress(progress_callback, 12)
 
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
         # ファイル拡張子でインポーターを選ぶ。

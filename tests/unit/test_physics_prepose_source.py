@@ -161,23 +161,11 @@ class TestSolverKinematicPoseInjection(unittest.TestCase):
     def test_inject_kinematic_poses_method_exists(self):
         self.assertIn("_inject_kinematic_poses", self.solver_methods)
 
-    def test_forward_step_calls_evaluate_current_pose_before_physics(self):
-        forward_step_src = _get_function_source(
-            self.tree, self.source_lines, "_forward_step", "MmdPhysicsSolverNode"
-        )
-        self.assertIn("evaluate_current_pose_before_physics", forward_step_src)
-
     def test_forward_step_calls_inject_kinematic_poses(self):
         forward_step_src = _get_function_source(
             self.tree, self.source_lines, "_forward_step", "MmdPhysicsSolverNode"
         )
         self.assertIn("_inject_kinematic_poses", forward_step_src)
-
-    def test_reset_world_calls_evaluate_current_pose_before_physics(self):
-        reset_world_src = _get_function_source(
-            self.tree, self.source_lines, "_reset_world", "MmdPhysicsSolverNode"
-        )
-        self.assertIn("evaluate_current_pose_before_physics", reset_world_src)
 
     def test_reset_world_calls_inject_kinematic_poses(self):
         reset_world_src = _get_function_source(

@@ -74,23 +74,6 @@ def _require_index(value: Any, *, field: str, minimum: int = 0) -> int:
     return value
 
 
-def _require_contiguous_indices(items: Sequence[Any], *, field: str, key: str) -> dict[int, Mapping[str, Any]]:
-    by_index: dict[int, Mapping[str, Any]] = {}
-    for position, raw_item in enumerate(items):
-        item = _require_mapping(raw_item, field=f"{field}[{position}]")
-        raw_index = item.get(key, _MISSING)
-        if raw_index is _MISSING:
-            _fail(f"{field}[{position}] is missing {key}")
-        index = _require_index(raw_index, field=f"{field}[{position}].{key}")
-        if index in by_index:
-            _fail(f"{field} contains duplicate {key} {index}")
-        by_index[index] = item
-    expected = set(range(len(items)))
-    if set(by_index) != expected:
-        _fail(f"{field} indices must be contiguous 0..{len(items) - 1}")
-    return by_index
-
-
 def _require_material_indices(
     items: Sequence[Any],
     *,

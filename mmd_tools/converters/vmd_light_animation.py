@@ -11,7 +11,7 @@ from .light_converter import (
     MMD_SELF_SHADOW_MODE_ATTR,
     ensure_mmd_light_shadow_attrs,
 )
-from .vmd_context import VmdLightAnimationContext
+from .vmd_context import VmdLightAnimationContext, vmd_frame_value
 
 try:
     from ..core.native.mmd_anim_runtime_sampling import sample_vmd_light_frames
@@ -19,18 +19,8 @@ except Exception:
     sample_vmd_light_frames = None  # type: ignore
 
 
-def _frame_value(frame, attr_name: str, key_name: str, default):
-    if hasattr(frame, attr_name):
-        return getattr(frame, attr_name)
-    if hasattr(frame, key_name):
-        return getattr(frame, key_name)
-    if isinstance(frame, dict):
-        return frame.get(key_name, frame.get(attr_name, default))
-    return default
-
-
 def _light_frame_range(light_frames) -> tuple[float, float]:
-    frame_numbers = [float(_frame_value(frame, "frame_number", "frame", 0.0)) for frame in light_frames]
+    frame_numbers = [float(vmd_frame_value(frame, "frame_number", "frame", 0.0)) for frame in light_frames]
     return min(frame_numbers), max(frame_numbers)
 
 
@@ -90,12 +80,12 @@ def _light_samples_from_runtime(
 def _sparse_light_samples_from_frames(context: VmdLightAnimationContext, light_frames) -> List[dict]:
     samples = []
     for frame in light_frames:
-        frame_number = _frame_value(frame, "frame_number", "frame", 0)
+        frame_number = vmd_frame_value(frame, "frame_number", "frame", 0)
         samples.append(
             {
                 "maya_time": context.vmd_frame_to_maya_time(frame_number),
-                "color": tuple(_frame_value(frame, "color", "color", (1, 1, 1))),
-                "position": tuple(_frame_value(frame, "position", "position", (0.0, -1.0, 0.0))),
+                "color": tuple(vmd_frame_value(frame, "color", "color", (1, 1, 1))),
+                "position": tuple(vmd_frame_value(frame, "position", "position", (0.0, -1.0, 0.0))),
             }
         )
     return samples
@@ -131,15 +121,15 @@ def _convert_self_shadow_animation(
     light_transform = ensure_mmd_light_shadow_attrs(context.get_or_create_light())
     samples = []
     for frame in shadow_frames:
-        mode = int(_frame_value(frame, "mode", "mode", 0))
+        mode = int(vmd_frame_value(frame, "mode", "mode", 0))
         if mode not in (0, 1, 2):
             raise ValueError(f"VMD self-shadow mode must be 0, 1, or 2: {mode}")
-        frame_number = _frame_value(frame, "frame_number", "frame", 0)
+        frame_number = vmd_frame_value(frame, "frame_number", "frame", 0)
         samples.append(
             (
                 context.vmd_frame_to_maya_time(frame_number),
                 mode,
-                float(_frame_value(frame, "distance", "distance", 0.0)),
+                float(vmd_frame_value(frame, "distance", "distance", 0.0)),
             )
         )
 

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import maya.cmds as cmds
 from maya.api import OpenMayaAnim as oma
 
-from mmd_tools.core import maya_animation_utils, mmd_control_rig_motion
+from mmd_tools.core import animation_curve_snapshot, maya_animation_utils, mmd_control_rig_motion
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.mmd_control_rig_builder import (
     CONTROL_RIG_ATTACHED,
@@ -1359,7 +1359,7 @@ class TestControlRigMotionClear(MayaTestBase):
         cmds.setKeyframe(destination_node, time=5, value=123.0)
 
         with patch.object(
-            mmd_control_rig_motion,
+            animation_curve_snapshot,
             "_capture_animation_curve_payload",
             return_value={"captureFailed": True},
         ), patch.object(cmds, "copyKey", wraps=cmds.copyKey) as copy_key, patch.object(
@@ -1419,7 +1419,7 @@ class TestControlRigMotionClear(MayaTestBase):
         }
         cmds.setKeyframe(curve, time=8, value=9.0)
 
-        mmd_control_rig_motion._restore_animation_channel_snapshot(
+        animation_curve_snapshot.restore_animation_channel_snapshot(
             cmds,
             row,
             destination=f"{control}.rotateX",
@@ -1441,7 +1441,7 @@ class TestControlRigMotionClear(MayaTestBase):
             "value": 0.0,
         }
 
-        mmd_control_rig_motion._restore_animation_channel_snapshot(
+        animation_curve_snapshot.restore_animation_channel_snapshot(
             cmds,
             row,
             destination=f"{control}.rotateX",
@@ -1453,13 +1453,13 @@ class TestControlRigMotionClear(MayaTestBase):
         """Maya's one-row compound wrapper is expanded for setAttr restore."""
         control = cmds.createNode("transform", name="cr061_compound_snapshot_ctrl")
         cmds.setAttr(f"{control}.translate", 1.0, 2.0, 3.0)
-        row = mmd_control_rig_motion._capture_animation_channel_snapshot(
+        row = animation_curve_snapshot.capture_animation_channel_snapshot(
             cmds,
             f"{control}.translate",
         )
         cmds.setAttr(f"{control}.translate", 7.0, 8.0, 9.0)
 
-        mmd_control_rig_motion._restore_animation_channel_snapshot(
+        animation_curve_snapshot.restore_animation_channel_snapshot(
             cmds,
             row,
             destination=f"{control}.translate",
@@ -1483,7 +1483,7 @@ class TestControlRigMotionClear(MayaTestBase):
         cmds.delete(curve)
 
         with self.assertRaisesRegex(RuntimeError, "payload is unavailable"):
-            mmd_control_rig_motion._restore_animation_channel_snapshot(
+            animation_curve_snapshot.restore_animation_channel_snapshot(
                 cmds,
                 row,
                 destination=f"{control}.rotateX",

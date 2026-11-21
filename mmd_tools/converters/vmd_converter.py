@@ -14,7 +14,7 @@ import math
 from functools import partial
 import struct
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, NoReturn, Optional, Tuple, Union
 
 
 import maya.api.OpenMaya as om
@@ -595,56 +595,17 @@ class VmdConverter:
         # refuse fail-closed while target_model is a HumanIK TARGET preview
         # or has an active Control Rig, with no implicit mode switching.
         self._enforce_humanik_import_gate(target_model)
-        registered_sparse_frames = None
-        runtime_bake_requested = False
-        if not bake_mode and getattr(vmd_data, "bone_frames", None):
-            # Resolve the imported PMX index table before any Control Rig or
-            # clear-existing transaction mutates the scene. Missing native
-            # introspection fails closed instead of falling back to raw keys.
-            self._build_name_mappings(target_namespace, target_model=target_model)
-            sparse_vmd_bytes, sparse_pmx_bytes, sparse_pmx_path = (
-                self._resolve_runtime_bake_sources(
-                    vmd_data,
-                    vmd_bytes,
-                    pmx_bytes,
-                    pmx_path,
-                    target_namespace,
-                )
-            )
-            # Registered sparse compilation is only a legacy fallback.  When
-            # the runtime path is already selected, asking the native model
-            # parser to compile the same fake/opaque bytes first is both
-            # redundant and an unnecessary preflight failure point.
-            has_registered_source = bool(
-                sparse_vmd_bytes
-                and (
-                    sparse_pmx_bytes
-                    or (
-                        sparse_pmx_path
-                        and str(sparse_pmx_path).lower().endswith(".pmx")
-                    )
-                )
-            )
-            runtime_bake_requested = (
-                not create_mmd_control_rig
-                and has_registered_source
-                and self._should_use_mmd_runtime_bake(
-                    sparse_vmd_bytes,
-                    sparse_pmx_bytes,
-                    sparse_pmx_path,
-                    self._has_live_mmd_rig_for_runtime_target(),
-                    bake_mode,
-                )
-            )
-            if not runtime_bake_requested and (
-                create_mmd_control_rig or has_registered_source
-            ):
-                registered_sparse_frames, _ = self._compiled_registered_sparse_frames(
-                    vmd_bytes=sparse_vmd_bytes,
-                    pmx_bytes=sparse_pmx_bytes,
-                    pmx_path=sparse_pmx_path,
-                    profile=profile,
-                )
+        registered_sparse_frames = self._resolve_registered_sparse_frames(
+            vmd_data=vmd_data,
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=pmx_bytes,
+            pmx_path=pmx_path,
+            target_namespace=target_namespace,
+            target_model=target_model,
+            bake_mode=bake_mode,
+            create_mmd_control_rig=create_mmd_control_rig,
+            profile=profile,
+        )
         control_rig_transaction = None
         if create_mmd_control_rig:
             control_rig_transaction = self._prepare_mmd_control_rig_import(
@@ -669,13 +630,7 @@ class VmdConverter:
                     reason_code="control_rig_import_preflight_failed",
                 )
                 rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
-                self._record_control_rig_import_failure(profile, failure, rollback_error)
-                if rollback_error:
-                    raise MMDImportException(
-                        f"{failure}; {rollback_error}",
-                        reason_code=failure.reason_code,
-                    ) from failure
-                raise failure
+                self._raise_control_rig_import_failure(profile, failure, rollback_error)
             return False
         import_start_time = None
         anim_layer_selection = None
@@ -876,17 +831,7 @@ class VmdConverter:
                                 reason_code="control_rig_import_runtime_failed",
                             )
                             rollback_error = self._rollback_mmd_control_rig_import(control_rig_transaction)
-                            self._record_control_rig_import_failure(
-                                import_context.profile,
-                                failure,
-                                rollback_error,
-                            )
-                            if rollback_error:
-                                raise MMDImportException(
-                                    f"{failure}; {rollback_error}",
-                                    reason_code=failure.reason_code,
-                                ) from failure
-                            raise failure
+                            self._raise_control_rig_import_failure(import_context.profile, failure, rollback_error)
                         return False
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
                     self._record_profile_warning(
@@ -928,73 +873,9 @@ class VmdConverter:
                         if route_plan.use_registered_sparse
                         else list(import_context.vmd_data.bone_frames)
                     )
-                    if import_context.create_mmd_control_rig:
-                        # Identity-only optional roles are a VMD no-op and
-                        # must not create a controller curve on the ON path.
-                        # Active roles retain identity frame 0 samples for
-                        # interpolation/initial-pose continuity.
-                        # Portable motions may carry optional roles absent from
-                        # the target model.  Filter them before the legacy
-                        # converter sees the frames so its missing-joint path
-                        # cannot reclassify an optional role as a failed bone.
-                        bone_frames = self._control_rig_bone_frames_for_import(
-                            bone_frames,
-                            mapped_names=self.bone_name_mapping,
-                        )
-                    if bone_frames:
-                        self.logger.info(
-                            f"Starting bone animation conversion (legacy): {len(bone_frames)} frames"
-                        )
-                        with vmd_profile.scope("bone_animation_convert"):
-                            failed_before = set(self._failed_bones)
-                            # ``_convert_bone_animation`` records failures on
-                            # the converter and returns True when any role
-                            # succeeds.  Isolate this import's failures so a
-                            # stale role from an earlier conversion cannot
-                            # hide a new partial-write error.
-                            self._failed_bones.clear()
-                            try:
-                                bone_success = self._convert_bone_animation(
-                                    bone_frames,
-                                    key_routes=legacy_bone_key_routes,
-                                )
-                            except Exception as exc:
-                                failed_after = set(self._failed_bones)
-                                self._failed_bones.update(failed_before)
-                                if import_context.create_mmd_control_rig:
-                                    raise MMDImportException(
-                                        f"MMD Control Rig bone keying failed: {exc}",
-                                        reason_code="control_rig_bone_keying_failed",
-                                    ) from exc
-                                raise
-                        # This set was cleared immediately before conversion,
-                        # so every member belongs to the current import even
-                        # when the same role also failed in an earlier call.
-                        failed_after = sorted(set(self._failed_bones))
-                        # Keep the converter's cumulative failure record for
-                        # diagnostics while still classifying this call.
-                        self._failed_bones.update(failed_before)
-                        if import_context.create_mmd_control_rig and (not bone_success or failed_after):
-                            raise MMDImportException(
-                                "MMD Control Rig bone keying failed for VMD roles"
-                                + (f": {failed_after}" if failed_after else ""),
-                                reason_code="control_rig_bone_keying_failed",
-                            )
-                        if not bone_success:
-                            self.logger.warning("Some errors occurred during bone animation conversion")
-                    if (
-                        self._rotation_time_curve_records
-                        and import_context.create_mmd_control_rig
-                    ):
-                        from .vmd_rotation_time_curve import (
-                            record_vmd_rotation_time_curve_metadata,
-                        )
-
-                        record_vmd_rotation_time_curve_metadata(
-                            import_context.target_model,
-                            self._rotation_time_curve_records,
-                            replace_existing=import_context.clear_existing_motion,
-                        )
+                    self._convert_legacy_bone_frames(
+                        import_context, bone_frames, legacy_bone_key_routes
+                    )
                 _emit_progress(72)
 
                 # モーフアニメーション（レガシー）
@@ -1003,40 +884,8 @@ class VmdConverter:
                     self._convert_morph_animation(import_context.vmd_data.morph_frames)
                 _emit_progress(82)
 
-            # カメラアニメーション（レガシー）
-            if (
-                import_context.import_camera_animation
-                and hasattr(import_context.vmd_data, "camera_frames")
-                and import_context.vmd_data.camera_frames
-            ):
-                self.logger.info(f"Converting camera animation: {len(import_context.vmd_data.camera_frames)} frames")
-                self._clear_existing_camera_motion()
-                camera_sample_bytes = vmd_bytes if import_context.bake_mode else None
-                self._convert_camera_animation(import_context.vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
             _emit_progress(88)
-
-            # ライトアニメーション（レガシー）
-            if (
-                import_context.import_light_animation
-                and hasattr(import_context.vmd_data, "light_frames")
-                and import_context.vmd_data.light_frames
-            ):
-                self.logger.info(f"Converting light animation: {len(import_context.vmd_data.light_frames)} frames")
-                self._clear_existing_light_motion()
-                light_sample_bytes = vmd_bytes if import_context.bake_mode else None
-                self._convert_light_animation(import_context.vmd_data.light_frames, vmd_bytes=light_sample_bytes)
-            if (
-                import_context.import_light_animation
-                and hasattr(import_context.vmd_data, "shadow_frames")
-                and import_context.vmd_data.shadow_frames
-            ):
-                if not (
-                    hasattr(import_context.vmd_data, "light_frames")
-                    and import_context.vmd_data.light_frames
-                ):
-                    self._clear_existing_shadow_motion()
-                if not self._convert_self_shadow_animation(import_context.vmd_data.shadow_frames):
-                    raise RuntimeError("VMD self-shadow animation conversion failed")
+            self._convert_scene_channels(import_context.vmd_data, vmd_bytes, import_context.bake_mode)
             _emit_progress(94)
 
             self._restore_import_timeline_state(import_start_time)
@@ -1083,18 +932,150 @@ class VmdConverter:
                     f"MMD Control Rig VMD import failed: {e}",
                     reason_code="control_rig_import_failed",
                 )
-                self._record_control_rig_import_failure(import_context.profile, failure, rollback_error)
-                if rollback_error:
-                    raise MMDImportException(
-                        f"{failure}; {rollback_error}",
-                        reason_code=failure.reason_code,
-                    ) from e
-                raise failure from e
+                self._raise_control_rig_import_failure(import_context.profile, failure, rollback_error, cause=e)
             return False
         finally:
             self._current_import_live_rig_target = False
             self._restore_anim_layer_selection(anim_layer_selection)
             self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
+
+    def _convert_legacy_bone_frames(
+        self, import_context: VmdImportContext, bone_frames, legacy_bone_key_routes
+    ) -> None:
+        """Key legacy bone frames and record Control Rig rotation metadata."""
+        if import_context.create_mmd_control_rig:
+            # Identity-only optional roles are a VMD no-op and
+            # must not create a controller curve on the ON path.
+            # Active roles retain identity frame 0 samples for
+            # interpolation/initial-pose continuity.
+            # Portable motions may carry optional roles absent from
+            # the target model.  Filter them before the legacy
+            # converter sees the frames so its missing-joint path
+            # cannot reclassify an optional role as a failed bone.
+            bone_frames = self._control_rig_bone_frames_for_import(
+                bone_frames,
+                mapped_names=self.bone_name_mapping,
+            )
+        if bone_frames:
+            self.logger.info(
+                f"Starting bone animation conversion (legacy): {len(bone_frames)} frames"
+            )
+            with vmd_profile.scope("bone_animation_convert"):
+                failed_before = set(self._failed_bones)
+                # ``_convert_bone_animation`` records failures on
+                # the converter and returns True when any role
+                # succeeds.  Isolate this import's failures so a
+                # stale role from an earlier conversion cannot
+                # hide a new partial-write error.
+                self._failed_bones.clear()
+                try:
+                    bone_success = self._convert_bone_animation(
+                        bone_frames,
+                        key_routes=legacy_bone_key_routes,
+                    )
+                except Exception as exc:
+                    failed_after = set(self._failed_bones)
+                    self._failed_bones.update(failed_before)
+                    if import_context.create_mmd_control_rig:
+                        raise MMDImportException(
+                            f"MMD Control Rig bone keying failed: {exc}",
+                            reason_code="control_rig_bone_keying_failed",
+                        ) from exc
+                    raise
+            # This set was cleared immediately before conversion,
+            # so every member belongs to the current import even
+            # when the same role also failed in an earlier call.
+            failed_after = sorted(set(self._failed_bones))
+            # Keep the converter's cumulative failure record for
+            # diagnostics while still classifying this call.
+            self._failed_bones.update(failed_before)
+            if import_context.create_mmd_control_rig and (not bone_success or failed_after):
+                raise MMDImportException(
+                    "MMD Control Rig bone keying failed for VMD roles"
+                    + (f": {failed_after}" if failed_after else ""),
+                    reason_code="control_rig_bone_keying_failed",
+                )
+            if not bone_success:
+                self.logger.warning("Some errors occurred during bone animation conversion")
+        if (
+            self._rotation_time_curve_records
+            and import_context.create_mmd_control_rig
+        ):
+            from .vmd_rotation_time_curve import (
+                record_vmd_rotation_time_curve_metadata,
+            )
+
+            record_vmd_rotation_time_curve_metadata(
+                import_context.target_model,
+                self._rotation_time_curve_records,
+                replace_existing=import_context.clear_existing_motion,
+            )
+
+    def _resolve_registered_sparse_frames(
+        self,
+        *,
+        vmd_data,
+        vmd_bytes,
+        pmx_bytes,
+        pmx_path,
+        target_namespace,
+        target_model,
+        bake_mode,
+        create_mmd_control_rig,
+        profile,
+    ) -> Optional[tuple]:
+        """Compile registered sparse bone frames unless the runtime bake path takes over."""
+        registered_sparse_frames = None
+        runtime_bake_requested = False
+        if not bake_mode and getattr(vmd_data, "bone_frames", None):
+            # Resolve the imported PMX index table before any Control Rig or
+            # clear-existing transaction mutates the scene. Missing native
+            # introspection fails closed instead of falling back to raw keys.
+            self._build_name_mappings(target_namespace, target_model=target_model)
+            sparse_vmd_bytes, sparse_pmx_bytes, sparse_pmx_path = (
+                self._resolve_runtime_bake_sources(
+                    vmd_data,
+                    vmd_bytes,
+                    pmx_bytes,
+                    pmx_path,
+                    target_namespace,
+                )
+            )
+            # Registered sparse compilation is only a legacy fallback.  When
+            # the runtime path is already selected, asking the native model
+            # parser to compile the same fake/opaque bytes first is both
+            # redundant and an unnecessary preflight failure point.
+            has_registered_source = bool(
+                sparse_vmd_bytes
+                and (
+                    sparse_pmx_bytes
+                    or (
+                        sparse_pmx_path
+                        and str(sparse_pmx_path).lower().endswith(".pmx")
+                    )
+                )
+            )
+            runtime_bake_requested = (
+                not create_mmd_control_rig
+                and has_registered_source
+                and self._should_use_mmd_runtime_bake(
+                    sparse_vmd_bytes,
+                    sparse_pmx_bytes,
+                    sparse_pmx_path,
+                    self._has_live_mmd_rig_for_runtime_target(),
+                    bake_mode,
+                )
+            )
+            if not runtime_bake_requested and (
+                create_mmd_control_rig or has_registered_source
+            ):
+                registered_sparse_frames, _ = self._compiled_registered_sparse_frames(
+                    vmd_bytes=sparse_vmd_bytes,
+                    pmx_bytes=sparse_pmx_bytes,
+                    pmx_path=sparse_pmx_path,
+                    profile=profile,
+                )
+        return registered_sparse_frames
 
     def _enforce_humanik_import_gate(self, target_model: str) -> None:
         """Refuse VMD import while HumanIK owns ``target_model`` as TARGET/Control Rig.
@@ -1853,6 +1834,23 @@ class VmdConverter:
                     errors.append(f"restore cleared motion failed: {exc}")
             return "; ".join(errors) if errors else None
 
+        def build_transaction():
+            return {
+                "root": control_rig_root,
+                "created": created,
+                "entered_here": entered_here,
+                "prior_state": prior_state,
+                "prior_owner": prior_owner,
+                "prior_raw_metadata": prior_raw_metadata,
+                "prior_animation_snapshot": prior_animation_snapshot,
+                "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
+                "scene_snapshot": scene_snapshot,
+                "motion_cleared": motion_cleared,
+                "detached_motion_curve_nodes": tuple(
+                    dict.fromkeys(transaction_detached_curve_nodes)
+                ),
+            }
+
         try:
             if metadata is not None:
                 if (
@@ -1874,21 +1872,7 @@ class VmdConverter:
                     validate_vmd_routes()
                     self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
                     clear_motion_before_rig_transition()
-                    return {
-                        "root": control_rig_root,
-                        "created": False,
-                        "entered_here": False,
-                        "prior_state": prior_state,
-                        "prior_owner": prior_owner,
-                        "prior_raw_metadata": prior_raw_metadata,
-                        "prior_animation_snapshot": prior_animation_snapshot,
-                        "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
-                        "scene_snapshot": scene_snapshot,
-                        "motion_cleared": motion_cleared,
-                        "detached_motion_curve_nodes": tuple(
-                            dict.fromkeys(transaction_detached_curve_nodes)
-                        ),
-                    }
+                    return build_transaction()
                 if metadata.get("owner") != CONTROL_RIG_MMD_OWNED or metadata.get("state") not in {
                     CONTROL_RIG_ATTACHED,
                     CONTROL_RIG_BAKED,
@@ -1915,21 +1899,7 @@ class VmdConverter:
                 clear_motion_before_rig_transition()
             validate_vmd_routes()
             self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
-            return {
-                "root": control_rig_root,
-                "created": created,
-                "entered_here": entered_here,
-                "prior_state": prior_state,
-                "prior_owner": prior_owner,
-                "prior_raw_metadata": prior_raw_metadata,
-                "prior_animation_snapshot": prior_animation_snapshot,
-                "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
-                "scene_snapshot": scene_snapshot,
-                "motion_cleared": motion_cleared,
-                "detached_motion_curve_nodes": tuple(
-                    dict.fromkeys(transaction_detached_curve_nodes)
-                ),
-            }
+            return build_transaction()
         except MMDImportException as exc:
             rollback_error = rollback_preflight()
             if rollback_error:
@@ -1958,7 +1928,7 @@ class VmdConverter:
         """Capture existing controller keys before an EDIT-owned import mutates them."""
         if not isinstance(metadata, dict):
             return []
-        from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import capture_animation_channel_snapshot
 
         snapshot = []
         seen_controls = set()
@@ -1978,7 +1948,7 @@ class VmdConverter:
                 try:
                     if not cmds.objExists(plug):
                         continue
-                    channel = _capture_animation_channel_snapshot(cmds, plug)
+                    channel = capture_animation_channel_snapshot(cmds, plug)
                 except Exception:
                     continue
                 snapshot.append(
@@ -2021,7 +1991,7 @@ class VmdConverter:
         imports retain their historical performance and behavior.
         """
         from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
-        from ..core.mmd_control_rig_motion import _capture_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import capture_animation_channel_snapshot
 
         snapshot: Dict[str, object] = {
             "timeline": {},
@@ -2233,7 +2203,7 @@ class VmdConverter:
                 if not cmds.objExists(plug):
                     continue
                 try:
-                    channel = _capture_animation_channel_snapshot(cmds, plug)
+                    channel = capture_animation_channel_snapshot(cmds, plug)
                 except Exception:
                     continue
                 # A direct non-animCurve incoming connection owns this plug's
@@ -2281,7 +2251,7 @@ class VmdConverter:
         if not snapshot:
             return None
         from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
-        from ..core.mmd_control_rig_motion import _restore_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import restore_animation_channel_snapshot
 
         errors = []
         for row in snapshot.get("channels", []) or []:
@@ -2298,7 +2268,7 @@ class VmdConverter:
             try:
                 if secondary_locked:
                     cmds.setAttr(destination, lock=False)
-                _restore_animation_channel_snapshot(
+                restore_animation_channel_snapshot(
                     cmds,
                     row,
                     destination=destination,
@@ -2365,7 +2335,7 @@ class VmdConverter:
     @staticmethod
     def _restore_mmd_control_rig_animation_snapshot(snapshot) -> Optional[str]:
         """Restore controller keys captured before an EDIT-owned import."""
-        from ..core.mmd_control_rig_motion import _restore_animation_channel_snapshot
+        from ..core.animation_curve_snapshot import restore_animation_channel_snapshot
 
         errors = []
         for row in snapshot or []:
@@ -2375,7 +2345,7 @@ class VmdConverter:
                 continue
             try:
                 destination = f"{control}.{attr}"
-                _restore_animation_channel_snapshot(
+                restore_animation_channel_snapshot(
                     cmds,
                     row,
                     destination=destination,
@@ -2484,6 +2454,18 @@ class VmdConverter:
                 # the newly-authored route and is intentionally preserved.
                 continue
 
+    def _raise_control_rig_import_failure(self, profile, failure, rollback_error, *, cause=None) -> NoReturn:
+        """Record the import failure before raising it with any rollback details."""
+        self._record_control_rig_import_failure(profile, failure, rollback_error)
+        if rollback_error:
+            raise MMDImportException(
+                f"{failure}; {rollback_error}",
+                reason_code=failure.reason_code,
+            ) from (failure if cause is None else cause)
+        if cause is None:
+            raise failure
+        raise failure from cause
+
     @staticmethod
     def _record_control_rig_import_failure(profile, exc, rollback_error=None) -> None:
         """Publish exact ON-path failure diagnostics into the import profile."""
@@ -2505,6 +2487,28 @@ class VmdConverter:
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
         return suspend_import_scene_updates(self._import_state_context())
+
+    def _convert_scene_channels(self, vmd_data, vmd_bytes, bake_mode) -> None:
+        """Convert camera, light, and self-shadow animation in scene order."""
+        if self.import_camera_animation and getattr(vmd_data, "camera_frames", None):
+            self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
+            self._clear_existing_camera_motion()
+            self._convert_camera_animation(
+                vmd_data.camera_frames,
+                vmd_bytes=vmd_bytes if bake_mode else None,
+            )
+        if self.import_light_animation and getattr(vmd_data, "light_frames", None):
+            self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
+            self._clear_existing_light_motion()
+            self._convert_light_animation(
+                vmd_data.light_frames,
+                vmd_bytes=vmd_bytes if bake_mode else None,
+            )
+        if self.import_light_animation and getattr(vmd_data, "shadow_frames", None):
+            if not getattr(vmd_data, "light_frames", None):
+                self._clear_existing_shadow_motion()
+            if not self._convert_self_shadow_animation(vmd_data.shadow_frames):
+                raise RuntimeError("VMD self-shadow animation conversion failed")
 
     def _convert_scene_animation_only(self, vmd_data, layer_name, bake_mode, vmd_bytes) -> bool:
         """Convert camera/light channels without entering any model or IK path."""
@@ -2533,23 +2537,7 @@ class VmdConverter:
             else:
                 self.anim_layer = None
             self._setup_timeline(vmd_data)
-            if self.import_camera_animation and getattr(vmd_data, "camera_frames", None):
-                self._clear_existing_camera_motion()
-                self._convert_camera_animation(
-                    vmd_data.camera_frames,
-                    vmd_bytes=vmd_bytes if bake_mode else None,
-                )
-            if self.import_light_animation and getattr(vmd_data, "light_frames", None):
-                self._clear_existing_light_motion()
-                self._convert_light_animation(
-                    vmd_data.light_frames,
-                    vmd_bytes=vmd_bytes if bake_mode else None,
-                )
-            if self.import_light_animation and getattr(vmd_data, "shadow_frames", None):
-                if not getattr(vmd_data, "light_frames", None):
-                    self._clear_existing_shadow_motion()
-                if not self._convert_self_shadow_animation(vmd_data.shadow_frames):
-                    raise RuntimeError("VMD self-shadow animation conversion failed")
+            self._convert_scene_channels(vmd_data, vmd_bytes, bake_mode)
             self._restore_import_timeline_state(current_time)
             return True
         except Exception as exc:
@@ -2830,6 +2818,72 @@ class VmdConverter:
         """明示指定がない runtime bake 入力を VMD/scene metadata から復元する。"""
         return resolve_runtime_bake_sources(self, vmd_data, vmd_bytes, pmx_bytes, pmx_path, target_namespace)
 
+    def _create_runtime_physics_world(
+        self,
+        target_model: Optional[str],
+        resolved_pmx_bytes: bytes,
+        physics_routing: Dict[str, Any],
+    ) -> Optional["MmdRuntimePhysicsWorld"]:
+        """生成結果を physics_routing に記録し、ベイク用の物理ワールドを返す。"""
+        physics_world = None
+        if not HAS_MMD_RUNTIME or MmdRuntimePhysicsWorld is None:
+            physics_routing["reason"] = "runtime_unavailable"
+            self.logger.warning(
+                "Native physics bake requested but mmd-anim runtime is unavailable; "
+                "falling back to non-physics runtime batch"
+            )
+        elif not is_native_physics_available():
+            physics_routing["reason"] = "feature_flags_unavailable"
+            self.logger.warning(
+                "Native physics bake requested but feature flags missing "
+                "(flags=0x%x); falling back to non-physics runtime batch",
+                physics_routing["feature_flags"],
+            )
+        else:
+            if target_model:
+                try:
+                    from mmd_tools.core.physics_dag_descriptor import (
+                        build_descriptors_from_dag,
+                    )
+
+                    from mmd_tools.core.physics_solver import (
+                        _collect_bone_joints,
+                    )
+
+                    bone_joints = _collect_bone_joints(target_model)
+                    bone_count = len(bone_joints)
+                    physics_descriptors = build_descriptors_from_dag(
+                        target_model,
+                        bone_joints=bone_joints,
+                        bone_count=bone_count,
+                    )
+                    if physics_descriptors.validation_errors:
+                        raise ValueError("physics descriptor validation failed")
+                    physics_world = MmdRuntimePhysicsWorld.from_descriptors(
+                        physics_descriptors.rigid_bodies,
+                        physics_descriptors.joints,
+                    )
+                except Exception:
+                    physics_world = None
+                    self.logger.warning(
+                        "Scaled native physics world could not be created from Maya DAG; "
+                        "falling back to non-physics runtime batch",
+                        exc_info=True,
+                    )
+            else:
+                physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+                    resolved_pmx_bytes
+                )
+            if physics_world is None:
+                physics_routing["reason"] = "physics_world_create_failed"
+                self.logger.warning(
+                    "Native physics world could not be created from PMX bytes; "
+                    "falling back to non-physics runtime batch"
+                )
+            else:
+                physics_routing["world_created"] = True
+        return physics_world
+
     def _convert_using_mmd_runtime(
         self,
         vmd_data: VmdData,
@@ -2964,63 +3018,10 @@ class VmdConverter:
                 "feature_flags": int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
                 "fps": float(self.fps),
             }
-            if use_native_physics_bake:
-                if not HAS_MMD_RUNTIME or MmdRuntimePhysicsWorld is None:
-                    physics_routing["reason"] = "runtime_unavailable"
-                    self.logger.warning(
-                        "Native physics bake requested but mmd-anim runtime is unavailable; "
-                        "falling back to non-physics runtime batch"
-                    )
-                elif not is_native_physics_available():
-                    physics_routing["reason"] = "feature_flags_unavailable"
-                    self.logger.warning(
-                        "Native physics bake requested but feature flags missing "
-                        "(flags=0x%x); falling back to non-physics runtime batch",
-                        physics_routing["feature_flags"],
-                    )
-                else:
-                    if target_model:
-                        try:
-                            from mmd_tools.core.physics_dag_descriptor import (
-                                build_descriptors_from_dag,
-                            )
-
-                            from mmd_tools.core.physics_solver import (
-                                _collect_bone_joints,
-                            )
-
-                            bone_joints = _collect_bone_joints(target_model)
-                            bone_count = len(bone_joints)
-                            physics_descriptors = build_descriptors_from_dag(
-                                target_model,
-                                bone_joints=bone_joints,
-                                bone_count=bone_count,
-                            )
-                            if physics_descriptors.validation_errors:
-                                raise ValueError("physics descriptor validation failed")
-                            physics_world = MmdRuntimePhysicsWorld.from_descriptors(
-                                physics_descriptors.rigid_bodies,
-                                physics_descriptors.joints,
-                            )
-                        except Exception:
-                            physics_world = None
-                            self.logger.warning(
-                                "Scaled native physics world could not be created from Maya DAG; "
-                                "falling back to non-physics runtime batch",
-                                exc_info=True,
-                            )
-                    else:
-                        physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
-                            resolved_pmx_bytes
-                        )
-                    if physics_world is None:
-                        physics_routing["reason"] = "physics_world_create_failed"
-                        self.logger.warning(
-                            "Native physics world could not be created from PMX bytes; "
-                            "falling back to non-physics runtime batch"
-                        )
-                    else:
-                        physics_routing["world_created"] = True
+            physics_world = (
+                self._create_runtime_physics_world(target_model, resolved_pmx_bytes, physics_routing)
+                if use_native_physics_bake else None
+            )
 
             # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
             # Native physics batch (when used) reuses the same matrix/morph → channel apply path.
@@ -3072,102 +3073,16 @@ class VmdConverter:
                 )
 
             if reduce_bake_keys:
-                reduction_start = time.perf_counter()
-                reduction_reason = None
-                reduction_outcome = None
-                try:
-                    from ..core.native.mmd_anim_runtime import MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC
-                    from ..core.native.mmd_anim_runtime_types import MmdRuntimeReductionTolerances
-
-                    if runtime_cache.dense_batch_result is None:
-                        reduction_reason = "dense runtime batch unavailable"
-                    else:
-                        reduced_pose = model.reduce_dense_pose(
-                            runtime_cache.dense_batch_result,
-                            model_identity=id(model),
-                            start_frame=float(runtime_cache.baked_frames[0]) if runtime_cache.baked_frames else 0.0,
-                            frame_step=(
-                                float(runtime_cache.baked_frames[1] - runtime_cache.baked_frames[0])
-                                if len(runtime_cache.baked_frames) > 1
-                                else 1.0
-                            ),
-                            target=MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
-                            tolerances=MmdRuntimeReductionTolerances(
-                                local_position=reduce_translate_tolerance,
-                                local_rotation_radians=reduce_rotate_tolerance,
-                                world_position=reduce_translate_tolerance,
-                                world_rotation_radians=reduce_rotate_tolerance,
-                                morph_weight=reduce_morph_tolerance,
-                            ),
-                        )
-                        if reduced_pose is None:
-                            reduction_reason = "runtime reducer unavailable or returned no pose"
-                        else:
-                            reduction_outcome = author_reduced_pose_from_runtime_cache(
-                                self,
-                                runtime_cache,
-                                reduced_pose,
-                                pmx_morph_names,
-                                translate_tolerance=reduce_translate_tolerance,
-                                rotate_tolerance_radians=reduce_rotate_tolerance,
-                                morph_tolerance=reduce_morph_tolerance,
-                            )
-                            if not reduction_outcome.success:
-                                reduction_reason = reduction_outcome.reason or "reduced authoring failed"
-                except Exception as exc:
-                    reduction_reason = f"reduced bake exception: {exc}"
-
-                reduction_elapsed = time.perf_counter() - reduction_start
-                reduced_profile = {
-                    "requested": True,
-                    "used": bool(reduction_outcome and reduction_outcome.success),
-                    "elapsed": float(reduction_elapsed),
-                    "physics_used": bool(physics_routing.get("used", False)),
-                    "translate_tolerance": float(reduce_translate_tolerance),
-                    "rotate_tolerance_radians": float(reduce_rotate_tolerance),
-                    "morph_tolerance": float(reduce_morph_tolerance),
-                }
-                if reduction_outcome and reduction_outcome.success:
-                    report = reduction_outcome.plan.report if reduction_outcome.plan else None
-                    if report:
-                        reduced_profile.update(
-                            {
-                                "source_key_count": int(report.source_key_count),
-                                "reduced_key_count": int(report.reduced_key_count),
-                                "reduction_ratio": float(report.reduction_ratio),
-                                "max_translate_error": float(report.max_translate_error),
-                                "max_rotate_error_radians": float(report.max_rotate_error_radians),
-                                "max_morph_error": float(report.max_morph_error),
-                            }
-                        )
-                    reduced_profile["created_curves"] = [
-                        item.curve_name for item in (reduction_outcome.authoring.created_curves if reduction_outcome.authoring else ())
-                    ]
-                    reduced_profile["route_count"] = int(reduction_outcome.route_count)
-                    reduced_profile["morph_fanout_count"] = int(reduction_outcome.morph_fanout_count)
-                    if isinstance(profile, dict):
-                        profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
-                    return True
-
-                reduced_profile["reason"] = reduction_reason or "reduced bake rejected"
-                reduced_profile["fallback"] = "none"
-                if isinstance(profile, dict):
-                    profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
-                self.logger.error(
-                    "Reduce Bake Keys failed; dense fallback was not attempted: %s",
-                    reduced_profile["reason"],
+                return self._author_reduced_runtime_bake(
+                    model,
+                    runtime_cache,
+                    pmx_morph_names,
+                    reduce_translate_tolerance=reduce_translate_tolerance,
+                    reduce_rotate_tolerance=reduce_rotate_tolerance,
+                    reduce_morph_tolerance=reduce_morph_tolerance,
+                    physics_routing=physics_routing,
+                    profile=profile,
                 )
-                self._record_profile_warning(
-                    profile,
-                    {
-                        "source": "vmd_converter",
-                        "code": "reduced_bake_keys_failed",
-                        "severity": "error",
-                        "message": reduced_profile["reason"],
-                        "fallback": "none",
-                    },
-                )
-                return False
 
             _apply_dense_runtime_cache()
 
@@ -3196,6 +3111,115 @@ class VmdConverter:
             model.free()
             if registration_model is not model:
                 registration_model.free()
+
+    def _author_reduced_runtime_bake(
+        self,
+        model,
+        runtime_cache,
+        pmx_morph_names,
+        reduce_translate_tolerance,
+        reduce_rotate_tolerance,
+        reduce_morph_tolerance,
+        physics_routing,
+        profile,
+    ) -> bool:
+        """Reduce the runtime cache and author the resulting Maya curves."""
+        reduction_start = time.perf_counter()
+        reduction_reason = None
+        reduction_outcome = None
+        try:
+            from ..core.native.mmd_anim_runtime import MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC
+            from ..core.native.mmd_anim_runtime_types import MmdRuntimeReductionTolerances
+
+            if runtime_cache.dense_batch_result is None:
+                reduction_reason = "dense runtime batch unavailable"
+            else:
+                reduced_pose = model.reduce_dense_pose(
+                    runtime_cache.dense_batch_result,
+                    model_identity=id(model),
+                    start_frame=float(runtime_cache.baked_frames[0]) if runtime_cache.baked_frames else 0.0,
+                    frame_step=(
+                        float(runtime_cache.baked_frames[1] - runtime_cache.baked_frames[0])
+                        if len(runtime_cache.baked_frames) > 1
+                        else 1.0
+                    ),
+                    target=MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
+                    tolerances=MmdRuntimeReductionTolerances(
+                        local_position=reduce_translate_tolerance,
+                        local_rotation_radians=reduce_rotate_tolerance,
+                        world_position=reduce_translate_tolerance,
+                        world_rotation_radians=reduce_rotate_tolerance,
+                        morph_weight=reduce_morph_tolerance,
+                    ),
+                )
+                if reduced_pose is None:
+                    reduction_reason = "runtime reducer unavailable or returned no pose"
+                else:
+                    reduction_outcome = author_reduced_pose_from_runtime_cache(
+                        self,
+                        runtime_cache,
+                        reduced_pose,
+                        pmx_morph_names,
+                        translate_tolerance=reduce_translate_tolerance,
+                        rotate_tolerance_radians=reduce_rotate_tolerance,
+                        morph_tolerance=reduce_morph_tolerance,
+                    )
+                    if not reduction_outcome.success:
+                        reduction_reason = reduction_outcome.reason or "reduced authoring failed"
+        except Exception as exc:
+            reduction_reason = f"reduced bake exception: {exc}"
+
+        reduction_elapsed = time.perf_counter() - reduction_start
+        reduced_profile = {
+            "requested": True,
+            "used": bool(reduction_outcome and reduction_outcome.success),
+            "elapsed": float(reduction_elapsed),
+            "physics_used": bool(physics_routing.get("used", False)),
+            "translate_tolerance": float(reduce_translate_tolerance),
+            "rotate_tolerance_radians": float(reduce_rotate_tolerance),
+            "morph_tolerance": float(reduce_morph_tolerance),
+        }
+        if reduction_outcome and reduction_outcome.success:
+            report = reduction_outcome.plan.report if reduction_outcome.plan else None
+            if report:
+                reduced_profile.update(
+                    {
+                        "source_key_count": int(report.source_key_count),
+                        "reduced_key_count": int(report.reduced_key_count),
+                        "reduction_ratio": float(report.reduction_ratio),
+                        "max_translate_error": float(report.max_translate_error),
+                        "max_rotate_error_radians": float(report.max_rotate_error_radians),
+                        "max_morph_error": float(report.max_morph_error),
+                    }
+                )
+            reduced_profile["created_curves"] = [
+                item.curve_name for item in (reduction_outcome.authoring.created_curves if reduction_outcome.authoring else ())
+            ]
+            reduced_profile["route_count"] = int(reduction_outcome.route_count)
+            reduced_profile["morph_fanout_count"] = int(reduction_outcome.morph_fanout_count)
+            if isinstance(profile, dict):
+                profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
+            return True
+
+        reduced_profile["reason"] = reduction_reason or "reduced bake rejected"
+        reduced_profile["fallback"] = "none"
+        if isinstance(profile, dict):
+            profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
+        self.logger.error(
+            "Reduce Bake Keys failed; dense fallback was not attempted: %s",
+            reduced_profile["reason"],
+        )
+        self._record_profile_warning(
+            profile,
+            {
+                "source": "vmd_converter",
+                "code": "reduced_bake_keys_failed",
+                "severity": "error",
+                "message": reduced_profile["reason"],
+                "fallback": "none",
+            },
+        )
+        return False
 
     def _get_animation_frame_range(self, vmd_data: VmdData):
         """VMDデータからアニメーションのフレーム範囲を取得"""

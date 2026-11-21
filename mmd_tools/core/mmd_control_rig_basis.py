@@ -119,6 +119,72 @@ def validate_basis_record(record: Mapping[str, Any]) -> MmdControlRigBasis:
     return MmdControlRigBasis(canonical, str(source))
 
 
+def quaternion_from_euler_degrees(
+    values,
+    *,
+    rotate_order: int = 0,
+) -> Tuple[float, float, float, float]:
+    """Convert Maya Euler degrees and rotate order to an xyzw quaternion."""
+
+    try:
+        import maya.api.OpenMaya as om
+
+        if int(rotate_order) not in range(6):
+            raise ValueError(f"invalid Maya rotate order: {rotate_order}")
+        rotation = om.MEulerRotation(
+            math.radians(float(values[0])),
+            math.radians(float(values[1])),
+            math.radians(float(values[2])),
+            int(rotate_order),
+        )
+        q = rotation.asQuaternion()
+        return (float(q.x), float(q.y), float(q.z), float(q.w))
+    except Exception:
+        if int(rotate_order) != 0:
+            raise
+        x, y, z = (math.radians(float(value)) * 0.5 for value in values)
+        cx, sx = math.cos(x), math.sin(x)
+        cy, sy = math.cos(y), math.sin(y)
+        cz, sz = math.cos(z), math.sin(z)
+        return (
+            sx * cy * cz - cx * sy * sz,
+            cx * sy * cz + sx * cy * sz,
+            cx * cy * sz - sx * sy * cz,
+            cx * cy * cz + sx * sy * sz,
+        )
+
+
+def euler_degrees_from_quaternion(
+    quaternion,
+    *,
+    rotate_order: int = 0,
+) -> Tuple[float, float, float]:
+    """Convert an xyzw quaternion to Maya Euler degrees in one rotate order."""
+
+    try:
+        import maya.api.OpenMaya as om
+
+        if int(rotate_order) not in range(6):
+            raise ValueError(f"invalid Maya rotate order: {rotate_order}")
+        q = om.MQuaternion(*[float(value) for value in quaternion])
+        rotation = q.asEulerRotation()
+        rotation.reorderIt(int(rotate_order))
+        return tuple(math.degrees(float(value)) for value in (rotation.x, rotation.y, rotation.z))
+    except Exception:
+        if int(rotate_order) != 0:
+            raise
+        x, y, z, w = (float(value) for value in quaternion)
+        sinr = 2.0 * (w * x + y * z)
+        cosr = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.atan2(sinr, cosr)
+        sinp = 2.0 * (w * y - z * x)
+        pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+        siny = 2.0 * (w * z + x * y)
+        cosy = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny, cosy)
+        return tuple(math.degrees(value) for value in (roll, pitch, yaw))
+
+
 def quaternion_multiply(
     left: Tuple[float, float, float, float],
     right: Tuple[float, float, float, float],

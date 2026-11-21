@@ -277,6 +277,39 @@ _AUTO_ORIENT_SHAPE_ROLES = frozenset(
 _IK_PARENT_CURVE_ROTATION = ((-1.0, 0.0, 0.0), 0.0, 1.0)
 
 
+def _place_role_zero(cmds, zero, role, binding):
+    """Place the zero group and return the matrix for the authoring basis."""
+    if (
+        binding.bone_index is None
+        or binding.input_kind == INPUT_IK_CONTROLLER
+        or role in _IK_DISPLAY_ONLY_ROLES
+    ):
+        # The model-root fallback is a scene transform rather
+        # than an imported PMX bone and has no bind-pose record.
+        # Preserve existing placement; solver-owned IK handles
+        # likewise follow their current goal display and are not
+        # authoring-basis rotations.
+        matrix = cmds.xform(
+            binding.joint,
+            query=True,
+            worldSpace=True,
+            matrix=True,
+        )
+    else:
+        matrix = _saved_bind_world_matrix(cmds, binding.joint)
+    cmds.xform(zero, worldSpace=True, matrix=matrix)
+    basis_matrix = matrix
+    if (
+        role in _ARM_ORIENTATION_ROLES
+        and binding.bone_index is not None
+        and binding.input_kind == INPUT_IK_CONTROLLER
+    ):
+        # Solver goals may display at the live pose, but FK-style
+        # arm authoring axes must remain bind-pose deterministic.
+        basis_matrix = _saved_bind_world_matrix(cmds, binding.joint)
+    return basis_matrix
+
+
 def build_mmd_control_rig(
     model_root: str,
     *,
@@ -344,34 +377,7 @@ def build_mmd_control_rig(
                     name=f"{namespace}{role}_ZERO",
                     parent=control_group,
                 )
-                if (
-                    binding.bone_index is None
-                    or binding.input_kind == INPUT_IK_CONTROLLER
-                    or role in _IK_DISPLAY_ONLY_ROLES
-                ):
-                    # The model-root fallback is a scene transform rather
-                    # than an imported PMX bone and has no bind-pose record.
-                    # Preserve existing placement; solver-owned IK handles
-                    # likewise follow their current goal display and are not
-                    # authoring-basis rotations.
-                    matrix = cmds.xform(
-                        binding.joint,
-                        query=True,
-                        worldSpace=True,
-                        matrix=True,
-                    )
-                else:
-                    matrix = _saved_bind_world_matrix(cmds, binding.joint)
-                cmds.xform(zero, worldSpace=True, matrix=matrix)
-                basis_matrix = matrix
-                if (
-                    role in _ARM_ORIENTATION_ROLES
-                    and binding.bone_index is not None
-                    and binding.input_kind == INPUT_IK_CONTROLLER
-                ):
-                    # Solver goals may display at the live pose, but FK-style
-                    # arm authoring axes must remain bind-pose deterministic.
-                    basis_matrix = _saved_bind_world_matrix(cmds, binding.joint)
+                basis_matrix = _place_role_zero(cmds, zero, role, binding)
                 shape_rotation = _control_shape_rotation(
                     cmds,
                     root,
