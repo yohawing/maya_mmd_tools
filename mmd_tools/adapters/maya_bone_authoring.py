@@ -1056,6 +1056,42 @@ def unregister_existing_joint(root: str, joint: str, adapter: Any) -> None:
             _call(adapter, "delete_attr", f"{joint}.{attr}")
 
 
+def _joint_animation_probe(adapter: Any, joint: str) -> tuple[bool, bool]:
+    """Return (animated, detector_failed) for one joint."""
+    detector_failed = False
+    if callable(getattr(adapter, "keyframe", None)):
+        try:
+            for plug in ("translate", "rotate"):
+                if _call(adapter, "keyframe", f"{joint}.{plug}", query=True, keyframeCount=True):
+                    return True, detector_failed
+        except Exception:
+            # Detector failure is deliberately a warning, never a reset
+            # blocker.  Keep probing this joint's connections.
+            detector_failed = True
+
+    # A direct incoming animCurve connection is a valid fallback when
+    # keyframeCount is unavailable.  Ordinary DG/IK connections are
+    # intentionally ignored.
+    if callable(getattr(adapter, "list_connections", None)):
+        for plug in ("translate", "rotate", "scale"):
+            try:
+                connections = _call(
+                    adapter, "list_connections", f"{joint}.{plug}", source=True, destination=False
+                ) or []
+            except Exception:
+                detector_failed = True
+                continue
+            for connection in connections:
+                try:
+                    if callable(getattr(adapter, "node_type", None)) and _call(
+                        adapter, "node_type", connection
+                    ) == "animCurve":
+                        return True, detector_failed
+                except Exception:
+                    detector_failed = True
+    return False, detector_failed
+
+
 def _animation_warning(root: str, joints: Sequence[str], adapter: Any) -> str | None:
     """Return a non-blocking animation warning, or ``None`` when absent."""
     try:
@@ -1088,59 +1124,8 @@ def _animation_warning(root: str, joints: Sequence[str], adapter: Any) -> str | 
                     # detector warning; reset remains available.
                     detector_failed = True
         for joint in joints:
-            if callable(getattr(adapter, "keyframe", None)):
-                try:
-                    count = _call(
-                        adapter,
-                        "keyframe",
-                        f"{joint}.translate",
-                        query=True,
-                        keyframeCount=True,
-                    )
-                    animated = bool(count)
-                    if not animated:
-                        count = _call(
-                            adapter,
-                            "keyframe",
-                            f"{joint}.rotate",
-                            query=True,
-                            keyframeCount=True,
-                        )
-                        animated = bool(count)
-                except Exception:
-                    # Detector failure is deliberately a warning, never a
-                    # reset blocker.  Continue probing other joints.
-                    detector_failed = True
-            if animated:
-                break
-            # A direct incoming animCurve connection is a valid fallback when
-            # keyframeCount is unavailable.  Ordinary DG/IK connections are
-            # intentionally ignored.
-            if callable(getattr(adapter, "list_connections", None)):
-                for plug in ("translate", "rotate", "scale"):
-                    try:
-                        connections = _call(
-                            adapter,
-                            "list_connections",
-                            f"{joint}.{plug}",
-                            source=True,
-                            destination=False,
-                        ) or []
-                    except Exception:
-                        detector_failed = True
-                        continue
-                    for connection in connections:
-                        try:
-                            if callable(getattr(adapter, "node_type", None)) and _call(
-                                adapter, "node_type", connection
-                            ) == "animCurve":
-                                animated = True
-                                break
-                        except Exception:
-                            detector_failed = True
-                            continue
-                    if animated:
-                        break
+            animated, failed = _joint_animation_probe(adapter, joint)
+            detector_failed |= failed
             if animated:
                 break
         if control_rig_owned:
