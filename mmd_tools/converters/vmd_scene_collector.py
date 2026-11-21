@@ -1951,6 +1951,17 @@ class VmdSceneCollector:
         )
         return {_vmd_frame_number(frame, time_converter) for frame in maya_frames}
 
+    def _is_native_dense_joint(
+        self, joint, keyed_times_by_joint, keyless_dependency_joints, single_key_joints
+    ) -> bool:
+        """Return whether a keyed or dependency-driven joint needs native dense sampling."""
+        if not (
+            keyed_times_by_joint.get(joint) or joint in keyless_dependency_joints
+        ) or joint in single_key_joints:
+            return False
+        long_name = str((cmds.ls(joint, long=True) or [joint])[0])
+        return long_name not in self._bake_timeline_physics_output_excluded_targets
+
     def collect_bone_frames(
         self,
         joints: Sequence[str],
@@ -2137,13 +2148,9 @@ class VmdSceneCollector:
                 and dense_frames
                 and bone_channel_sampler is None
                 and any(
-                    (
-                        keyed_times_by_joint.get(joint)
-                        or joint in keyless_dependency_joints
+                    self._is_native_dense_joint(
+                        joint, keyed_times_by_joint, keyless_dependency_joints, single_key_joints
                     )
-                    and joint not in single_key_joints
-                    and str((cmds.ls(joint, long=True) or [joint])[0])
-                    not in self._bake_timeline_physics_output_excluded_targets
                     for joint in joints
                 )
             ):
@@ -2165,13 +2172,9 @@ class VmdSceneCollector:
                 native_joints = [
                     joint
                     for joint in joints
-                    if (
-                        keyed_times_by_joint.get(joint)
-                        or joint in keyless_dependency_joints
+                    if self._is_native_dense_joint(
+                        joint, keyed_times_by_joint, keyless_dependency_joints, single_key_joints
                     )
-                    and joint not in single_key_joints
-                    and str((cmds.ls(joint, long=True) or [joint])[0])
-                    not in self._bake_timeline_physics_output_excluded_targets
                 ]
                 if not native_joints:
                     self._diagnostics["native_sampler"] = {
