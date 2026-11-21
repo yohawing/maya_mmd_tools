@@ -26,8 +26,10 @@ from mmd_tools.adapters.maya_material_shader_route import (
 from mmd_tools.core.material_authoring import classify_material_change
 from mmd_tools.core.constants import (
     ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_DIFFUSE_ALPHA,
     ATTR_MMD_DIFFUSE_COLOR,
     ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_ALPHA,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_EDGE_SIZE,
@@ -64,8 +66,6 @@ ATTR_MMD_RESOLVED_TEXTURE_PATH = "mmd_resolved_texture_path"
 ATTR_MMD_RESOLVED_SPHERE_TEXTURE_PATH = "mmd_resolved_sphere_texture_path"
 ATTR_MMD_RESOLVED_TOON_TEXTURE_PATH = "mmd_resolved_toon_texture_path"
 ATTR_MMD_TOON_TEXTURE_PATH = ATTR_MMD_TOON_PATH
-ATTR_MMD_DIFFUSE_ALPHA = "mmd_diffuse_alpha"
-ATTR_MMD_EDGE_ALPHA = "mmd_edge_alpha"
 ATTR_MMD_MATERIAL_MORPH_OFFSETS = "mmd_material_morph_offsets_json"
 _STANDARD_PREVIEW_SHADER_LINK = "mmdStandardPreviewShader"
 _STANDARD_PREVIEW_TEXTURE_LINK = "mmdStandardPreviewTexture"

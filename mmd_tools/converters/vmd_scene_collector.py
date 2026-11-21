@@ -50,6 +50,8 @@ from mmd_tools.core.utils import copy_diagnostics
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from mmd_tools.converters.vmd_camera_animation import (
+    ATTR_MMD_CAMERA_INTERPOLATION_JSON as _ATTR_MMD_CAMERA_INTERPOLATION_JSON,
+    ATTR_MMD_CAMERA_RIG_TYPE as _ATTR_MMD_CAMERA_RIG_TYPE,
     ATTR_MMD_CAMERA_ROOT_NODE,
     ATTR_MMD_CAMERA_TARGET_NODE,
     MMD_CAMERA_EXPR_SCALE_ATTR,
@@ -101,8 +103,6 @@ _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
 _LIGHT_SHAPE_COLOR_ATTRS = ("colorR", "colorG", "colorB")
 _DEFAULT_CAMERA_INTERPOLATION = b"\x14" * 24
-_ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
-_ATTR_MMD_CAMERA_INTERPOLATION_JSON = "mmd_camera_interpolation_json"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
 _BAKE_TIMELINE_TRACK_TARGETS = frozenset({"character", "camera", "light"})
 

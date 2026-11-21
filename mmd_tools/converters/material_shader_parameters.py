@@ -7,9 +7,10 @@ display plugs, so callers must not overwrite them while an evaluator drives them
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Tuple
 
-
-ATTR_MMD_EDGE_ALPHA = "mmd_edge_alpha"
-ATTR_MMD_DIFFUSE_ALPHA = "mmd_diffuse_alpha"
+from mmd_tools.core.constants import (
+    ATTR_MMD_DIFFUSE_ALPHA as ATTR_MMD_DIFFUSE_ALPHA,
+    ATTR_MMD_EDGE_ALPHA as ATTR_MMD_EDGE_ALPHA,
+)
 
 
 @dataclass(frozen=True)
