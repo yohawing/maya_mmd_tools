@@ -124,6 +124,8 @@ class TestE2EChainStructure(unittest.TestCase):
         """Live graph creates solver → bone driver connections."""
         src, tree, lines = _get_source(SCENE_BUILDER_PATH)
         live_graph = _func_source(tree, lines, "build_physics_live_graph")
+        live_graph += _func_source(tree, lines, "_configure_physics_bone_driver")
+        self.assertIn("_configure_physics_bone_driver", live_graph)
         self.assertIn("outBoneMatrices", live_graph)
         self.assertIn("outBoneCount", live_graph)
         self.assertIn("outSolved", live_graph)

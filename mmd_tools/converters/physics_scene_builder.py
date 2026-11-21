@@ -473,6 +473,93 @@ def _prune_solver_kinematic_cycles(
     }
 
 
+def _configure_physics_bone_driver(
+    driver: str, solver: str, joint: str, bone_index: int, parent_bone_index: int, maya_joints, bones
+) -> None:
+    """Configure one physics driver and connect it to the solver and target joint."""
+    cmds.setAttr(f"{driver}.enable", True)
+    cmds.setAttr(f"{driver}.inBoneIndex", bone_index)
+    cmds.setAttr(f"{driver}.inParentBoneIndex", parent_bone_index)
+    cmds.setAttr(f"{driver}.inSolved", False)
+
+    pre_translate = cmds.getAttr(f"{joint}.translate")[0]
+    pre_rotate = cmds.getAttr(f"{joint}.rotate")[0]
+    cmds.setAttr(f"{driver}.inPreTranslate", *pre_translate)
+    cmds.setAttr(f"{driver}.inPreRotate", *pre_rotate)
+
+    joint_orient = cmds.getAttr(f"{joint}.jointOrient")[0]
+    rotate_axis = cmds.getAttr(f"{joint}.rotateAxis")[0]
+    _set_driver_angle(driver, "inJointOrient", joint_orient)
+    _set_driver_angle(driver, "inRotateAxis", rotate_axis)
+    cmds.setAttr(f"{driver}.inRotateOrder", int(cmds.getAttr(f"{joint}.rotateOrder")))
+
+    bind_world = [
+        float(value) for value in cmds.getAttr(f"{joint}.worldMatrix[0]")
+    ]
+    cmds.setAttr(f"{driver}.inBindWorldMatrix", bind_world, type="matrix")
+    cmds.setAttr(
+        f"{driver}.inNoOrientBindWorldMatrix",
+        _no_orient_matrix(bind_world),
+        type="matrix",
+    )
+
+    parent_bind_world = [1.0, 0.0, 0.0, 0.0,
+                         0.0, 1.0, 0.0, 0.0,
+                         0.0, 0.0, 1.0, 0.0,
+                         0.0, 0.0, 0.0, 1.0]
+    if 0 <= parent_bone_index < len(maya_joints or []):
+        parent_joint = maya_joints[parent_bone_index]
+        if parent_joint and cmds.objExists(parent_joint):
+            parent_bind_world = [
+                float(value) for value in cmds.getAttr(
+                    f"{parent_joint}.worldMatrix[0]"
+                )
+            ]
+    cmds.setAttr(f"{driver}.inParentBindWorldMatrix", parent_bind_world, type="matrix")
+    cmds.setAttr(
+        f"{driver}.inParentNoOrientBindWorldMatrix",
+        _no_orient_matrix(parent_bind_world),
+        type="matrix",
+    )
+
+    cmds.connectAttr(
+        f"{solver}.outBoneMatrices",
+        f"{driver}.inSolverBoneMatrices",
+        force=True,
+    )
+    cmds.connectAttr(f"{solver}.outBoneCount", f"{driver}.inSolverBoneCount", force=True)
+    cmds.connectAttr(f"{solver}.outSolved", f"{driver}.inSolved", force=True)
+
+    # Root PMX bones use solver world space directly.  Child bones use
+    # the PMX parent index above and do not need this fallback input.
+    if not (0 <= parent_bone_index < len(bones or [])):
+        parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+        if parents and cmds.nodeType(parents[0]) == "joint":
+            cmds.connectAttr(
+                f"{parents[0]}.worldInverseMatrix[0]",
+                f"{driver}.inParentInverseMatrix",
+                force=True,
+            )
+
+    if not cmds.attributeQuery("mmd_target_joint", node=driver, exists=True):
+        cmds.addAttr(driver, longName="mmd_target_joint", dataType="string")
+    cmds.setAttr(f"{driver}.mmd_target_joint", joint, type="string")
+    if not cmds.attributeQuery("mmd_target_joint_message", node=driver, exists=True):
+        cmds.addAttr(
+            driver,
+            longName="mmd_target_joint_message",
+            attributeType="message",
+        )
+    cmds.connectAttr(
+        f"{joint}.message",
+        f"{driver}.mmd_target_joint_message",
+        force=True,
+    )
+
+    _connect_physics_output(f"{driver}.outTranslate", f"{joint}.translate")
+    _connect_physics_output(f"{driver}.outRotate", f"{joint}.rotate")
+
+
 def build_physics_live_graph(
     *,
     rigid_bodies,
@@ -582,87 +669,9 @@ def build_physics_live_graph(
         try:
             driver_name = f"{_sanitize_node_name(_node_leaf_name(joint))}_mmdPhysicsBoneDriver"
             driver = cmds.createNode("mmdPhysicsBoneDriver", name=driver_name)
-            cmds.setAttr(f"{driver}.enable", True)
-            cmds.setAttr(f"{driver}.inBoneIndex", bone_index)
-            cmds.setAttr(f"{driver}.inParentBoneIndex", parent_bone_index)
-            cmds.setAttr(f"{driver}.inSolved", False)
-
-            pre_translate = cmds.getAttr(f"{joint}.translate")[0]
-            pre_rotate = cmds.getAttr(f"{joint}.rotate")[0]
-            cmds.setAttr(f"{driver}.inPreTranslate", *pre_translate)
-            cmds.setAttr(f"{driver}.inPreRotate", *pre_rotate)
-
-            joint_orient = cmds.getAttr(f"{joint}.jointOrient")[0]
-            rotate_axis = cmds.getAttr(f"{joint}.rotateAxis")[0]
-            _set_driver_angle(driver, "inJointOrient", joint_orient)
-            _set_driver_angle(driver, "inRotateAxis", rotate_axis)
-            cmds.setAttr(f"{driver}.inRotateOrder", int(cmds.getAttr(f"{joint}.rotateOrder")))
-
-            bind_world = [
-                float(value) for value in cmds.getAttr(f"{joint}.worldMatrix[0]")
-            ]
-            cmds.setAttr(f"{driver}.inBindWorldMatrix", bind_world, type="matrix")
-            cmds.setAttr(
-                f"{driver}.inNoOrientBindWorldMatrix",
-                _no_orient_matrix(bind_world),
-                type="matrix",
+            _configure_physics_bone_driver(
+                driver, solver, joint, bone_index, parent_bone_index, maya_joints, bones
             )
-
-            parent_bind_world = [1.0, 0.0, 0.0, 0.0,
-                                 0.0, 1.0, 0.0, 0.0,
-                                 0.0, 0.0, 1.0, 0.0,
-                                 0.0, 0.0, 0.0, 1.0]
-            if 0 <= parent_bone_index < len(maya_joints or []):
-                parent_joint = maya_joints[parent_bone_index]
-                if parent_joint and cmds.objExists(parent_joint):
-                    parent_bind_world = [
-                        float(value) for value in cmds.getAttr(
-                            f"{parent_joint}.worldMatrix[0]"
-                        )
-                    ]
-            cmds.setAttr(f"{driver}.inParentBindWorldMatrix", parent_bind_world, type="matrix")
-            cmds.setAttr(
-                f"{driver}.inParentNoOrientBindWorldMatrix",
-                _no_orient_matrix(parent_bind_world),
-                type="matrix",
-            )
-
-            cmds.connectAttr(
-                f"{solver}.outBoneMatrices",
-                f"{driver}.inSolverBoneMatrices",
-                force=True,
-            )
-            cmds.connectAttr(f"{solver}.outBoneCount", f"{driver}.inSolverBoneCount", force=True)
-            cmds.connectAttr(f"{solver}.outSolved", f"{driver}.inSolved", force=True)
-
-            # Root PMX bones use solver world space directly.  Child bones use
-            # the PMX parent index above and do not need this fallback input.
-            if not (0 <= parent_bone_index < len(bones or [])):
-                parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
-                if parents and cmds.nodeType(parents[0]) == "joint":
-                    cmds.connectAttr(
-                        f"{parents[0]}.worldInverseMatrix[0]",
-                        f"{driver}.inParentInverseMatrix",
-                        force=True,
-                    )
-
-            if not cmds.attributeQuery("mmd_target_joint", node=driver, exists=True):
-                cmds.addAttr(driver, longName="mmd_target_joint", dataType="string")
-            cmds.setAttr(f"{driver}.mmd_target_joint", joint, type="string")
-            if not cmds.attributeQuery("mmd_target_joint_message", node=driver, exists=True):
-                cmds.addAttr(
-                    driver,
-                    longName="mmd_target_joint_message",
-                    attributeType="message",
-                )
-            cmds.connectAttr(
-                f"{joint}.message",
-                f"{driver}.mmd_target_joint_message",
-                force=True,
-            )
-
-            _connect_physics_output(f"{driver}.outTranslate", f"{joint}.translate")
-            _connect_physics_output(f"{driver}.outRotate", f"{joint}.rotate")
             drivers.append(driver)
             driven_bones.add(bone_index)
         except Exception as exc:
