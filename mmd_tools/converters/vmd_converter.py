@@ -3048,102 +3048,16 @@ class VmdConverter:
                 )
 
             if reduce_bake_keys:
-                reduction_start = time.perf_counter()
-                reduction_reason = None
-                reduction_outcome = None
-                try:
-                    from ..core.native.mmd_anim_runtime import MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC
-                    from ..core.native.mmd_anim_runtime_types import MmdRuntimeReductionTolerances
-
-                    if runtime_cache.dense_batch_result is None:
-                        reduction_reason = "dense runtime batch unavailable"
-                    else:
-                        reduced_pose = model.reduce_dense_pose(
-                            runtime_cache.dense_batch_result,
-                            model_identity=id(model),
-                            start_frame=float(runtime_cache.baked_frames[0]) if runtime_cache.baked_frames else 0.0,
-                            frame_step=(
-                                float(runtime_cache.baked_frames[1] - runtime_cache.baked_frames[0])
-                                if len(runtime_cache.baked_frames) > 1
-                                else 1.0
-                            ),
-                            target=MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
-                            tolerances=MmdRuntimeReductionTolerances(
-                                local_position=reduce_translate_tolerance,
-                                local_rotation_radians=reduce_rotate_tolerance,
-                                world_position=reduce_translate_tolerance,
-                                world_rotation_radians=reduce_rotate_tolerance,
-                                morph_weight=reduce_morph_tolerance,
-                            ),
-                        )
-                        if reduced_pose is None:
-                            reduction_reason = "runtime reducer unavailable or returned no pose"
-                        else:
-                            reduction_outcome = author_reduced_pose_from_runtime_cache(
-                                self,
-                                runtime_cache,
-                                reduced_pose,
-                                pmx_morph_names,
-                                translate_tolerance=reduce_translate_tolerance,
-                                rotate_tolerance_radians=reduce_rotate_tolerance,
-                                morph_tolerance=reduce_morph_tolerance,
-                            )
-                            if not reduction_outcome.success:
-                                reduction_reason = reduction_outcome.reason or "reduced authoring failed"
-                except Exception as exc:
-                    reduction_reason = f"reduced bake exception: {exc}"
-
-                reduction_elapsed = time.perf_counter() - reduction_start
-                reduced_profile = {
-                    "requested": True,
-                    "used": bool(reduction_outcome and reduction_outcome.success),
-                    "elapsed": float(reduction_elapsed),
-                    "physics_used": bool(physics_routing.get("used", False)),
-                    "translate_tolerance": float(reduce_translate_tolerance),
-                    "rotate_tolerance_radians": float(reduce_rotate_tolerance),
-                    "morph_tolerance": float(reduce_morph_tolerance),
-                }
-                if reduction_outcome and reduction_outcome.success:
-                    report = reduction_outcome.plan.report if reduction_outcome.plan else None
-                    if report:
-                        reduced_profile.update(
-                            {
-                                "source_key_count": int(report.source_key_count),
-                                "reduced_key_count": int(report.reduced_key_count),
-                                "reduction_ratio": float(report.reduction_ratio),
-                                "max_translate_error": float(report.max_translate_error),
-                                "max_rotate_error_radians": float(report.max_rotate_error_radians),
-                                "max_morph_error": float(report.max_morph_error),
-                            }
-                        )
-                    reduced_profile["created_curves"] = [
-                        item.curve_name for item in (reduction_outcome.authoring.created_curves if reduction_outcome.authoring else ())
-                    ]
-                    reduced_profile["route_count"] = int(reduction_outcome.route_count)
-                    reduced_profile["morph_fanout_count"] = int(reduction_outcome.morph_fanout_count)
-                    if isinstance(profile, dict):
-                        profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
-                    return True
-
-                reduced_profile["reason"] = reduction_reason or "reduced bake rejected"
-                reduced_profile["fallback"] = "none"
-                if isinstance(profile, dict):
-                    profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
-                self.logger.error(
-                    "Reduce Bake Keys failed; dense fallback was not attempted: %s",
-                    reduced_profile["reason"],
+                return self._author_reduced_runtime_bake(
+                    model,
+                    runtime_cache,
+                    pmx_morph_names,
+                    reduce_translate_tolerance=reduce_translate_tolerance,
+                    reduce_rotate_tolerance=reduce_rotate_tolerance,
+                    reduce_morph_tolerance=reduce_morph_tolerance,
+                    physics_routing=physics_routing,
+                    profile=profile,
                 )
-                self._record_profile_warning(
-                    profile,
-                    {
-                        "source": "vmd_converter",
-                        "code": "reduced_bake_keys_failed",
-                        "severity": "error",
-                        "message": reduced_profile["reason"],
-                        "fallback": "none",
-                    },
-                )
-                return False
 
             _apply_dense_runtime_cache()
 
@@ -3172,6 +3086,115 @@ class VmdConverter:
             model.free()
             if registration_model is not model:
                 registration_model.free()
+
+    def _author_reduced_runtime_bake(
+        self,
+        model,
+        runtime_cache,
+        pmx_morph_names,
+        reduce_translate_tolerance,
+        reduce_rotate_tolerance,
+        reduce_morph_tolerance,
+        physics_routing,
+        profile,
+    ) -> bool:
+        """Reduce the runtime cache and author the resulting Maya curves."""
+        reduction_start = time.perf_counter()
+        reduction_reason = None
+        reduction_outcome = None
+        try:
+            from ..core.native.mmd_anim_runtime import MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC
+            from ..core.native.mmd_anim_runtime_types import MmdRuntimeReductionTolerances
+
+            if runtime_cache.dense_batch_result is None:
+                reduction_reason = "dense runtime batch unavailable"
+            else:
+                reduced_pose = model.reduce_dense_pose(
+                    runtime_cache.dense_batch_result,
+                    model_identity=id(model),
+                    start_frame=float(runtime_cache.baked_frames[0]) if runtime_cache.baked_frames else 0.0,
+                    frame_step=(
+                        float(runtime_cache.baked_frames[1] - runtime_cache.baked_frames[0])
+                        if len(runtime_cache.baked_frames) > 1
+                        else 1.0
+                    ),
+                    target=MMD_RUNTIME_REDUCTION_TARGET_DCC_CUBIC,
+                    tolerances=MmdRuntimeReductionTolerances(
+                        local_position=reduce_translate_tolerance,
+                        local_rotation_radians=reduce_rotate_tolerance,
+                        world_position=reduce_translate_tolerance,
+                        world_rotation_radians=reduce_rotate_tolerance,
+                        morph_weight=reduce_morph_tolerance,
+                    ),
+                )
+                if reduced_pose is None:
+                    reduction_reason = "runtime reducer unavailable or returned no pose"
+                else:
+                    reduction_outcome = author_reduced_pose_from_runtime_cache(
+                        self,
+                        runtime_cache,
+                        reduced_pose,
+                        pmx_morph_names,
+                        translate_tolerance=reduce_translate_tolerance,
+                        rotate_tolerance_radians=reduce_rotate_tolerance,
+                        morph_tolerance=reduce_morph_tolerance,
+                    )
+                    if not reduction_outcome.success:
+                        reduction_reason = reduction_outcome.reason or "reduced authoring failed"
+        except Exception as exc:
+            reduction_reason = f"reduced bake exception: {exc}"
+
+        reduction_elapsed = time.perf_counter() - reduction_start
+        reduced_profile = {
+            "requested": True,
+            "used": bool(reduction_outcome and reduction_outcome.success),
+            "elapsed": float(reduction_elapsed),
+            "physics_used": bool(physics_routing.get("used", False)),
+            "translate_tolerance": float(reduce_translate_tolerance),
+            "rotate_tolerance_radians": float(reduce_rotate_tolerance),
+            "morph_tolerance": float(reduce_morph_tolerance),
+        }
+        if reduction_outcome and reduction_outcome.success:
+            report = reduction_outcome.plan.report if reduction_outcome.plan else None
+            if report:
+                reduced_profile.update(
+                    {
+                        "source_key_count": int(report.source_key_count),
+                        "reduced_key_count": int(report.reduced_key_count),
+                        "reduction_ratio": float(report.reduction_ratio),
+                        "max_translate_error": float(report.max_translate_error),
+                        "max_rotate_error_radians": float(report.max_rotate_error_radians),
+                        "max_morph_error": float(report.max_morph_error),
+                    }
+                )
+            reduced_profile["created_curves"] = [
+                item.curve_name for item in (reduction_outcome.authoring.created_curves if reduction_outcome.authoring else ())
+            ]
+            reduced_profile["route_count"] = int(reduction_outcome.route_count)
+            reduced_profile["morph_fanout_count"] = int(reduction_outcome.morph_fanout_count)
+            if isinstance(profile, dict):
+                profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
+            return True
+
+        reduced_profile["reason"] = reduction_reason or "reduced bake rejected"
+        reduced_profile["fallback"] = "none"
+        if isinstance(profile, dict):
+            profile.setdefault("vmd_converter", {})["reduced_bake_keys"] = reduced_profile
+        self.logger.error(
+            "Reduce Bake Keys failed; dense fallback was not attempted: %s",
+            reduced_profile["reason"],
+        )
+        self._record_profile_warning(
+            profile,
+            {
+                "source": "vmd_converter",
+                "code": "reduced_bake_keys_failed",
+                "severity": "error",
+                "message": reduced_profile["reason"],
+                "fallback": "none",
+            },
+        )
+        return False
 
     def _get_animation_frame_range(self, vmd_data: VmdData):
         """VMDデータからアニメーションのフレーム範囲を取得"""
