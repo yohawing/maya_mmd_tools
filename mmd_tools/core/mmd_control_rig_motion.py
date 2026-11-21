@@ -2907,39 +2907,12 @@ def _supports_live_authoring_basis(row: Mapping[str, Any]) -> bool:
     """Allow complete transform-like XYZ routes while excluding special writers."""
     if row.get("routeClass", ROUTE_SAME_BASIS) == ROUTE_SAME_BASIS:
         return True
-    target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
-    reasons = set(row.get("routeReasons") or ())
-    standard_rotate = target_attr in {"rotateX", "rotateY", "rotateZ"}
-    bone_morph_base = (
-        "bone_morph_base" in reasons
-        and target_attr.startswith("baseRotate")
-        and target_attr.endswith(("X", "Y", "Z"))
-    )
-    ik_link_input = (
-        "ik_link_input" in reasons
-        and target_attr.startswith("inputRotateElement")
-        and target_attr.endswith(("X", "Y", "Z"))
-    )
-    if "bone_morph_base" in reasons and not bone_morph_base:
-        return False
-    if "ik_link_input" in reasons and not ik_link_input:
-        return False
-    if not standard_rotate and not bone_morph_base and not ik_link_input:
-        return False
-    if row.get("layerRoute") is not None:
-        return False
-    special_reasons = {
-        "anim_layer",
-        "append_base",
-        "ik_controller",
-        "rotate_order",
-    }
-    if "ik" in reasons and not ik_link_input:
-        return False
-    return not bool(reasons.intersection(special_reasons))
+    return _supports_bake_authoring_basis(row, exclude_rotate_order=True)
 
 
-def _supports_bake_authoring_basis(row: Mapping[str, Any]) -> bool:
+def _supports_bake_authoring_basis(
+    row: Mapping[str, Any], *, exclude_rotate_order: bool = False
+) -> bool:
     """Allow joint or bone-morph-base XYZ basis sampling."""
     target_attr = str(row.get("target", "")).rsplit(".", 1)[-1]
     reasons = set(row.get("routeReasons") or ())
@@ -2967,6 +2940,8 @@ def _supports_bake_authoring_basis(row: Mapping[str, Any]) -> bool:
         "append_base",
         "ik_controller",
     }
+    if exclude_rotate_order:
+        special_reasons.add("rotate_order")
     if "ik" in reasons and not ik_link_input:
         return False
     return not bool(reasons.intersection(special_reasons))
