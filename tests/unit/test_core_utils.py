@@ -3,7 +3,7 @@
 import json
 import unittest
 
-from mmd_tools.core.utils import unique_json_object
+from mmd_tools.core.utils import copy_diagnostics, unique_json_object
 
 
 class TestUniqueJsonObject(unittest.TestCase):
@@ -26,3 +26,17 @@ class TestUniqueJsonObject(unittest.TestCase):
 
                 self.assertIs(type(caught.exception), ValueError)
                 self.assertEqual(str(caught.exception), "duplicate JSON field 'name'")
+
+
+class TestCopyDiagnostics(unittest.TestCase):
+    def test_nested_containers_are_detached_and_normalized(self):
+        source = {1: [{2: (["original"],)}, None, True, 3.5]}
+
+        copied = copy_diagnostics(source)
+
+        self.assertEqual(copied, {"1": [{"2": [["original"]]}, None, True, 3.5]})
+        copied["1"][0]["2"][0].append("copied")
+        copied["1"][0]["added"] = 4
+        copied["1"].append("new item")
+        copied["added"] = 5
+        self.assertEqual(source, {1: [{2: (["original"],)}, None, True, 3.5]})

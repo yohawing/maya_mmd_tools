@@ -46,6 +46,7 @@ from mmd_tools.core.mmd_control_rig_motion import (
 )
 from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.core.secondary_bone_controls import secondary_control_input_route
+from mmd_tools.core.utils import copy_diagnostics
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.converters.bone_morph_runtime import resolve_owned_bone_morph_base_routes
 from mmd_tools.converters.vmd_camera_animation import (
@@ -223,16 +224,6 @@ _MAYA_TIME_UNIT_FPS = {
     "palf": 50.0,
     "ntscf": 60.0,
 }
-
-
-def _copy_diagnostics(value: Any) -> Any:
-    """Detach nested timing/count diagnostics from the collector."""
-
-    if isinstance(value, Mapping):
-        return {str(key): _copy_diagnostics(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_copy_diagnostics(item) for item in value]
-    return value
 
 
 def _new_key_reduction_report(enabled: bool) -> dict[str, Any]:
@@ -1268,7 +1259,7 @@ class VmdSceneCollector:
                 "count": len(identities),
                 "fingerprint": fingerprint_payload(identities),
             }
-        return _copy_diagnostics(self._diagnostics)
+        return copy_diagnostics(self._diagnostics)
 
     @property
     def diagnostics_copy(self) -> dict[str, Any]:
@@ -1292,7 +1283,7 @@ class VmdSceneCollector:
 
         if isinstance(value, Mapping):
             merged = dict(self._diagnostics.get("native_sampler", {}))
-            merged.update(_copy_diagnostics(value))
+            merged.update(copy_diagnostics(value))
             self._diagnostics["native_sampler"] = merged
             self._emit_diagnostics()
 

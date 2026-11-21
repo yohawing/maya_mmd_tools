@@ -1,9 +1,20 @@
 # Utility関数
 
 import struct
+from collections.abc import Mapping
 from typing import Any, Dict, List, Tuple
 
 from mmd_tools.core.pmx_data.header import PmxEncoding
+
+
+def copy_diagnostics(value: Any) -> Any:
+    """Return a detached copy of nested diagnostics: mappings get str keys, tuples become lists."""
+
+    if isinstance(value, Mapping):
+        return {str(key): copy_diagnostics(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [copy_diagnostics(item) for item in value]
+    return value
 
 
 def unique_json_object(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:

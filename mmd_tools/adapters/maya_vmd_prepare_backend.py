@@ -20,6 +20,7 @@ from ..actions.bake_timeline_vmd_export_action import (
     VmdExportDiscovery,
 )
 from ..core.constants import ATTR_MMD_CONTROL_RIG_JSON, ATTR_MMD_MODEL_NAME
+from ..core.utils import copy_diagnostics
 from ..validation.snapshot import fingerprint_payload
 
 
@@ -111,16 +112,6 @@ def _as_list(value: Any) -> list[Any]:
         return [value]
 
 
-def _copy_diagnostics(value: Any) -> Any:
-    """Detach nested collector diagnostics for report serialization."""
-
-    if isinstance(value, Mapping):
-        return {str(key): _copy_diagnostics(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_copy_diagnostics(item) for item in value]
-    return value
-
-
 class MayaVmdExportBackend:
     """Discover, watch, and collect one Current Model-scoped Bake Timeline route.
 
@@ -154,7 +145,7 @@ class MayaVmdExportBackend:
     def diagnostics(self) -> dict[str, Any]:
         """Return detached host-side discovery/collection evidence."""
 
-        return _copy_diagnostics(self._diagnostics)
+        return copy_diagnostics(self._diagnostics)
 
     @property
     def diagnostics_copy(self) -> dict[str, Any]:
@@ -399,7 +390,7 @@ class MayaVmdExportBackend:
             return {}
         if not isinstance(result, Mapping):
             raise BakeTimelineVmdExportError("streaming VMD collector must return bounded metadata")
-        return _copy_diagnostics(result)
+        return copy_diagnostics(result)
 
     def _collection_context(self, request: Any) -> tuple[Any, dict[str, Any]]:
         """Validate the active route and build one isolated collector call."""
@@ -453,17 +444,17 @@ class MayaVmdExportBackend:
         if not isinstance(collector_diagnostics, Mapping):
             return
         if collector_diagnostics:
-            self._diagnostics["collector"] = _copy_diagnostics(collector_diagnostics)
+            self._diagnostics["collector"] = copy_diagnostics(collector_diagnostics)
             native_diagnostics = collector_diagnostics.get("native_sampler")
             if native_diagnostics is not None:
-                self._diagnostics["native_sampler"] = _copy_diagnostics(
+                self._diagnostics["native_sampler"] = copy_diagnostics(
                     native_diagnostics
                 )
             native_morph_diagnostics = collector_diagnostics.get(
                 "native_morph_sampler"
             )
             if native_morph_diagnostics is not None:
-                self._diagnostics["native_morph_sampler"] = _copy_diagnostics(
+                self._diagnostics["native_morph_sampler"] = copy_diagnostics(
                     native_morph_diagnostics
                 )
 
