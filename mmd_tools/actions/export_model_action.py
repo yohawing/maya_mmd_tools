@@ -186,6 +186,15 @@ def _default_collect_model_data(options: Dict[str, Any]) -> dict:
     )
 
 
+def _stale_state_report(
+    export_format: str, path: str, message: str, details: Dict[str, Any]
+) -> ExportValidationReport:
+    return ExportValidationReport(
+        export_format,
+        (ExportValidationIssue("STALE_STATE", "fatal", True, path, message, details=details),),
+    )
+
+
 class ExportModelAction:
     """Execute PMX model export from collected or scene-collected data."""
 
@@ -276,6 +285,15 @@ class ExportModelAction:
                 validation_report_artifacts=validation_report_artifacts,
             )
 
+        def preflight_failed(report: ExportValidationReport) -> ExportModelResult:
+            validation_error = ExportValidationError(report)
+            logger.error("Model export preflight failed: %s", validation_error)
+            return build_result(
+                status_message=f"Export failed: {validation_error}",
+                error=validation_error,
+                warnings=list(report.issues),
+            )
+
         try:
             export_format = (request.options.get("export_format") or "").lower()
             if not export_format:
@@ -295,13 +313,7 @@ class ExportModelAction:
                         ),
                     ),
                 )
-                validation_error = ExportValidationError(validation_report)
-                logger.error("Model export preflight failed: %s", validation_error)
-                return build_result(
-                    status_message=f"Export failed: {validation_error}",
-                    error=validation_error,
-                    warnings=list(validation_report.issues),
-                )
+                return preflight_failed(validation_report)
 
             model_data = request.options.get("model_data")
             if model_data is None:
@@ -329,13 +341,7 @@ class ExportModelAction:
                     validation_report = validate_model_data(source_model_data, export_format)
                     if not validation_report.is_blocking:
                         raise
-                    validation_error = ExportValidationError(validation_report)
-                    logger.error("Model export preflight failed: %s", validation_error)
-                    return build_result(
-                        status_message=f"Export failed: {validation_error}",
-                        error=validation_error,
-                        warnings=list(validation_report.issues),
-                    )
+                    return preflight_failed(validation_report)
             elif isinstance(provided_snapshot, ExportValidationSnapshot):
                 snapshot = provided_snapshot
                 if not snapshot.matches(
@@ -344,29 +350,16 @@ class ExportModelAction:
                     scene_revision=scene_revision,
                     target_identity=target_identity,
                 ):
-                    validation_report = ExportValidationReport(
+                    validation_report = _stale_state_report(
                         export_format,
-                        (
-                            ExportValidationIssue(
-                                "STALE_STATE",
-                                "fatal",
-                                True,
-                                "validation_snapshot",
-                                "validation snapshot does not match the current payload or scene revision",
-                                details={
-                                    "snapshot_fingerprint": provided_snapshot.payload_fingerprint,
-                                    "aggregation_discriminator": "stale",
-                                },
-                            ),
-                        ),
+                        "validation_snapshot",
+                        "validation snapshot does not match the current payload or scene revision",
+                        details={
+                            "snapshot_fingerprint": provided_snapshot.payload_fingerprint,
+                            "aggregation_discriminator": "stale",
+                        },
                     )
-                    validation_error = ExportValidationError(validation_report)
-                    logger.error("Model export preflight failed: %s", validation_error)
-                    return build_result(
-                        status_message=f"Export failed: {validation_error}",
-                        error=validation_error,
-                        warnings=list(validation_report.issues),
-                    )
+                    return preflight_failed(validation_report)
             else:
                 raise TypeError("validation_snapshot must be an ExportValidationSnapshot")
 
@@ -376,41 +369,22 @@ class ExportModelAction:
                 expected_payload_fingerprint is not None
                 and expected_payload_fingerprint != payload_fingerprint
             ):
-                validation_report = ExportValidationReport(
+                validation_report = _stale_state_report(
                     export_format,
-                    (
-                        ExportValidationIssue(
-                            "STALE_STATE",
-                            "fatal",
-                            True,
-                            "validation_snapshot.payload_fingerprint",
-                            "current payload fingerprint does not match the expected validation snapshot",
-                            details={
-                                "expected_fingerprint": str(expected_payload_fingerprint),
-                                "actual_fingerprint": payload_fingerprint,
-                                "aggregation_discriminator": "stale",
-                            },
-                        ),
-                    ),
+                    "validation_snapshot.payload_fingerprint",
+                    "current payload fingerprint does not match the expected validation snapshot",
+                    details={
+                        "expected_fingerprint": str(expected_payload_fingerprint),
+                        "actual_fingerprint": payload_fingerprint,
+                        "aggregation_discriminator": "stale",
+                    },
                 )
-                validation_error = ExportValidationError(validation_report)
-                logger.error("Model export preflight failed: %s", validation_error)
-                return build_result(
-                    status_message=f"Export failed: {validation_error}",
-                    error=validation_error,
-                    warnings=list(validation_report.issues),
-                )
+                return preflight_failed(validation_report)
 
             model_data = snapshot.model_data
             validation_report = self._validator(model_data, export_format)
             if validation_report.is_blocking:
-                validation_error = ExportValidationError(validation_report)
-                logger.error("Model export preflight failed: %s", validation_error)
-                return build_result(
-                    status_message=f"Export failed: {validation_error}",
-                    error=validation_error,
-                    warnings=list(validation_report.issues),
-                )
+                return preflight_failed(validation_report)
 
             if not snapshot.matches(
                 source_model_data,
@@ -418,18 +392,11 @@ class ExportModelAction:
                 scene_revision=scene_revision,
                 target_identity=target_identity,
             ):
-                validation_report = ExportValidationReport(
+                validation_report = _stale_state_report(
                     export_format,
-                    (
-                        ExportValidationIssue(
-                            "STALE_STATE",
-                            "fatal",
-                            True,
-                            "validation_snapshot",
-                            "payload or scene revision changed after validation",
-                            details={"aggregation_discriminator": "stale"},
-                        ),
-                    ),
+                    "validation_snapshot",
+                    "payload or scene revision changed after validation",
+                    details={"aggregation_discriminator": "stale"},
                 )
                 raise ExportValidationError(validation_report)
 
