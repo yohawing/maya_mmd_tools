@@ -2838,6 +2838,27 @@ class VmdSceneCollector:
                     _close_native_samples(native_samples)
                 finally:
                     native_samples = None
+        return self._finalize_bone_frames(
+            frames,
+            frame_sink,
+            bone_dense_diagnostic_rows,
+            bone_output_providers,
+            direct_multi_key_candidates,
+            dense_sample,
+            dense_frames,
+        )
+
+    def _finalize_bone_frames(
+        self,
+        frames: Optional[list[dict]],
+        frame_sink,
+        bone_dense_diagnostic_rows: dict[str, tuple[str, str, int, int]],
+        bone_output_providers: dict[str, set[str]],
+        direct_multi_key_candidates: dict[str, list[tuple[str, int]]],
+        dense_sample: bool,
+        dense_frames: Optional[Sequence[float]],
+    ) -> list[dict]:
+        """Record track selection and collapse constant tracks in buffered bone frames."""
         for name, (decision, reason, source_key_count, planned_key_count) in (
             bone_dense_diagnostic_rows.items()
         ):
