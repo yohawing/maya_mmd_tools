@@ -3965,6 +3965,25 @@ def _commit_control_rotation_group(
     return result
 
 
+def _create_keyed_curve(cmds, curve_type, keys, created_curve_nodes, failure_message) -> str:
+    """Register a new curve before writing its (time, value) keys."""
+    node = None
+    try:
+        node = str(cmds.createNode(curve_type))
+        if created_curve_nodes is not None:
+            created_curve_nodes.append(node)
+        for time, value in keys:
+            cmds.setKeyframe(node, time=(time, time), value=value)
+    except Exception as exc:
+        if node and cmds.objExists(node):
+            try:
+                cmds.delete(node)
+            except Exception:
+                pass
+        raise MmdControlRigBuildError(failure_message) from exc
+    return f"{node}.output"
+
+
 def _sample_control_rotation_group_passthrough(
     cmds,
     rows: List[Mapping[str, Any]],
@@ -4065,21 +4084,13 @@ def _sample_control_rotation_group_passthrough(
                 if not cmds.isConnected(source, target):
                     cmds.connectAttr(source, target, force=False)
                 _clear_animation_curve_keys(cmds, curve)
+            for time, values in samples:
+                cmds.setKeyframe(curve, time=(time, time), value=float(values[index]))
         else:
-            try:
-                curve = str(cmds.createNode("animCurveTA"))
-                if created_curve_nodes is not None:
-                    created_curve_nodes.append(curve)
-                source = f"{curve}.output"
-            except Exception as exc:
-                raise MmdControlRigBuildError(
-                    f"could not create sampled rotation curve: {target}"
-                ) from exc
-        for time, values in samples:
-            cmds.setKeyframe(
-                curve,
-                time=(time, time),
-                value=float(values[index]),
+            keys = ((time, float(values[index])) for time, values in samples)
+            source = _create_keyed_curve(
+                cmds, "animCurveTA", keys, created_curve_nodes,
+                f"could not create sampled rotation curve: {target}",
             )
         _set_sampled_curve_tangents(cmds, source, target)
         if not cmds.isConnected(source, target):
@@ -4171,29 +4182,13 @@ def _sample_control_rotation_group_to_bone(
     ):
         if sources[index]:
             continue
-        curve = None
-        try:
-            curve = str(cmds.createNode("animCurveTA"))
-            if created_curve_nodes is not None:
-                created_curve_nodes.append(curve)
-            for time, values in control_samples:
-                cmds.setKeyframe(
-                    curve,
-                    time=(time, time),
-                    value=float(values[index]),
-                )
-            source = f"{curve}.output"
-            sources[index] = source
-            row["controlSource"] = source
-        except Exception as exc:
-            if curve and cmds.objExists(curve):
-                try:
-                    cmds.delete(curve)
-                except Exception:
-                    pass
-            raise MmdControlRigBuildError(
-                f"could not retain basis-space control rotation curve: {row['control']}"
-            ) from exc
+        keys = ((time, float(values[index])) for time, values in control_samples)
+        source = _create_keyed_curve(
+            cmds, "animCurveTA", keys, created_curve_nodes,
+            f"could not retain basis-space control rotation curve: {row['control']}",
+        )
+        sources[index] = source
+        row["controlSource"] = source
     # Keep the authored MMD curve nodes when present.  If an imported motion
     # had no source curves, create one curve per axis and connect them to the
     # target.  All three axes always receive the same union time grid.
@@ -4215,25 +4210,14 @@ def _sample_control_rotation_group_to_bone(
                 cmds.connectAttr(mmd_source, target_plug, force=False)
             result[control_plug] = str(mmd_source)
             continue
-        curve_type = "animCurveTA"
+        message = f"could not create basis-converted MMD rotation curve: {target_plug}"
+        keys = ((time, float(values[attrs.index(axis)])) for time, values in samples)
+        source = _create_keyed_curve(cmds, "animCurveTA", keys, created_curve_nodes, message)
         try:
-            node = str(cmds.createNode(curve_type))
-            if created_curve_nodes is not None:
-                created_curve_nodes.append(node)
-            for time, values in samples:
-                cmds.setKeyframe(node, time=(time, time), value=float(values[attrs.index(axis)]))
-            source = f"{node}.output"
             cmds.connectAttr(source, target_plug, force=False)
-            result[control_plug] = source
         except Exception as exc:
-            if "node" in locals() and cmds.objExists(node):
-                try:
-                    cmds.delete(node)
-                except Exception:
-                    pass
-            raise MmdControlRigBuildError(
-                f"could not create basis-converted MMD rotation curve: {target_plug}"
-            ) from exc
+            raise MmdControlRigBuildError(message) from exc
+        result[control_plug] = source
     # The CONTROL representation remains UUID-addressable for the next EDIT,
     # but BAKED/MMD_OWNED must not leave it connected to the controller. The
     # generic re-entry path treats any live controller writer as foreign; this
@@ -4471,25 +4455,17 @@ def _sample_control_input_to_mmd(
 
     if sampled_values:
         curve_type = _sampled_curve_type(cmds, control_source, target)
+
+        failure_message = f"could not create sampled MMD animation curve for {target}"
+        curve_plug = _create_keyed_curve(
+            cmds, curve_type, sampled_values, created_curve_nodes, failure_message
+        )
         try:
-            curve_node = str(cmds.createNode(curve_type))
-            if created_curve_nodes is not None:
-                created_curve_nodes.append(curve_node)
-            for time, value in sampled_values:
-                cmds.setKeyframe(curve_node, time=(time, time), value=value)
-            _set_sampled_curve_tangents(cmds, f"{curve_node}.output", target)
-            curve_plug = f"{curve_node}.output"
+            _set_sampled_curve_tangents(cmds, curve_plug, target)
             cmds.connectAttr(curve_plug, target, force=False)
-            return curve_plug
         except Exception as exc:
-            if 'curve_node' in locals() and cmds.objExists(curve_node):
-                try:
-                    cmds.delete(curve_node)
-                except Exception:
-                    pass
-            raise MmdControlRigBuildError(
-                f"could not create sampled MMD animation curve for {target}: {exc}"
-            ) from exc
+            raise MmdControlRigBuildError(f"{failure_message}: {exc}") from exc
+        return curve_plug
     value = float(cmds.getAttr(control)) + (
         _translate_baseline(row) if row.get("translateBaselineOutput") else 0.0
     )
