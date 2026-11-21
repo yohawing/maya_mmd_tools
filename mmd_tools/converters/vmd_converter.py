@@ -1845,6 +1845,23 @@ class VmdConverter:
                     errors.append(f"restore cleared motion failed: {exc}")
             return "; ".join(errors) if errors else None
 
+        def build_transaction():
+            return {
+                "root": control_rig_root,
+                "created": created,
+                "entered_here": entered_here,
+                "prior_state": prior_state,
+                "prior_owner": prior_owner,
+                "prior_raw_metadata": prior_raw_metadata,
+                "prior_animation_snapshot": prior_animation_snapshot,
+                "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
+                "scene_snapshot": scene_snapshot,
+                "motion_cleared": motion_cleared,
+                "detached_motion_curve_nodes": tuple(
+                    dict.fromkeys(transaction_detached_curve_nodes)
+                ),
+            }
+
         try:
             if metadata is not None:
                 if (
@@ -1866,21 +1883,7 @@ class VmdConverter:
                     validate_vmd_routes()
                     self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
                     clear_motion_before_rig_transition()
-                    return {
-                        "root": control_rig_root,
-                        "created": False,
-                        "entered_here": False,
-                        "prior_state": prior_state,
-                        "prior_owner": prior_owner,
-                        "prior_raw_metadata": prior_raw_metadata,
-                        "prior_animation_snapshot": prior_animation_snapshot,
-                        "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
-                        "scene_snapshot": scene_snapshot,
-                        "motion_cleared": motion_cleared,
-                        "detached_motion_curve_nodes": tuple(
-                            dict.fromkeys(transaction_detached_curve_nodes)
-                        ),
-                    }
+                    return build_transaction()
                 if metadata.get("owner") != CONTROL_RIG_MMD_OWNED or metadata.get("state") not in {
                     CONTROL_RIG_ATTACHED,
                     CONTROL_RIG_BAKED,
@@ -1907,21 +1910,7 @@ class VmdConverter:
                 clear_motion_before_rig_transition()
             validate_vmd_routes()
             self._validate_mmd_control_rig_ik_routes(target_model, vmd_data, profile=profile)
-            return {
-                "root": control_rig_root,
-                "created": created,
-                "entered_here": entered_here,
-                "prior_state": prior_state,
-                "prior_owner": prior_owner,
-                "prior_raw_metadata": prior_raw_metadata,
-                "prior_animation_snapshot": prior_animation_snapshot,
-                "prior_rotation_time_curve_snapshot": prior_rotation_time_curve_snapshot,
-                "scene_snapshot": scene_snapshot,
-                "motion_cleared": motion_cleared,
-                "detached_motion_curve_nodes": tuple(
-                    dict.fromkeys(transaction_detached_curve_nodes)
-                ),
-            }
+            return build_transaction()
         except MMDImportException as exc:
             rollback_error = rollback_preflight()
             if rollback_error:
