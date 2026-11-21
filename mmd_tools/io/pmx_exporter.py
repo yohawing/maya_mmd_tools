@@ -96,6 +96,82 @@ def _additional_uv_channel_count(vertices_raw) -> int:
     return expected_count or 0
 
 
+def _build_pmx_bones(bones_raw, header):
+    """Build and return PMX bones, creating a root bone when none are supplied."""
+    bones = []
+    if bones_raw is None:
+        root_bone = PmxBone(
+            bone_index_size=header.bone_index_size,
+            encoding=header.encoding,
+        )
+        root_bone.name = "root"
+        root_bone.name_english = "root"
+        root_bone.position = (0.0, 0.0, 0.0)
+        root_bone.parent_bone_index = -1
+        root_bone.transform_layer = 0
+        root_bone.bone_flag = (
+            PmxBoneFlag.DISPLAY
+            | PmxBoneFlag.OPERATABLE
+            | PmxBoneFlag.ROTATABLE
+            | PmxBoneFlag.MOVABLE
+        )
+        root_bone.connect_position_offset = (0.0, 0.0, 0.0)
+        bones.append(root_bone)
+    else:
+        for b_raw in bones_raw:
+            bone = PmxBone(
+                bone_index_size=header.bone_index_size,
+                encoding=header.encoding,
+            )
+            bone.name = b_raw.get("name", "Bone")
+            bone.name_english = b_raw.get("name_english", "")
+            bone.position = tuple(b_raw.get("position", [0.0, 0.0, 0.0]))
+            bone.parent_bone_index = b_raw.get("parent_index", -1)
+            bone.transform_layer = b_raw.get("transform_layer", 0)
+            if "bone_flag" in b_raw:
+                bone.bone_flag = b_raw["bone_flag"]
+            else:
+                bone.bone_flag = (
+                    PmxBoneFlag.DISPLAY
+                    | PmxBoneFlag.OPERATABLE
+                    | PmxBoneFlag.ROTATABLE
+                    | PmxBoneFlag.MOVABLE
+                )
+            if int(bone.bone_flag) & int(PmxBoneFlag.CONNECT_BONE):
+                bone.connect_bone_index = b_raw.get("connect_bone_index", -1)
+                bone.connect_position_offset = (0.0, 0.0, 0.0)
+            else:
+                bone.connect_position_offset = tuple(
+                    b_raw.get("connect_position_offset", [0.0, 0.0, 0.0])
+                )
+                bone.connect_bone_index = -1
+
+            bone.grant_parent_bone_index = b_raw.get("grant_parent_bone_index", -1)
+            bone.grant_rate = b_raw.get("grant_rate", 0.0)
+            bone.axis_direction = tuple(b_raw.get("axis_direction", [0.0, 0.0, 0.0]))
+            bone.x_axis_direction = tuple(
+                b_raw.get("x_axis_direction", [1.0, 0.0, 0.0])
+            )
+            bone.z_axis_direction = tuple(
+                b_raw.get("z_axis_direction", [0.0, 0.0, 1.0])
+            )
+            bone.key_value = b_raw.get("key_value", 0)
+            bone.ik_target_bone_index = b_raw.get("ik_target_bone_index", -1)
+            bone.ik_loop_count = b_raw.get("ik_loop_count", 0)
+            bone.ik_limit_angle = b_raw.get("ik_limit_angle", 0.0)
+            if bone.get_flag(PmxBoneFlag.IK):
+                for link_raw in b_raw.get("ik_links", []):
+                    link = PmxIKLink(header.bone_index_size)
+                    link.ik_bone_index = link_raw["bone"]
+                    link.angle_limit = 1 if link_raw.get("limit_enabled", False) else 0
+                    if link.angle_limit:
+                        link.limit_min = tuple(link_raw["lower_limit"])
+                        link.limit_max = tuple(link_raw["upper_limit"])
+                    bone.ik_links.append(link)
+            bones.append(bone)
+    return bones
+
+
 def _build_pmx_morphs(morphs_raw, header, vertex_count, bone_count, material_count, rigid_body_count):
     """Build PMX morphs and return them with the required PMX version."""
     morphs = []
@@ -586,76 +662,7 @@ class PmxExporter:
         pmx.header.material_index_size = _choose_reference_index_size(len(pmx.materials))
 
         # --- bones ---
-        if bones_raw is None:
-            root_bone = PmxBone(
-                bone_index_size=pmx.header.bone_index_size,
-                encoding=pmx.header.encoding,
-            )
-            root_bone.name = "root"
-            root_bone.name_english = "root"
-            root_bone.position = (0.0, 0.0, 0.0)
-            root_bone.parent_bone_index = -1
-            root_bone.transform_layer = 0
-            root_bone.bone_flag = (
-                PmxBoneFlag.DISPLAY
-                | PmxBoneFlag.OPERATABLE
-                | PmxBoneFlag.ROTATABLE
-                | PmxBoneFlag.MOVABLE
-            )
-            root_bone.connect_position_offset = (0.0, 0.0, 0.0)
-            pmx.bones.append(root_bone)
-        else:
-            for b_raw in bones_raw:
-                bone = PmxBone(
-                    bone_index_size=pmx.header.bone_index_size,
-                    encoding=pmx.header.encoding,
-                )
-                bone.name = b_raw.get("name", "Bone")
-                bone.name_english = b_raw.get("name_english", "")
-                bone.position = tuple(b_raw.get("position", [0.0, 0.0, 0.0]))
-                bone.parent_bone_index = b_raw.get("parent_index", -1)
-                bone.transform_layer = b_raw.get("transform_layer", 0)
-                if "bone_flag" in b_raw:
-                    bone.bone_flag = b_raw["bone_flag"]
-                else:
-                    bone.bone_flag = (
-                        PmxBoneFlag.DISPLAY
-                        | PmxBoneFlag.OPERATABLE
-                        | PmxBoneFlag.ROTATABLE
-                        | PmxBoneFlag.MOVABLE
-                    )
-                if int(bone.bone_flag) & int(PmxBoneFlag.CONNECT_BONE):
-                    bone.connect_bone_index = b_raw.get("connect_bone_index", -1)
-                    bone.connect_position_offset = (0.0, 0.0, 0.0)
-                else:
-                    bone.connect_position_offset = tuple(
-                        b_raw.get("connect_position_offset", [0.0, 0.0, 0.0])
-                    )
-                    bone.connect_bone_index = -1
-
-                bone.grant_parent_bone_index = b_raw.get("grant_parent_bone_index", -1)
-                bone.grant_rate = b_raw.get("grant_rate", 0.0)
-                bone.axis_direction = tuple(b_raw.get("axis_direction", [0.0, 0.0, 0.0]))
-                bone.x_axis_direction = tuple(
-                    b_raw.get("x_axis_direction", [1.0, 0.0, 0.0])
-                )
-                bone.z_axis_direction = tuple(
-                    b_raw.get("z_axis_direction", [0.0, 0.0, 1.0])
-                )
-                bone.key_value = b_raw.get("key_value", 0)
-                bone.ik_target_bone_index = b_raw.get("ik_target_bone_index", -1)
-                bone.ik_loop_count = b_raw.get("ik_loop_count", 0)
-                bone.ik_limit_angle = b_raw.get("ik_limit_angle", 0.0)
-                if bone.get_flag(PmxBoneFlag.IK):
-                    for link_raw in b_raw.get("ik_links", []):
-                        link = PmxIKLink(pmx.header.bone_index_size)
-                        link.ik_bone_index = link_raw["bone"]
-                        link.angle_limit = 1 if link_raw.get("limit_enabled", False) else 0
-                        if link.angle_limit:
-                            link.limit_min = tuple(link_raw["lower_limit"])
-                            link.limit_max = tuple(link_raw["upper_limit"])
-                        bone.ik_links.append(link)
-                pmx.bones.append(bone)
+        pmx.bones = _build_pmx_bones(bones_raw, pmx.header)
 
         # --- morphs ---
         pmx.morphs, pmx.header.version = _build_pmx_morphs(
