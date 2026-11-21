@@ -46,6 +46,39 @@ class ImportExportTab(BaseTab):
         self.left_widget = QWidget()
         model_settings_layout = QVBoxLayout(self.left_widget)
 
+        model_settings_layout.addWidget(self._build_general_group())
+        model_settings_layout.addWidget(self._build_model_group())
+        model_settings_layout.addWidget(self._build_animation_settings_group())
+
+        model_settings_layout.addStretch()
+
+        # 右側：インポートセクション
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+
+        right_layout.addWidget(self._build_model_import_group())
+        right_layout.addWidget(self._build_animation_import_group())
+
+        # 統合履歴表示エリア
+        self._setup_unified_history_area(right_layout)
+
+        right_layout.addStretch()
+
+        self._build_category_stack(main_layout, model_settings_layout, right_layout)
+
+        # import_models is always ON in behavior; checkbox removed from UI.
+        self.import_models_check.setVisible(False)
+
+        # Dev-only controls: shown only when development_mode=True.
+        self._dev_only_widgets = [
+            self.disable_backface_culling_check,
+            self.import_morphs_check,
+            self.motion_scale_row,
+            self.vmd_rotation_time_curve_check,
+        ]
+        self._apply_dev_mode_visibility()
+
+    def _build_general_group(self):
         # Import scale is a persisted General import setting.
         self.scale_row = QWidget()
         scale_layout = QHBoxLayout(self.scale_row)
@@ -104,9 +137,18 @@ class ImportExportTab(BaseTab):
 
         general_layout.addLayout(namespace_layout)
 
-        self.general_group.setLayout(general_layout)
-        model_settings_layout.addWidget(self.general_group)
+        self.new_file_check = QCheckBox(self.tr("new_file", "checkboxes"))
+        # NewFileチェックボックスの状態を読み込み
+        saved_new_file = self.view_state.get("new_file_check", "false")
+        self.new_file_check.setChecked(str(saved_new_file).lower() == "true")
+        # 状態が変更されたら保存
+        self.new_file_check.toggled.connect(lambda checked: self.view_state.set("new_file_check", str(checked)))
+        general_layout.addWidget(self.new_file_check)
 
+        self.general_group.setLayout(general_layout)
+        return self.general_group
+
+    def _build_model_group(self):
         # Model Settings Group
         self.model_group = QGroupBox(self.tr("model", "groups"))
         model_layout = QVBoxLayout()
@@ -160,8 +202,9 @@ class ImportExportTab(BaseTab):
         )
 
         self.model_group.setLayout(model_layout)
-        model_settings_layout.addWidget(self.model_group)
+        return self.model_group
 
+    def _build_animation_settings_group(self):
         # Animation Import Settings
         self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
         anim_settings_layout = QVBoxLayout()
@@ -249,15 +292,18 @@ class ImportExportTab(BaseTab):
         self._sync_reduce_bake_quality_enabled()
         self._sync_vmd_rotation_time_curve_enabled()
 
+        self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
+        self.clear_existing_motion_check.setChecked(self.settings_service.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False))
+        self.clear_existing_motion_check.toggled.connect(
+            lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, v)
+        )
+        self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
+        anim_settings_layout.addWidget(self.clear_existing_motion_check)
+
         self.animation_settings_group.setLayout(anim_settings_layout)
-        model_settings_layout.addWidget(self.animation_settings_group)
+        return self.animation_settings_group
 
-        model_settings_layout.addStretch()
-
-        # 右側：インポートセクション
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-
+    def _build_model_import_group(self):
         # Model Import Group (PMX/PMD)
         self.model_import_group = QGroupBox(self.tr("model_import", "groups"))
         model_import_layout = QFormLayout()
@@ -276,29 +322,22 @@ class ImportExportTab(BaseTab):
         # Connect signal to save path when changed
         self.import_path_edit.textChanged.connect(lambda text: self.view_state.set("import_path", text))
 
-        # Import button with new file checkbox
+        # Model import actions
         import_button_layout = QHBoxLayout()
         self.import_button = QPushButton(self.tr("import_model", "actions"))
         self.new_model_button = QPushButton(self.tr("new_mmd_model", "actions"))
         # The presenter enables this only when the action and packaged
         # template metadata are both available.
         self.new_model_button.setEnabled(False)
-        self.new_file_check = QCheckBox(self.tr("new_file", "checkboxes"))
-        # NewFileチェックボックスの状態を読み込み
-        saved_new_file = self.view_state.get("new_file_check", "false")
-        self.new_file_check.setChecked(str(saved_new_file).lower() == "true")
-        # 状態が変更されたら保存
-        self.new_file_check.toggled.connect(lambda checked: self.view_state.set("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
         import_button_layout.addWidget(self.new_model_button)
         import_button_layout.addStretch()
         model_import_layout.addRow(import_button_layout)
-        # This is a general import setting, not a third primary action.
-        general_layout.addWidget(self.new_file_check)
 
         self.model_import_group.setLayout(model_import_layout)
-        right_layout.addWidget(self.model_import_group)
+        return self.model_import_group
 
+    def _build_animation_import_group(self):
         # Animation Import Group (VMD)
         self.animation_group = QGroupBox(self.tr("animation_import", "groups"))
         animation_layout = QFormLayout()
@@ -316,16 +355,6 @@ class ImportExportTab(BaseTab):
 
         self.vmd_path_edit.textChanged.connect(lambda text: self.view_state.set("vmd_path", text))
 
-        self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
-        self.clear_existing_motion_check.setChecked(self.settings_service.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False))
-        self.clear_existing_motion_check.toggled.connect(
-            lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, v)
-        )
-        self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
-        # Keep motion cleanup with the VMD evaluation settings, not beside the
-        # primary Import Motion action.
-        anim_settings_layout.addWidget(self.clear_existing_motion_check)
-
         animation_button_layout = QHBoxLayout()
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
         self.create_mmd_camera_button = QPushButton(
@@ -337,26 +366,7 @@ class ImportExportTab(BaseTab):
         animation_layout.addRow(animation_button_layout)
 
         self.animation_group.setLayout(animation_layout)
-        right_layout.addWidget(self.animation_group)
-
-        # 統合履歴表示エリア
-        self._setup_unified_history_area(right_layout)
-
-        right_layout.addStretch()
-
-        self._build_category_stack(main_layout, model_settings_layout, right_layout)
-
-        # import_models is always ON in behavior; checkbox removed from UI.
-        self.import_models_check.setVisible(False)
-
-        # Dev-only controls: shown only when development_mode=True.
-        self._dev_only_widgets = [
-            self.disable_backface_culling_check,
-            self.import_morphs_check,
-            self.motion_scale_row,
-            self.vmd_rotation_time_curve_check,
-        ]
-        self._apply_dev_mode_visibility()
+        return self.animation_group
 
     @staticmethod
     def _take_layout_widget(layout, widget):
