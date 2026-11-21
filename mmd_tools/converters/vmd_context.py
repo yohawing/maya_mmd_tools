@@ -6,6 +6,17 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, MutableMapping, MutableSet, Optional, Tuple, Union
 
 
+def vmd_frame_value(frame, attr_name: str, key_name: str, default):
+    """Read a VMD value from attributes first, then dictionary keys."""
+    if hasattr(frame, attr_name):
+        return getattr(frame, attr_name)
+    if hasattr(frame, key_name):
+        return getattr(frame, key_name)
+    if isinstance(frame, dict):
+        return frame.get(key_name, frame.get(attr_name, default))
+    return default
+
+
 @dataclass(frozen=True)
 class VmdKeyingContext:
     """Minimal state needed by scene keying helpers."""

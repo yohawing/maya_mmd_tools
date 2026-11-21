@@ -1,10 +1,14 @@
-"""Tests for resolving morph-animation contexts."""
+"""Tests for shared VMD contexts and frame values."""
 
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from mmd_tools.converters.vmd_context import VmdMorphAnimationContext, resolve_morph_animation_context
+from mmd_tools.converters.vmd_context import (
+    VmdMorphAnimationContext,
+    resolve_morph_animation_context,
+    vmd_frame_value,
+)
 
 
 class TestVmdMorphAnimationContext(unittest.TestCase):
@@ -51,3 +55,38 @@ class TestVmdMorphAnimationContext(unittest.TestCase):
                 resolved = resolve_morph_animation_context(converter)
                 for name, value in vars(self.context).items():
                     self.assertIs(getattr(resolved, name), value)
+
+
+class TestVmdFrameValue(unittest.TestCase):
+    """Preserve attribute, alias, dictionary-key, and default precedence."""
+
+    def test_attributes_precede_dictionary_keys(self):
+        class Frame(dict):
+            pass
+
+        frame = Frame(frame_number=30, frame=40)
+        frame.frame_number = 10
+        frame.frame = 20
+        self.assertEqual(vmd_frame_value(frame, "frame_number", "frame", -1), 10)
+        del frame.frame_number
+        self.assertEqual(vmd_frame_value(frame, "frame_number", "frame", -1), 20)
+        del frame.frame
+        self.assertEqual(vmd_frame_value(frame, "frame_number", "frame", -1), 40)
+        del frame["frame"]
+        self.assertEqual(vmd_frame_value(frame, "frame_number", "frame", -1), 30)
+        del frame["frame_number"]
+        self.assertEqual(vmd_frame_value(frame, "frame_number", "frame", -1), -1)
+
+    def test_missing_attributes_return_default(self):
+        self.assertEqual(vmd_frame_value(object(), "frame_number", "frame", -1), -1)
+
+    def test_present_none_is_not_replaced_by_fallback(self):
+        frames = (
+            SimpleNamespace(frame_number=None, frame=20),
+            SimpleNamespace(frame=None),
+            {"frame": None, "frame_number": 30},
+            {"frame_number": None},
+        )
+        for frame in frames:
+            with self.subTest(frame=frame):
+                self.assertIsNone(vmd_frame_value(frame, "frame_number", "frame", -1))
