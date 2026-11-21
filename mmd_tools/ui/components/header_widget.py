@@ -121,53 +121,56 @@ class HeaderWidget(QWidget):
         else:
             for model in models:
                 info = self.app_state.get_model_info(model)
-                if info:
-                    leaf = maya_node_leaf_name(model)
-                    display_name = preferred_pmx_display_name(
-                        info.get("name_jp"),
-                        info.get("name_en"),
-                        fallback=leaf,
-                        language=self._translator.get_language(),
-                    )
-                    namespace = info.get("namespace")
-                    if self._translator.get_language() == "en":
-                        if namespace:
-                            # English labels must distinguish same-named PMX
-                            # roots loaded into different Maya namespaces,
-                            # without falling back to the Japanese PMX name.
-                            label = f"{display_name} [{namespace}]"
-                        else:
-                            label = f"{display_name} [{leaf}]" if leaf.isascii() else display_name
-                    elif namespace:
-                        # namespace付きの場合
-                        label = f"{display_name} [{namespace}:{model.split(':')[-1]}]"
-                    else:
-                        # namespaceなしの場合
-                        label = f"{display_name} [{model}]"
-                    add_combo_item_with_tooltip(self.model_combo, label, user_data=model)
-                else:
-                    add_combo_item_with_tooltip(self.model_combo, model, user_data=model)
+                label = self._model_combo_label(model, info)
+                add_combo_item_with_tooltip(self.model_combo, label, user_data=model)
 
-            # 現在のモデルを選択
-            if current_model in models:
-                index = models.index(current_model)
-                self.model_combo.setCurrentIndex(index)
-            else:
-                # Some legacy services return short roots while Application
-                # State retains the canonical long identity.
-                service = getattr(self.app_state, "scene_model_service", None)
-                canonicalize = getattr(service, "canonical_node", None)
-                if callable(canonicalize):
-                    try:
-                        current_identity = canonicalize(current_model)
-                        for index, model in enumerate(models):
-                            if canonicalize(model) == current_identity:
-                                self.model_combo.setCurrentIndex(index)
-                                break
-                    except Exception:
-                        logger.debug("Could not match canonical current model in Header", exc_info=True)
+            self._select_current_model(models, current_model)
 
         self.is_updating = False
+
+    def _model_combo_label(self, model, info) -> str:
+        """Return the combo label for one model root in the current UI language."""
+        if not info:
+            return model
+
+        leaf = maya_node_leaf_name(model)
+        display_name = preferred_pmx_display_name(
+            info.get("name_jp"),
+            info.get("name_en"),
+            fallback=leaf,
+            language=self._translator.get_language(),
+        )
+        namespace = info.get("namespace")
+        if self._translator.get_language() == "en":
+            if namespace:
+                # English labels must distinguish same-named PMX roots loaded
+                # into different Maya namespaces, without falling back to the
+                # Japanese PMX name.
+                return f"{display_name} [{namespace}]"
+            return f"{display_name} [{leaf}]" if leaf.isascii() else display_name
+        if namespace:
+            return f"{display_name} [{namespace}:{model.split(':')[-1]}]"
+        return f"{display_name} [{model}]"
+
+    def _select_current_model(self, models, current_model):
+        """Select the current model, matching canonical identities when names differ."""
+        if current_model in models:
+            index = models.index(current_model)
+            self.model_combo.setCurrentIndex(index)
+        else:
+            # Some legacy services return short roots while Application
+            # State retains the canonical long identity.
+            service = getattr(self.app_state, "scene_model_service", None)
+            canonicalize = getattr(service, "canonical_node", None)
+            if callable(canonicalize):
+                try:
+                    current_identity = canonicalize(current_model)
+                    for index, model in enumerate(models):
+                        if canonicalize(model) == current_identity:
+                            self.model_combo.setCurrentIndex(index)
+                            break
+                except Exception:
+                    logger.debug("Could not match canonical current model in Header", exc_info=True)
 
     def on_combo_selection_changed(self, text):
         """コンボボックスの選択が変更されたときの処理"""
