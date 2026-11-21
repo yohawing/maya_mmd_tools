@@ -121,6 +121,42 @@ def _pmx_soft_body_count(pmx_data: Any) -> int:
         raise MMDImportException("Failed to inspect PMX soft-body section") from exc
 
 
+def _record_import_profile(
+    pipeline,
+    mesh_converter,
+    morph_converter,
+    bone_converter,
+    morph_result,
+    bone_morph_runtime_result,
+    material_morph_runtime_result,
+) -> None:
+    """Copy converter profiles and morph totals into the pipeline profile when enabled."""
+    if pipeline.profile is None:
+        return
+    pipeline.profile["phase_timings"] = pipeline.phase_timings
+    pipeline.profile["mesh_converter"] = dict(mesh_converter.profile)
+    pipeline.profile["morph_converter"] = dict(morph_converter.profile)
+    pipeline.profile["bone_converter"] = dict(bone_converter.profile)
+    pipeline.profile["texture_issues"] = list(mesh_converter.unresolved_textures)
+    pipeline.profile["morph_result"] = {
+        "morphs_converted": morph_result.get("morphs_converted"),
+        "total_morphs": morph_result.get("total_morphs"),
+        "blend_shape_nodes": len(morph_result.get("blend_shape_nodes", []) or []),
+        "bone_morph_nodes": len(morph_result.get("bone_morph_nodes", []) or []),
+        "material_morph_nodes": len(morph_result.get("material_morph_nodes", []) or []),
+        "vertex_morphs_skipped_by_material": morph_result.get(
+            "vertex_morphs_skipped_by_material",
+            0,
+        ),
+    }
+    pipeline.profile["bone_morph_runtime"] = bone_morph_runtime_result
+    pipeline.profile["material_morph_runtime"] = material_morph_runtime_result
+    logger.debug("PMX import phase timings: %s", pipeline.profile["phase_timings"])
+    logger.debug("Mesh converter profile: %s", pipeline.profile["mesh_converter"])
+    logger.debug("Morph converter profile: %s", pipeline.profile["morph_converter"])
+    logger.debug("Bone converter profile: %s", pipeline.profile["bone_converter"])
+
+
 def import_pmx_file(
     parser: Any,
     filepath: str,
@@ -330,29 +366,15 @@ def import_pmx_file(
 
             # Python MMD shader output requires the CM-on/de-gamma contract.
             pipeline.setup_view()
-            if pipeline.profile is not None:
-                pipeline.profile["phase_timings"] = pipeline.phase_timings
-                pipeline.profile["mesh_converter"] = dict(mesh_converter.profile)
-                pipeline.profile["morph_converter"] = dict(morph_converter.profile)
-                pipeline.profile["bone_converter"] = dict(bone_converter.profile)
-                pipeline.profile["texture_issues"] = list(mesh_converter.unresolved_textures)
-                pipeline.profile["morph_result"] = {
-                    "morphs_converted": morph_result.get("morphs_converted"),
-                    "total_morphs": morph_result.get("total_morphs"),
-                    "blend_shape_nodes": len(morph_result.get("blend_shape_nodes", []) or []),
-                    "bone_morph_nodes": len(morph_result.get("bone_morph_nodes", []) or []),
-                    "material_morph_nodes": len(morph_result.get("material_morph_nodes", []) or []),
-                    "vertex_morphs_skipped_by_material": morph_result.get(
-                        "vertex_morphs_skipped_by_material",
-                        0,
-                    ),
-                }
-                pipeline.profile["bone_morph_runtime"] = bone_morph_runtime_result
-                pipeline.profile["material_morph_runtime"] = material_morph_runtime_result
-                logger.debug("PMX import phase timings: %s", pipeline.profile["phase_timings"])
-                logger.debug("Mesh converter profile: %s", pipeline.profile["mesh_converter"])
-                logger.debug("Morph converter profile: %s", pipeline.profile["morph_converter"])
-                logger.debug("Bone converter profile: %s", pipeline.profile["bone_converter"])
+            _record_import_profile(
+                pipeline,
+                mesh_converter,
+                morph_converter,
+                bone_converter,
+                morph_result,
+                bone_morph_runtime_result,
+                material_morph_runtime_result,
+            )
             if mesh_converter.unresolved_texture_count:
                 logger.warning(
                     "%d texture(s) could not be loaded. Use Resolve textures to repair them.",
