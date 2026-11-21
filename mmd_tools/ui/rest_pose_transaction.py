@@ -8,6 +8,7 @@ change, while static channels retain the assigned rest value.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import math
 from typing import Any, Mapping
 
@@ -478,3 +479,82 @@ class ResetPoseTransaction:
     def _close_undo(self, opened: bool) -> None:
         if opened:
             self.adapter.undo_info(closeChunk=True)
+
+
+def solver_input_route(
+    binding,
+    target: str,
+    cmds,
+) -> tuple[str, ...]:
+    """Map one CCD output index through chain metadata to its bone-slot input."""
+
+    rows = [
+        row
+        for row in binding.incoming
+        if str(row.source_node_type) == "mmdCcdIk"
+    ]
+    if len(rows) != 1:
+        raise RuntimeError(
+            f"Reset Pose solver output route is ambiguous: {target}"
+        )
+    row = rows[0]
+    if str(row.destination_plug) != f"{target}.rotate":
+        raise RuntimeError(
+            f"Reset Pose solver output destination is unsupported: {target}"
+        )
+    source = str(row.source_plug)
+    node, separator, attribute = source.rpartition(".")
+    prefix = "outputRotate["
+    if (
+        not separator
+        or not node
+        or not attribute.startswith(prefix)
+        or not attribute.endswith("]")
+    ):
+        raise RuntimeError(
+            f"Reset Pose solver output index is unavailable: {target}"
+        )
+    index = attribute[len(prefix) : -1]
+    if not index.isdigit():
+        raise RuntimeError(
+            f"Reset Pose solver output index is unavailable: {target}"
+        )
+    try:
+        chain = json.loads(cmds.getAttr(f"{node}.chainJson"))
+        links = chain["links"]
+        if not isinstance(links, list):
+            raise TypeError("links must be a list")
+        slots = []
+        for link in links:
+            if not isinstance(link, dict):
+                raise TypeError("link must be an object")
+            slot = link["bone_slot"]
+            if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0:
+                raise ValueError("bone_slot must be a non-negative integer")
+            slots.append(slot)
+        if len(set(slots)) != len(slots):
+            raise ValueError("bone_slot values must be unique")
+        slot = slots[int(index)]
+    except (
+        KeyError,
+        IndexError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise RuntimeError(
+            f"Reset Pose solver chain metadata is unavailable: {target}"
+        ) from exc
+    compound = f"{node}.inputRotate[{slot}]"
+    children = tuple(
+        f"{compound}.inputRotateElement{axis}" for axis in "XYZ"
+    )
+    exists = getattr(cmds, "objExists", None)
+    if not callable(exists) or not exists(compound) or not all(
+        exists(child) for child in children
+    ):
+        raise RuntimeError(
+            f"Reset Pose solver input is unavailable: {target}"
+        )
+    return children
