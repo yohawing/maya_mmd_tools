@@ -243,6 +243,23 @@ class FakeCmds:
         return self.aliases.get(plug) if query else None
 
 
+class TestSingleKeySelectionReason(unittest.TestCase):
+    def test_reason_for_each_track_kind_and_default_state(self):
+        cases = [
+            (True, True, True, "keyless_static_default", "keyless_static_non_default"),
+            (False, True, False, "direct_single_key_default", "direct_single_key_non_default"),
+            (False, True, True, "layered_direct_single_key_default", "layered_direct_single_key_non_default"),
+            (False, False, True, "routed_direct_single_key_default", "routed_direct_single_key_non_default"),
+        ]
+        for static_keyless, layered, routed, default, non_default in cases:
+            for is_default, expected in ((True, default), (False, non_default)):
+                with self.subTest(reason=expected):
+                    self.assertEqual(
+                        collector_module._single_key_selection_reason(is_default, static_keyless, layered, routed),
+                        expected,
+                    )
+
+
 class TestVmdSceneCollector(unittest.TestCase):
     """VmdSceneCollector の最小収集契約を検証する。"""
 

@@ -556,6 +556,20 @@ def _bake_timeline_authored_input_plug(
     return physical_attr[len(prefix) : -len(suffix)].isdigit()
 
 
+def _single_key_selection_reason(is_default: bool, static_keyless: bool, layered: bool, routed: bool) -> str:
+    """Return the reason recorded for a single-key bone track."""
+    suffix = "default"
+    if not is_default:
+        suffix = "non_default"
+    if static_keyless:
+        return f"keyless_static_{suffix}"
+    if not routed:
+        return f"direct_single_key_{suffix}"
+    if layered:
+        return f"layered_direct_single_key_{suffix}"
+    return f"routed_direct_single_key_{suffix}"
+
+
 def _bake_timeline_single_key_bone_route(
     joint: str,
     route: Mapping[str, tuple[str, str]],
@@ -2668,33 +2682,7 @@ class VmdSceneCollector:
                             "bone",
                             bone_name,
                             "omitted_default" if is_default else "constant_one_key",
-                            (
-                                "keyless_static_default"
-                                if static_keyless
-                                else (
-                                    (
-                                        "layered_direct_single_key_default"
-                                        if single_key_kinds.get(joint) == "layered"
-                                        else "routed_direct_single_key_default"
-                                    )
-                                    if route
-                                    else "direct_single_key_default"
-                                )
-                            )
-                            if is_default
-                            else (
-                                "keyless_static_non_default"
-                                if static_keyless
-                                else (
-                                    (
-                                        "layered_direct_single_key_non_default"
-                                        if single_key_kinds.get(joint) == "layered"
-                                        else "routed_direct_single_key_non_default"
-                                    )
-                                    if route
-                                    else "direct_single_key_non_default"
-                                )
-                            ),
+                            _single_key_selection_reason(is_default, static_keyless, single_key_kinds.get(joint) == "layered", bool(route)),
                             0 if static_keyless else len(sparse_frames),
                             0 if is_default else 1,
                         )
