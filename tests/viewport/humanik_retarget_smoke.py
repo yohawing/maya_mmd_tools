@@ -261,7 +261,7 @@ def _source_anim_curve_evidence(result) -> Dict[str, Any]:
             incoming = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
             curves = []
             for source in incoming:
-                node = str(source).rsplit(".", 1)[0]
+                node = str(source).split(".", 1)[0]
                 if not str(cmds.nodeType(node)).startswith("animCurve"):
                     continue
                 curves.append(str(source))

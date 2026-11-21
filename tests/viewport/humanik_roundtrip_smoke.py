@@ -352,7 +352,7 @@ def _skin_influences(root: str) -> Dict[str, Tuple[str, int]]:
             ) or []
             if not sources:
                 continue
-            joint = _long_name(str(sources[0]).rsplit(".", 1)[0])
+            joint = _long_name(str(sources[0]).split(".", 1)[0])
             result.setdefault(joint, (skin, int(logical_index)))
     return result
 
@@ -666,7 +666,8 @@ def _common_skin_snapshot_evaluation(snapshot: Mapping[str, Any]) -> Dict[str, A
     }
 
 
-EXPECTED_TPOSE_ISOLATED_EDGE_COUNT = 6
+# Six native solver outputs, each wired per axis (rotateX/Y/Z).
+EXPECTED_TPOSE_ISOLATED_EDGE_COUNT = 18
 
 
 def _json_attribute_value(value: Any) -> Any:
@@ -700,7 +701,7 @@ def _isolate_hik_writer_edges(hik_joints: Sequence[str]) -> Dict[str, Any]:
     for row in mute_rows:
         for destination in row["writes"]:
             sources = cmds.listConnections(destination, source=True, destination=False, plugs=True) or []
-            matched = [str(source) for source in sources if str(source).rsplit(".", 1)[0] == str(row["node"])]
+            matched = [str(source) for source in sources if str(source).split(".", 1)[0] == str(row["node"])]
             if len(matched) != 1:
                 raise RuntimeError(f"Expected one {row['node']} writer for {destination}, got {matched}")
             edge = (matched[0], str(destination))
@@ -1292,7 +1293,7 @@ def _h_out_and_excluded(source_root: str, source_slots: Mapping[int, Mapping[str
         if long_joint in h_joints:
             continue
         animated = any(
-            any(str(cmds.nodeType(str(source).rsplit(".", 1)[0])).startswith("animCurve") for source in (cmds.listConnections(f"{joint}.{channel}", source=True, destination=False, plugs=True) or []))
+            any(str(cmds.nodeType(str(source).split(".", 1)[0])).startswith("animCurve") for source in (cmds.listConnections(f"{joint}.{channel}", source=True, destination=False, plugs=True) or []))
             for channel in CHANNELS
         )
         if animated:

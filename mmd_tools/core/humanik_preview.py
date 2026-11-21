@@ -478,7 +478,7 @@ def stop_humanik_target_preview(
 
 def plug_node(plug: str) -> str:
     """Return the node name portion of a ``node.attr`` plug string."""
-    return plug.rsplit(".", 1)[0] if "." in plug else plug
+    return plug.split(".", 1)[0] if "." in plug else plug
 
 
 def row_hik_writes(row: Dict[str, Any], hik_joints: set[str]) -> List[str]:

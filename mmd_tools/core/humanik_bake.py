@@ -13,7 +13,7 @@ from mmd_tools.core.humanik_utils import maya_cmds
 
 CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CHANNELS_BY_PARENT = {"translate": ("translateX", "translateY", "translateZ"), "rotate": ("rotateX", "rotateY", "rotateZ")}
-_OUTPUT_INDEX = re.compile(r"^outputRotate\[(\d+)\](?:[XYZ])?$")
+_OUTPUT_INDEX = re.compile(r"^outputRotate\[(\d+)\](?:[XYZ]|\.outputRotateElement[XYZ])?$")
 _FOOT_IK_NODE = re.compile(r"(?:left|right)_leg_ik_mmdccdik$", re.IGNORECASE)
 _RESIDUAL_TOLERANCE = 1.0e-5
 
@@ -244,7 +244,7 @@ def _resolve_route(preview: HumanIkTargetPreview, plug: str, cmds) -> _BakeRoute
     source = str(snapshot.sources[0])
     if "." not in source:
         raise RuntimeError(f"HumanIK bake route is malformed: {source}")
-    source_node, source_attr = source.rsplit(".", 1)
+    source_node, source_attr = source.split(".", 1)
     source_type = _node_type(cmds, source_node)
     if source_type == "mmdAppend":
         expected_prefix = f"output{parent.capitalize()}"
@@ -388,7 +388,7 @@ def _resolve_foot_ik_bake_targets(
             plugs=True,
         ) or []
         if goal_sources:
-            goal_nodes = {str(source).rsplit(".", 1)[0] for source in goal_sources}
+            goal_nodes = {str(source).split(".", 1)[0] for source in goal_sources}
             if len(goal_nodes) != 1:
                 raise RuntimeError(f"MMD foot IK goal has ambiguous controller: {node}")
             goal_controller = next(iter(goal_nodes))
@@ -421,7 +421,7 @@ def _connected_input_transform(cmds, node: str, parent: str, slot: int) -> str:
             destination=False,
             plugs=True,
         ) or []:
-            source_nodes.add(str(source).rsplit(".", 1)[0])
+            source_nodes.add(str(source).split(".", 1)[0])
     if len(source_nodes) != 1:
         raise RuntimeError(f"mmdCcdIk {parent}[{slot}] source is unavailable or ambiguous: {node}")
     transform = next(iter(source_nodes))
@@ -504,7 +504,7 @@ def _preflight_routes(cmds, routes: Iterable[_BakeRoute], source_plugs: Iterable
         if incoming:
             incoming = [str(source) for source in incoming]
             if route.kind != "direct" or any(
-                _node_type(cmds, source.rsplit(".", 1)[0]) != "HIKState2SK" for source in incoming
+                _node_type(cmds, source.split(".", 1)[0]) != "HIKState2SK" for source in incoming
             ):
                 raise RuntimeError(f"HumanIK bake refuses to overwrite existing writer: {destination} <- {incoming}")
             hik_connections[destination] = incoming
@@ -522,12 +522,12 @@ def _preflight_routes(cmds, routes: Iterable[_BakeRoute], source_plugs: Iterable
         non_hik = [
             source
             for source in incoming
-            if _node_type(cmds, source.rsplit(".", 1)[0]) not in {"HIKState2SK"}
+            if _node_type(cmds, source.split(".", 1)[0]) not in {"HIKState2SK"}
         ]
         if non_hik and route.kind == "direct":
             raise RuntimeError(f"HumanIK bake refuses non-HIK joint writer: {source_plug} <- {non_hik}")
         if non_hik and any(
-            _node_type(cmds, source.rsplit(".", 1)[0]) not in {"mmdCcdIk", "mmdAppend"}
+            _node_type(cmds, source.split(".", 1)[0]) not in {"mmdCcdIk", "mmdAppend"}
             for source in non_hik
         ):
             raise RuntimeError(f"HumanIK bake refuses unexpected joint writer: {source_plug} <- {non_hik}")

@@ -506,7 +506,7 @@ def apply_humanik_restore_state(
     )
     live_plugs = []
     for snapshot in restore_state.plugs:
-        node = snapshot.plug.rsplit(".", 1)[0]
+        node = snapshot.plug.split(".", 1)[0]
         resolved_node = _resolve_node_uuid(cmds, node, snapshot.node_uuid)
         if resolved_node is None:
             warnings.append(
@@ -539,7 +539,7 @@ def apply_humanik_restore_state(
     for snapshot, destination in live_plugs:
         actual = incoming_sources(cmds, destination)
         unexpected = sorted(source for source in set(actual) - set(snapshot.sources)
-                            if source.rsplit(".", 1)[0] not in owned_hik_nodes)
+                            if source.split(".", 1)[0] not in owned_hik_nodes)
         if unexpected:
             topology_drift.append(
                 {
@@ -602,7 +602,7 @@ def apply_humanik_restore_state(
             failures.append(f"value restore failed for {destination}: {exc}")
     for snapshot, destination in live_plugs:
         for source in snapshot.sources:
-            source_node = source.rsplit(".", 1)[0]
+            source_node = source.split(".", 1)[0]
             if not cmds.objExists(source_node):
                 warnings.append(
                     f"HumanIK restore_state skip: reconnect source no longer exists: "
@@ -672,7 +672,7 @@ def _capture_plug(cmds, plug: str) -> HumanIkPlugSnapshot:
         sources=incoming_sources(cmds, destination),
         value=cmds.getAttr(destination),
         attr_type=str(cmds.getAttr(destination, type=True) or ""),
-        node_uuid=unique_node_uuid(cmds, destination.rsplit(".", 1)[0]),
+        node_uuid=unique_node_uuid(cmds, destination.split(".", 1)[0]),
     )
 
 

@@ -191,7 +191,7 @@ def _skin_influence(cmds, root: str, joint: str) -> Optional[Tuple[str, int]]:
                 destination=False,
                 plugs=True,
             ) or []
-            if sources and _long_name(cmds, str(sources[0]).rsplit(".", 1)[0]) == str(joint):
+            if sources and _long_name(cmds, str(sources[0]).split(".", 1)[0]) == str(joint):
                 return str(skin), int(logical_index)
     return None
 
@@ -768,7 +768,7 @@ class HumanIkStanceTransaction:
             isolated_rows.append(row)
             for destination in row.get("writes", []):
                 baseline = incoming_sources(self.cmds, str(destination))
-                matched = [source for source in baseline if source.rsplit(".", 1)[0] == str(row.get("node", ""))]
+                matched = [source for source in baseline if source.split(".", 1)[0] == str(row.get("node", ""))]
                 if len(matched) > 1:
                     raise RuntimeError(f"Ambiguous HIK writer edges for {row.get('node')}: {destination}")
                 if not matched:
@@ -810,7 +810,7 @@ class HumanIkStanceTransaction:
                         if destination == f"{joint}.{attribute}" and source in component_sources:
                             continue
                         component_sources.add(source)
-                        source_node = source.rsplit(".", 1)[0]
+                        source_node = source.split(".", 1)[0]
                         try:
                             source_type = str(self.cmds.nodeType(source_node))
                         except Exception:
@@ -854,7 +854,7 @@ class HumanIkStanceTransaction:
                         if destination == f"{joint}.{attribute}" and source in component_sources:
                             continue
                         component_sources.add(source)
-                        source_node = source.rsplit(".", 1)[0]
+                        source_node = source.split(".", 1)[0]
                         try:
                             source_type = str(self.cmds.nodeType(source_node))
                         except Exception:
@@ -896,7 +896,7 @@ class HumanIkStanceTransaction:
                         if edge in seen:
                             continue
                         seen.add(edge)
-                        source_node = source.rsplit(".", 1)[0]
+                        source_node = source.split(".", 1)[0]
                         try:
                             source_type = str(self.cmds.nodeType(source_node))
                         except Exception:
@@ -969,7 +969,7 @@ class HumanIkStanceTransaction:
                 "but no VMD bind-pose metadata was found"
             )
         animated_joints = {
-            str(edge["destination"]).rsplit(".", 1)[0]
+            str(edge["destination"]).split(".", 1)[0]
             for edge in animation_edges
         }
         missing_bind_joints = sorted(animated_joints - stored_translates.keys())

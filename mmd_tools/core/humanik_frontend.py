@@ -293,7 +293,7 @@ def _record_disconnected_source_uuids(transaction: Any, cmds: Any) -> None:
         source = str(edge.get("source", ""))
         if "." not in source:
             continue
-        source_node = source.rsplit(".", 1)[0]
+        source_node = source.split(".", 1)[0]
         source_uuid = unique_node_uuid(cmds, source_node)
         if source_uuid is not None:
             edge["sourceNodeUuid"] = source_uuid
@@ -315,7 +315,7 @@ def _preisolated_feedback_nodes(
         return ()
     edges = getattr(transaction, "disconnected", ()) or ()
     source_nodes = {
-        str(edge.get("source", "")).rsplit(".", 1)[0]
+        str(edge.get("source", "")).split(".", 1)[0]
         for edge in edges
         if isinstance(edge, Mapping) and "." in str(edge.get("source", ""))
     }

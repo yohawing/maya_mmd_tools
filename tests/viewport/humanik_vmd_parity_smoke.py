@@ -227,7 +227,7 @@ def _skin_influences(root: str) -> Dict[str, Tuple[str, int]]:
             ) or []
             if not sources:
                 continue
-            joint = _long_name(str(sources[0]).rsplit(".", 1)[0])
+            joint = _long_name(str(sources[0]).split(".", 1)[0])
             result.setdefault(joint, (skin, int(logical_index)))
     return result
 

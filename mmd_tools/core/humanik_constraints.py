@@ -246,9 +246,9 @@ def preisolated_mmd_ccdik_nodes_from_disconnected_edges(
         destination = str(edge.get("destination", ""))
         if "." not in source or "." not in destination:
             continue
-        source_node, source_attribute = source.rsplit(".", 1)
+        source_node, source_attribute = source.split(".", 1)
         destination_joint, destination_attribute = destination.rsplit(".", 1)
-        if not re.fullmatch(r"outputRotate\[\d+\]", source_attribute):
+        if not re.fullmatch(r"outputRotate\[\d+\](?:\.outputRotateElement[XYZ])?", source_attribute):
             continue
         if destination_attribute not in {"rotate", "rotateX", "rotateY", "rotateZ"}:
             continue
@@ -515,7 +515,7 @@ def _connected_joint_plugs(cmds, node: str, incoming: bool) -> set[str]:
     for index in range(0, len(values) - 1, 2):
         left, right = str(values[index]), str(values[index + 1])
         external = right if left.startswith(f"{node}.") else left
-        external_node = external.rsplit(".", 1)[0] if "." in external else external
+        external_node = external.split(".", 1)[0] if "." in external else external
         try:
             if cmds.nodeType(external_node) != "joint":
                 continue
@@ -528,4 +528,4 @@ def _connected_joint_plugs(cmds, node: str, incoming: bool) -> set[str]:
 
 
 def _joint_from_plug(plug: str) -> str:
-    return str(plug).rsplit(".", 1)[0] if "." in str(plug) else ""
+    return str(plug).split(".", 1)[0] if "." in str(plug) else ""
