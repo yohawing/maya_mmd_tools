@@ -12,6 +12,7 @@ from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_redirected_authoring_proxy import (
     resolve_redirected_authoring_proxy_authority,
 )
+from mmd_tools.converters.vmd_runtime_scene_apply import _split_append_channels
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
 
@@ -51,6 +52,18 @@ class TestVmdAppendAnimation(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def test_split_append_channels_preserves_values_static_states_and_order(self):
+        channels = {"rotateZ": [1], "scaleY": [2], "rotateX": [3], "scaleX": [4]}
+        target_static = {attr: {"first": values[0]} for attr, values in channels.items()}
+        redirected, redirected_static, passthrough, passthrough_static = _split_append_channels(
+            channels, target_static, {"rotateX": "baseX", "rotateZ": "baseZ"}, {"rotateX": [5]}
+        )
+
+        self.assertEqual(list(redirected.items()), [("baseZ", [1]), ("baseX", [5])])
+        self.assertEqual(list(redirected_static.items()), [("baseZ", {"first": 1})])
+        self.assertEqual(list(passthrough.items()), [("scaleY", [2]), ("scaleX", [4])])
+        self.assertEqual(list(passthrough_static.items()), [("scaleY", {"first": 2}), ("scaleX", {"first": 4})])
 
     def test_legacy_bone_animation_redirects_append_rotate_to_base_rotate(self):
         """append target ボーンの rotate は append node の baseRotate に key する。"""

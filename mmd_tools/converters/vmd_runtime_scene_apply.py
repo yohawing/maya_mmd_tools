@@ -88,6 +88,28 @@ def apply_runtime_channel_arrays_to_scene(
     )
 
 
+def _split_append_channels(channels, target_static, attr_map, decomposed_channels):
+    """Split append-node and joint channels with their corresponding static states."""
+    redirected_channels = {}
+    redirected_static = {}
+    passthrough_channels = {}
+    passthrough_static = {}
+    for attr, values in channels.items():
+        new_attr = attr_map.get(attr)
+        if new_attr:
+            redirected_channels[new_attr] = decomposed_channels.get(attr, values)
+            if attr not in decomposed_channels:
+                orig_state = target_static.get(attr)
+                if orig_state:
+                    redirected_static[new_attr] = orig_state
+        else:
+            passthrough_channels[attr] = values
+            orig_state = target_static.get(attr)
+            if orig_state:
+                passthrough_static[attr] = orig_state
+    return redirected_channels, redirected_static, passthrough_channels, passthrough_static
+
+
 def _apply_runtime_channel_arrays_to_scene(
     context: VmdRuntimeSceneApplyContext,
     joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
@@ -156,23 +178,9 @@ def _apply_runtime_channel_arrays_to_scene(
                     attr_map.pop("translateY", None)
                     attr_map.pop("translateZ", None)
 
-                redirected_channels = {}
-                redirected_static = {}
-                passthrough_channels = {}
-                passthrough_static = {}
-                for attr, values in channels.items():
-                    new_attr = attr_map.get(attr)
-                    if new_attr:
-                        redirected_channels[new_attr] = decomposed_channels.get(attr, values)
-                        if attr not in decomposed_channels:
-                            orig_state = target_static.get(attr)
-                            if orig_state:
-                                redirected_static[new_attr] = orig_state
-                    else:
-                        passthrough_channels[attr] = values
-                        orig_state = target_static.get(attr)
-                        if orig_state:
-                            passthrough_static[attr] = orig_state
+                redirected_channels, redirected_static, passthrough_channels, passthrough_static = _split_append_channels(
+                    channels, target_static, attr_map, decomposed_channels
+                )
 
                 if redirected_channels:
                     keyed, skipped = context.batch_create_and_key_curve_arrays(
