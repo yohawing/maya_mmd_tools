@@ -434,39 +434,30 @@ class BoneConverter:
             }
 
             # 接続先ボーンの属性を設定
-            if not bone.get_flag(PmxBoneFlag.CONNECT_BONE):
-                # 座標オフセットの場合
+            if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
+                attrs[ATTR_MMD_CONNECT_TYPE] = "BONE_INDEX"
+                attrs[ATTR_MMD_CONNECT_INDEX] = bone.connect_bone_index
+                attrs[ATTR_MMD_CONNECT_BONE_INDEX] = bone.connect_bone_index
+            else:
                 attrs[ATTR_MMD_BONE_OFFSET] = tuple(
                     float(value) * scale for value in bone.connect_position_offset
                 )
-
-            # 接続先属性
-            attrs[ATTR_MMD_CONNECT_TYPE] = "BONE_INDEX" if bone.get_flag(PmxBoneFlag.CONNECT_BONE) else "RELATIVE"
-            if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
-                attrs[ATTR_MMD_CONNECT_INDEX] = bone.connect_bone_index
+                attrs[ATTR_MMD_CONNECT_TYPE] = "RELATIVE"
 
             # 付与ボーンの属性を設定
             if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
                 attrs[ATTR_MMD_GRANT_RATE] = bone.grant_rate
-
-            # 付与属性
-            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
                 attrs[ATTR_MMD_GRANT_PARENT_INDEX] = bone.grant_parent_bone_index
 
             # 軸固定の属性を設定
             if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
                 attrs[ATTR_MMD_FIXED_AXIS] = bone.axis_direction
+                attrs[ATTR_MMD_AXIS_DIRECTION] = bone.axis_direction
 
             # ローカル軸の属性を設定
             if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
                 attrs[ATTR_MMD_LOCAL_X_AXIS] = bone.x_axis_direction
                 attrs[ATTR_MMD_LOCAL_Z_AXIS] = bone.z_axis_direction
-
-            # 軸属性
-            if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
-                attrs[ATTR_MMD_AXIS_DIRECTION] = bone.axis_direction
-
-            if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
                 attrs[ATTR_MMD_X_AXIS_DIRECTION] = bone.x_axis_direction
                 attrs[ATTR_MMD_Z_AXIS_DIRECTION] = bone.z_axis_direction
 
@@ -474,15 +465,10 @@ class BoneConverter:
             if bone.get_flag(PmxBoneFlag.EXTERNAL_PARENT_DEFORM):
                 attrs[ATTR_MMD_EXTERNAL_PARENT_KEY] = bone.key_value
 
-            # 外部親属性
-
             # IK関連の属性を設定
             if bone.get_flag(PmxBoneFlag.IK):
                 attrs[ATTR_MMD_IK_LOOP] = bone.ik_loop_count
                 attrs[ATTR_MMD_IK_LIMIT_ANGLE] = bone.ik_limit_angle
-
-            # IK属性
-            if bone.get_flag(PmxBoneFlag.IK):
                 attrs[ATTR_MMD_IK_TARGET_INDEX] = bone.ik_target_bone_index
 
                 # IKリンクをJSON形式で保存
@@ -498,9 +484,6 @@ class BoneConverter:
                     }
                     ik_links_data.append(link_data)
                 attrs[ATTR_MMD_IK_LINKS] = json.dumps(ik_links_data)
-
-            if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
-                attrs[ATTR_MMD_CONNECT_BONE_INDEX] = bone.connect_bone_index
 
         elif format_type == "pmd":
             attrs = {
