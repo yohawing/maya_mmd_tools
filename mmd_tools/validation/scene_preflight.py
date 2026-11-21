@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
-from .export_validator import ExportValidationIssue, ExportValidationReport
+from .export_validator import ExportValidationReport, blocking_issue
 from .vmd_validator import (
     VMD_EXPORT_BAKE_TIMELINE,
     VMD_EXPORT_PRESERVE_KEYS,
@@ -36,28 +36,6 @@ class ScenePreflightResult:
     def valid(self) -> bool:
         """Return whether scene collection may proceed."""
         return self.report.valid
-
-
-def _issue(
-    code: str,
-    path: str,
-    message: str,
-    action: str = "",
-    *,
-    details: Optional[Mapping[str, Any]] = None,
-) -> ExportValidationIssue:
-    """Create one blocking scene-boundary issue."""
-    issue_details = dict(details or {})
-    issue_details.setdefault("field", path)
-    return ExportValidationIssue(
-        code,
-        "fatal",
-        True,
-        path,
-        message,
-        action=action,
-        details=issue_details,
-    )
 
 
 def _normalize_format(options: Mapping[str, Any]) -> str:
@@ -182,7 +160,7 @@ class ScenePreflight:
 
         if export_format not in SUPPORTED_FORMATS:
             issues.append(
-                _issue(
+                blocking_issue(
                     "EXPORT_OPTIONS_INVALID",
                     "export_format",
                     f"export format {export_format or 'empty'} is not supported by the export workflow",
@@ -191,7 +169,7 @@ class ScenePreflight:
             )
         elif export_format == "vmd" and export_target not in VMD_EXPORT_TARGETS:
             issues.append(
-                _issue(
+                blocking_issue(
                     "EXPORT_OPTIONS_INVALID",
                     "export_target",
                     f"VMD export target {export_target or 'empty'} is not supported",
@@ -201,7 +179,7 @@ class ScenePreflight:
             )
         elif export_format == "vmd" and export_strategy not in VMD_EXPORT_STRATEGIES:
             issues.append(
-                _issue(
+                blocking_issue(
                     "EXPORT_OPTIONS_INVALID",
                     "export_strategy",
                     f"VMD export strategy {export_strategy or 'empty'} is not supported",
@@ -215,7 +193,7 @@ class ScenePreflight:
             and export_target == "character"
         ):
             issues.append(
-                _issue(
+                blocking_issue(
                     "EXPORT_OPTIONS_INVALID",
                     "export_strategy",
                     "Preserve Keys is available for Camera export only",
@@ -229,7 +207,7 @@ class ScenePreflight:
 
         if require_target and not target:
             issues.append(
-                _issue(
+                blocking_issue(
                     "SCENE_INVALID",
                     "target",
                     (
@@ -249,7 +227,7 @@ class ScenePreflight:
                     exists = False
                 if not exists:
                     issues.append(
-                        _issue(
+                        blocking_issue(
                             "STALE_STATE",
                             "target",
                             f"export target {target!r} no longer exists in the Maya scene",
@@ -261,7 +239,7 @@ class ScenePreflight:
         if any(key in options for key in ("frame_range", "frame_start", "frame_end", "start_frame", "end_frame")):
             if frame_range is None or frame_range[0] < 0 or frame_range[1] < frame_range[0]:
                 issues.append(
-                    _issue(
+                    blocking_issue(
                         "EXPORT_OPTIONS_INVALID",
                         "frame_range",
                         "frame range must contain non-negative ordered start and end frames",
@@ -272,7 +250,7 @@ class ScenePreflight:
                 )
             elif export_format == "vmd" and export_strategy == VMD_EXPORT_PRESERVE_KEYS:
                 issues.append(
-                    _issue(
+                    blocking_issue(
                         "EXPORT_OPTIONS_INVALID",
                         "frame_range",
                         "Preserve Keys does not support Frame Range",
@@ -288,7 +266,7 @@ class ScenePreflight:
                 frame_step = 0.0
             if not math.isfinite(frame_step) or frame_step <= 0.0:
                 issues.append(
-                    _issue(
+                    blocking_issue(
                         "EXPORT_OPTIONS_INVALID",
                         "frame_step",
                         "frame step must be a finite positive number",
@@ -301,7 +279,7 @@ class ScenePreflight:
         expected_extension = export_format if export_format in SUPPORTED_FORMATS else None
         if not output_path_text.strip():
             issues.append(
-                _issue(
+                blocking_issue(
                     "EXPORT_OPTIONS_INVALID",
                     "file_path",
                     "export output path is required",
@@ -310,7 +288,7 @@ class ScenePreflight:
             )
         elif output_path.exists() and output_path.is_dir():
             issues.append(
-                _issue(
+                blocking_issue(
                     "EXPORT_OPTIONS_INVALID",
                     "file_path",
                     "export output path is a directory",
@@ -319,7 +297,7 @@ class ScenePreflight:
             )
         elif expected_extension and output_path.suffix.lower().lstrip(".") != expected_extension:
             issues.append(
-                _issue(
+                blocking_issue(
                     "EXPORT_OPTIONS_INVALID",
                     "file_path",
                     f"output extension must be .{expected_extension} for {expected_extension.upper()} export",
@@ -332,7 +310,7 @@ class ScenePreflight:
         source_path = str(options.get("source_path") or "")
         if source_path and output_path and Path(source_path).absolute() == output_path.absolute():
             issues.append(
-                _issue(
+                blocking_issue(
                         "EXPORT_OPTIONS_INVALID",
                     "file_path",
                     "export output must not replace the imported source asset",
@@ -346,7 +324,7 @@ class ScenePreflight:
                 ownership = self._ownership_checker(target) or {}
             except Exception as exc:
                 issues.append(
-                    _issue(
+                    blocking_issue(
                         "COLLECTION_FAILED",
                         "ownership",
                         f"scene ownership could not be inspected: {type(exc).__name__}",
@@ -369,7 +347,7 @@ class ScenePreflight:
                 state = str(control_rig.get("state") or "").upper()
                 if owner == "CONTROL_OWNED" or state in {"EDIT", "CONVERTING"}:
                     issues.append(
-                        _issue(
+                        blocking_issue(
                             "OWNERSHIP_CONFLICT",
                             "ownership.control_rig",
                             "Control Rig owns the authoring path, but its direct export route could not be resolved",
@@ -393,7 +371,7 @@ class ScenePreflight:
                 if character is None and isinstance(humanik, Mapping):
                     character = humanik.get("character")
                 issues.append(
-                    _issue(
+                    blocking_issue(
                         "OWNERSHIP_CONFLICT",
                         "ownership.humanik",
                         f"HumanIK owns the export pose ({blocked}{f' on {character}' if character else ''}); bake or restore MMD Rig first",

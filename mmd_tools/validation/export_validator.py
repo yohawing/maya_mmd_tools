@@ -156,6 +156,20 @@ class ExportValidationIssue:
         return f"[{self.code}]{location}: {self.reason}"
 
 
+def blocking_issue(
+    code: str,
+    path: str,
+    message: str,
+    action: str = "",
+    *,
+    details: Optional[Mapping[str, Any]] = None,
+) -> ExportValidationIssue:
+    """Create a fatal, blocking issue with a default field for the reported path."""
+    issue_details = dict(details or {})
+    issue_details.setdefault("field", path)
+    return ExportValidationIssue(code, "fatal", True, path, message, action=action, details=issue_details)
+
+
 @dataclass(frozen=True)
 class ExportValidationIssueGroup:
     """One displayed issue representative and its folded occurrence count."""
@@ -675,7 +689,7 @@ def structured_export_failure_report(
     )
 
 
-def _is_sequence(value: Any) -> bool:
+def is_sequence(value: Any) -> bool:
     """Return whether *value* is a non-text sequence accepted by exporters."""
     return isinstance(value, Sequence) and not isinstance(value, _SEQUENCE_TYPES)
 
@@ -732,23 +746,13 @@ def _issue(
 ) -> None:
     """Append one blocking error issue."""
     issue_details = dict(details or {})
-    issue_details.setdefault("field", path)
     if code == "REFERENCE_INVALID":
         issue_details.setdefault("reference_kind", "index_or_count")
     elif code == "UNSUPPORTED_FEATURE":
         issue_details.setdefault("feature", path.rsplit(".", 1)[-1])
     elif code == "COLLECTION_FAILED":
         issue_details.setdefault("phase", "collection")
-    issues.append(
-        ExportValidationIssue(
-            code=code,
-            severity="fatal",
-            blocking=True,
-            path=path,
-            reason=message,
-            details=issue_details,
-        )
-    )
+    issues.append(blocking_issue(code, path, message, details=issue_details))
 
 
 def _scan_non_finite_numbers(
@@ -872,7 +876,7 @@ def _validate_vector_field(
         return
     value = mapping[field_name]
     field_path = _path_for_key(path, field_name)
-    if not _is_sequence(value):
+    if not is_sequence(value):
         _issue(issues, "INPUT_INVALID", field_path, "field must be a numeric sequence")
         return
     if len(value) != expected_length:
@@ -900,7 +904,7 @@ def _validate_numeric_sequence(
         return
     value = mapping[field_name]
     field_path = _path_for_key(path, field_name)
-    if not _is_sequence(value):
+    if not is_sequence(value):
         _issue(issues, "INPUT_INVALID", field_path, "field must be a numeric sequence")
         return
     checker = _is_integer if integer else _is_real
@@ -920,7 +924,7 @@ def _validate_sequence_max_length(
     label: str,
 ) -> None:
     """Reject sequence values that the selected writer would truncate."""
-    if field_name not in mapping or not _is_sequence(mapping[field_name]):
+    if field_name not in mapping or not is_sequence(mapping[field_name]):
         return
     value = mapping[field_name]
     if len(value) > maximum:
@@ -974,7 +978,7 @@ def _validate_vertices(
         if export_format == "pmx":
             if vertex.get("semantic_missing"):
                 missing = vertex["semantic_missing"]
-                if _is_sequence(missing):
+                if is_sequence(missing):
                     missing_fields = ", ".join(str(value) for value in missing)
                 else:
                     missing_fields = str(missing)
@@ -1029,7 +1033,7 @@ def _validate_vertices(
         else:
             bone_indices = vertex["bone_indices"]
             field_path = _path_for_key(vertex_path, "bone_indices")
-            if not _is_sequence(bone_indices):
+            if not is_sequence(bone_indices):
                 _issue(issues, "INPUT_INVALID", field_path, "bone_indices must be an integer sequence")
                 continue
             if len(bone_indices) not in (1, 2, 4):
@@ -1058,7 +1062,7 @@ def _validate_faces(faces: Sequence, vertex_count: int, issues: List[ExportValid
     """Validate polygon index sequences before exporter triangulation."""
     for face_index, face in enumerate(faces):
         face_path = _path_for_index("faces", face_index)
-        if not _is_sequence(face):
+        if not is_sequence(face):
             _issue(issues, "INPUT_INVALID", face_path, "face must be an integer sequence")
             continue
         if len(face) < 3:
@@ -1079,12 +1083,12 @@ def _validate_faces(faces: Sequence, vertex_count: int, issues: List[ExportValid
 
 def _expected_index_count(faces: Any) -> Optional[int]:
     """Return the writer's fan-triangulated index count for valid face shapes."""
-    if not _is_sequence(faces) or not faces:
+    if not is_sequence(faces) or not faces:
         return None
 
     index_count = 0
     for face in faces:
-        if not _is_sequence(face) or len(face) < 3:
+        if not is_sequence(face) or len(face) < 3:
             return None
         index_count += (len(face) - 2) * 3
     return index_count
@@ -1139,7 +1143,7 @@ def _validate_bone_ik_links(
                 "bone ik_links must be a sequence",
             )
         return
-    if not _is_sequence(value):
+    if not is_sequence(value):
         _issue(
             issues,
             "INPUT_INVALID",
@@ -1264,7 +1268,7 @@ def _validate_bone_semantic_missing(
     if "semantic_missing" not in bone or not bone["semantic_missing"]:
         return
     missing = bone["semantic_missing"]
-    if _is_sequence(missing):
+    if is_sequence(missing):
         missing_fields = ", ".join(str(value) for value in missing)
     else:
         missing_fields = str(missing)
@@ -1480,7 +1484,7 @@ def _validate_morphs(
     """Validate PMX morph input."""
     if morphs is None:
         return
-    if not _is_sequence(morphs):
+    if not is_sequence(morphs):
         _issue(issues, "INPUT_INVALID", "morphs", "morphs must be a sequence")
         return
     if not morphs:
@@ -1533,7 +1537,7 @@ def _validate_morphs(
 
         offsets = morph.get("offsets", ())
         offsets_path = _path_for_key(morph_path, "offsets")
-        if not _is_sequence(offsets):
+        if not is_sequence(offsets):
             _issue(issues, "INPUT_INVALID", offsets_path, "morph offsets must be a sequence")
             continue
         _validate_pmx_morph_offsets(
@@ -1618,7 +1622,7 @@ def _optional_sequence(
     """Validate a top-level optional collection while preserving None/empty defaults."""
     if value is None:
         return None
-    if not _is_sequence(value):
+    if not is_sequence(value):
         _issue(issues, "INPUT_INVALID", field_name, f"{field_name} must be a sequence")
         return None
     return value
@@ -1628,7 +1632,7 @@ def _is_meaningful_payload(value: Any) -> bool:
     """Return whether an optional ignored payload contains exportable data."""
     if value is None or _is_non_finite_numeric(value):
         return False
-    if isinstance(value, Mapping) or _is_sequence(value):
+    if isinstance(value, Mapping) or is_sequence(value):
         return bool(value)
     if isinstance(value, _SEQUENCE_TYPES):
         return bool(value)
@@ -1691,7 +1695,7 @@ def _validate_pmx_vertex_additional_uvs(
         return 0
     value = vertex["additional_uvs"]
     field_path = _path_for_key(vertex_path, "additional_uvs")
-    if not _is_sequence(value):
+    if not is_sequence(value):
         _issue(issues, "INPUT_INVALID", field_path, "field must be a channel sequence")
         return None
     channel_count = len(value)
@@ -1704,7 +1708,7 @@ def _validate_pmx_vertex_additional_uvs(
         )
     for channel_index, channel in enumerate(value[:4]):
         channel_path = _path_for_index(field_path, channel_index)
-        if not _is_sequence(channel):
+        if not is_sequence(channel):
             _issue(issues, "INPUT_INVALID", channel_path, "channel must be a numeric sequence")
             continue
         if len(channel) != 4:
@@ -1784,7 +1788,7 @@ def _validate_display_frames(
             continue
         elements_path = _path_for_key(frame_path, "elements")
         elements = frame["elements"]
-        if not _is_sequence(elements):
+        if not is_sequence(elements):
             _issue(issues, "INPUT_INVALID", elements_path, "display frame elements must be a sequence")
             continue
         for element_index, element in enumerate(elements):
@@ -1953,7 +1957,7 @@ def _validate_materials(
     """
     if materials is None:
         return
-    if not _is_sequence(materials):
+    if not is_sequence(materials):
         _issue(issues, "INPUT_INVALID", "materials", "materials must be a sequence")
         return
     if not materials:
@@ -1969,7 +1973,7 @@ def _validate_materials(
             continue
         semantic_missing = material.get("semantic_missing")
         if semantic_missing:
-            if _is_sequence(semantic_missing):
+            if is_sequence(semantic_missing):
                 missing_fields = ", ".join(str(value) for value in semantic_missing)
             else:
                 missing_fields = str(semantic_missing)
@@ -2123,7 +2127,7 @@ def _validate_materials(
 
 def _effective_material_count(materials: Any) -> int:
     """Return the material count used for morph references by the writers."""
-    if _is_sequence(materials) and materials:
+    if is_sequence(materials) and materials:
         return len(materials)
     return 1
 
@@ -2172,14 +2176,14 @@ def validate_model_data(
     )
 
     vertices = model_data.get("vertices")
-    if not _is_sequence(vertices):
+    if not is_sequence(vertices):
         _issue(issues, "INPUT_INVALID", "vertices", "vertices must be a non-empty sequence")
         vertices = None
     elif not vertices:
         _issue(issues, "INPUT_INVALID", "vertices", "vertices must not be empty")
 
     faces = model_data.get("faces")
-    if not _is_sequence(faces):
+    if not is_sequence(faces):
         _issue(issues, "INPUT_INVALID", "faces", "faces must be a non-empty sequence")
         faces = None
     elif not faces:
@@ -2189,7 +2193,7 @@ def validate_model_data(
     bone_count = 1
     bones = None
     if bones_value is not None:
-        if not _is_sequence(bones_value):
+        if not is_sequence(bones_value):
             _issue(issues, "INPUT_INVALID", "bones", "explicit bones must be a non-empty sequence")
             bone_count = 0
         else:
@@ -2214,7 +2218,7 @@ def validate_model_data(
         _expected_index_count(faces),
     )
     raw_rigid_bodies = model_data.get("rigid_bodies")
-    morph_rigid_body_count = len(raw_rigid_bodies) if _is_sequence(raw_rigid_bodies) else 0
+    morph_rigid_body_count = len(raw_rigid_bodies) if is_sequence(raw_rigid_bodies) else 0
     _validate_morphs(
         model_data.get("morphs"),
         len(vertices) if vertices is not None else 0,
@@ -2230,7 +2234,7 @@ def validate_model_data(
     joints = _optional_sequence(model_data.get("joints"), "joints", issues)
     rigid_body_count = len(rigid_bodies) if rigid_bodies is not None else 0
     morphs = model_data.get("morphs")
-    morph_count = len(morphs) if _is_sequence(morphs) else 0
+    morph_count = len(morphs) if is_sequence(morphs) else 0
     if display_frames:
         _validate_display_frames(display_frames, bone_count, morph_count, issues)
     if rigid_bodies:
@@ -2256,6 +2260,8 @@ ModelValidationReport = ExportValidationReport
 
 
 __all__ = [
+    "blocking_issue",
+    "is_sequence",
     "AGGREGATION_DISCRIMINATORS",
     "EXPORT_VALIDATION_SCHEMA_VERSION",
     "ExportValidationAcknowledgementRequired",

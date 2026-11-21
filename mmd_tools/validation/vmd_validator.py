@@ -7,7 +7,7 @@ import struct
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from ..core.vmd_data import VmdData
-from .export_validator import ExportValidationIssue, ExportValidationReport
+from .export_validator import ExportValidationIssue, ExportValidationReport, blocking_issue
 
 
 VMD_EXPORT_BAKE_TIMELINE = "bake_timeline"
@@ -49,18 +49,9 @@ def _issue(
     details: Optional[Mapping[str, Any]] = None,
 ) -> ExportValidationIssue:
     """Create a deterministic blocking VMD issue."""
-    issue_details = dict(details or {})
-    issue_details.setdefault("field", path)
     if code == "OUTPUT_VERIFY_FAILED":
-        issue_details.setdefault("phase", "verify")
-    return ExportValidationIssue(
-        code,
-        "fatal",
-        True,
-        path,
-        message,
-        details=issue_details,
-    )
+        details = {"phase": "verify", **(details or {})}
+    return blocking_issue(code, path, message, details=details)
 
 
 def _normalize_frame_range(
