@@ -215,17 +215,12 @@ def main() -> int:
     maya_exe = maya_commandport.maya_exe(args.maya)
     logger.info("Maya: %s", maya_exe)
 
-    # Trust this checkout's plug-ins in the disposable profile so loading
-    # plugin_main.py does not stop on Maya's security dialog.
-    maya_app_dir = (log_dir / f"maya-app-{args.maya}-{args.port}").resolve()
-    maya_commandport.seed_isolated_maya_profile(maya_app_dir, str(args.maya), project_root)
     proc = maya_commandport.launch_maya(
         version=args.maya,
         project_root=project_root,
         output_dir=log_dir,
         port=args.port,
         launch_mode="explorer" if sys.platform == "win32" else "direct",
-        env_overrides={"MAYA_APP_DIR": str(maya_app_dir)},
     )
     maya_out = log_dir / "maya_stdout.log"
     maya_err = log_dir / "maya_stderr.log"

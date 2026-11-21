@@ -408,10 +408,12 @@ def launch_maya(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     effective_overrides = dict(env_overrides or {})
-    effective_overrides.setdefault(
-        "MAYA_APP_DIR",
-        str((output_dir / f"maya-app-{version}-{port}").resolve()),
-    )
+    if "MAYA_APP_DIR" not in effective_overrides:
+        # Trust this checkout's plug-ins in the default disposable profile so
+        # loading plugin_main.py does not stop on Maya's security dialog.
+        default_app_dir = (output_dir / f"maya-app-{version}-{port}").resolve()
+        seed_isolated_maya_profile(default_app_dir, str(version), project_root)
+        effective_overrides["MAYA_APP_DIR"] = str(default_app_dir)
     env = os.environ.copy()
     _prepend_env_path(env, "PYTHONPATH", project_root)
     _prepend_env_path(env, "MAYA_MODULE_PATH", project_root)
