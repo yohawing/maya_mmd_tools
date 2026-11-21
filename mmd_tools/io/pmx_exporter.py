@@ -96,6 +96,78 @@ def _additional_uv_channel_count(vertices_raw) -> int:
     return expected_count or 0
 
 
+def _build_pmx_materials(materials_raw, header, total_index_count):
+    """Build and return PMX materials, distributing face indices in input order."""
+    materials = []
+    if not materials_raw:
+        mat = PmxMaterial(
+            texture_index_size=header.texture_index_size,
+            encoding=header.encoding,
+        )
+        mat.name = "Default"
+        mat.name_english = "Default"
+        mat.diffuse = (0.8, 0.8, 0.8, 1.0)
+        mat.specular = (0.5, 0.5, 0.5)
+        mat.specular_coefficient = 5.0
+        mat.ambient = (0.3, 0.3, 0.3)
+        mat.draw_flag = 0x01 | 0x02 | 0x10  # DOUBLE_SIDED | GROUND_SHADOW | EDGE_DRAWING
+        mat.edge_color = (0.0, 0.0, 0.0, 1.0)
+        mat.edge_size = 1.0
+        mat.texture_index = -1
+        mat.sphere_texture_index = -1
+        mat.sphere_mode = 0
+        mat.shared_toon_flag = 0
+        mat.toon_texture_index = -1
+        mat.memo = ""
+        mat.face_count = total_index_count
+        materials.append(mat)
+    else:
+        # Distribute face counts: if any material is missing face_count,
+        # assign all remaining index count to the first unspecified material.
+        specified_total = sum(m.get("face_count") or 0 for m in materials_raw)
+        unspecified_indices = [
+            i for i, m in enumerate(materials_raw) if m.get("face_count") is None
+        ]
+
+        for i, m_raw in enumerate(materials_raw):
+            mat = PmxMaterial(
+                texture_index_size=header.texture_index_size,
+                encoding=header.encoding,
+            )
+            mat.name = m_raw.get("name", f"Material{i}")
+            mat.name_english = m_raw.get("name_english", "")
+            mat.diffuse = tuple(m_raw.get("diffuse", [0.8, 0.8, 0.8, 1.0]))
+            mat.specular = tuple(m_raw.get("specular", [0.5, 0.5, 0.5]))
+            mat.specular_coefficient = m_raw.get("specular_coefficient", 5.0)
+            mat.ambient = tuple(m_raw.get("ambient", [0.3, 0.3, 0.3]))
+            mat.draw_flag = m_raw.get("draw_flag", 0x01 | 0x02 | 0x10)
+            mat.edge_color = tuple(m_raw.get("edge_color", [0.0, 0.0, 0.0, 1.0]))
+            mat.edge_size = m_raw.get("edge_size", 1.0)
+            mat.texture_index = m_raw.get("texture_index", -1)
+            mat.sphere_texture_index = m_raw.get("sphere_texture_index", -1)
+            mat.sphere_mode = m_raw.get("sphere_mode", 0)
+            mat.shared_toon_flag = m_raw.get("shared_toon_flag", 0)
+            mat.toon_texture_index = m_raw.get("toon_texture_index", -1)
+            mat.memo = m_raw.get("memo", "")
+
+            fc = m_raw.get("face_count")
+            if fc is not None:
+                mat.face_count = fc
+            elif (unspecified_indices and i == unspecified_indices[0]) or (
+                not unspecified_indices and i == 0 and specified_total == 0
+            ):
+                mat.face_count = total_index_count - specified_total
+            else:
+                mat.face_count = 0
+
+            materials.append(mat)
+
+        total_assigned = sum(m.face_count for m in materials)
+        if total_assigned != total_index_count:
+            materials[-1].face_count += total_index_count - total_assigned
+    return materials
+
+
 def _build_pmx_bones(bones_raw, header):
     """Build and return PMX bones, creating a root bone when none are supplied."""
     bones = []
@@ -590,75 +662,7 @@ class PmxExporter:
         pmx.textures = textures
 
         # --- materials ---
-        total_index_count = len(pmx.faces) * 3
-
-        if not materials_raw:
-            mat = PmxMaterial(
-                texture_index_size=pmx.header.texture_index_size,
-                encoding=pmx.header.encoding,
-            )
-            mat.name = "Default"
-            mat.name_english = "Default"
-            mat.diffuse = (0.8, 0.8, 0.8, 1.0)
-            mat.specular = (0.5, 0.5, 0.5)
-            mat.specular_coefficient = 5.0
-            mat.ambient = (0.3, 0.3, 0.3)
-            mat.draw_flag = 0x01 | 0x02 | 0x10  # DOUBLE_SIDED | GROUND_SHADOW | EDGE_DRAWING
-            mat.edge_color = (0.0, 0.0, 0.0, 1.0)
-            mat.edge_size = 1.0
-            mat.texture_index = -1
-            mat.sphere_texture_index = -1
-            mat.sphere_mode = 0
-            mat.shared_toon_flag = 0
-            mat.toon_texture_index = -1
-            mat.memo = ""
-            mat.face_count = total_index_count
-            pmx.materials.append(mat)
-        else:
-            # Distribute face counts: if any material is missing face_count,
-            # assign all remaining index count to the first unspecified material.
-            specified_total = sum(m.get("face_count") or 0 for m in materials_raw)
-            unspecified_indices = [
-                i for i, m in enumerate(materials_raw) if m.get("face_count") is None
-            ]
-
-            for i, m_raw in enumerate(materials_raw):
-                mat = PmxMaterial(
-                    texture_index_size=pmx.header.texture_index_size,
-                    encoding=pmx.header.encoding,
-                )
-                mat.name = m_raw.get("name", f"Material{i}")
-                mat.name_english = m_raw.get("name_english", "")
-                mat.diffuse = tuple(m_raw.get("diffuse", [0.8, 0.8, 0.8, 1.0]))
-                mat.specular = tuple(m_raw.get("specular", [0.5, 0.5, 0.5]))
-                mat.specular_coefficient = m_raw.get("specular_coefficient", 5.0)
-                mat.ambient = tuple(m_raw.get("ambient", [0.3, 0.3, 0.3]))
-                mat.draw_flag = m_raw.get("draw_flag", 0x01 | 0x02 | 0x10)
-                mat.edge_color = tuple(m_raw.get("edge_color", [0.0, 0.0, 0.0, 1.0]))
-                mat.edge_size = m_raw.get("edge_size", 1.0)
-                mat.texture_index = m_raw.get("texture_index", -1)
-                mat.sphere_texture_index = m_raw.get("sphere_texture_index", -1)
-                mat.sphere_mode = m_raw.get("sphere_mode", 0)
-                mat.shared_toon_flag = m_raw.get("shared_toon_flag", 0)
-                mat.toon_texture_index = m_raw.get("toon_texture_index", -1)
-                mat.memo = m_raw.get("memo", "")
-
-                fc = m_raw.get("face_count")
-                if fc is not None:
-                    mat.face_count = fc
-                elif (unspecified_indices and i == unspecified_indices[0]) or (
-                    not unspecified_indices and i == 0 and specified_total == 0
-                ):
-                    mat.face_count = total_index_count - specified_total
-                else:
-                    mat.face_count = 0
-
-                pmx.materials.append(mat)
-
-            total_assigned = sum(m.face_count for m in pmx.materials)
-            if total_assigned != total_index_count:
-                pmx.materials[-1].face_count += total_index_count - total_assigned
-
+        pmx.materials = _build_pmx_materials(materials_raw, pmx.header, len(pmx.faces) * 3)
         pmx.header.material_index_size = _choose_reference_index_size(len(pmx.materials))
 
         # --- bones ---
