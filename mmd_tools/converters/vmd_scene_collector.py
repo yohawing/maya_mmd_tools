@@ -1976,6 +1976,42 @@ class VmdSceneCollector:
         long_name = str((cmds.ls(joint, long=True) or [joint])[0])
         return long_name not in self._bake_timeline_physics_output_excluded_targets
 
+    def _prepare_native_sampler_preflight(
+        self, bone_channel_sampler, native_joints, input_routes, dense_frames
+    ):
+        """Report native sampler availability and register its diagnostics sink."""
+        route_inventory = _native_route_inventory(
+            native_joints,
+            input_routes,
+        )
+        sampler_available = getattr(
+            bone_channel_sampler,
+            "available",
+            None,
+        )
+        if callable(sampler_available):
+            try:
+                sampler_available = sampler_available()
+            except Exception:
+                sampler_available = False
+        self._diagnostics["native_sampler"] = {
+            "status": "preflight",
+            "available": bool(sampler_available),
+            "used": False,
+            "frame_count": len(dense_frames),
+            "logical_channel_count": len(native_joints) * len(_BONE_EXPORT_ATTRS),
+            **route_inventory,
+        }
+        self._emit_diagnostics()
+        set_native_sink = getattr(
+            bone_channel_sampler,
+            "set_diagnostics_sink",
+            None,
+        )
+        if callable(set_native_sink):
+            set_native_sink(self._accept_native_diagnostics)
+        return sampler_available
+
     def collect_bone_frames(
         self,
         joints: Sequence[str],
@@ -2199,36 +2235,9 @@ class VmdSceneCollector:
                         "fallback_reason": "no eligible dense bone channels",
                     }
                 else:
-                    route_inventory = _native_route_inventory(
-                        native_joints,
-                        input_routes,
+                    sampler_available = self._prepare_native_sampler_preflight(
+                        bone_channel_sampler, native_joints, input_routes, dense_frames
                     )
-                    sampler_available = getattr(
-                        bone_channel_sampler,
-                        "available",
-                        None,
-                    )
-                    if callable(sampler_available):
-                        try:
-                            sampler_available = sampler_available()
-                        except Exception:
-                            sampler_available = False
-                    self._diagnostics["native_sampler"] = {
-                        "status": "preflight",
-                        "available": bool(sampler_available),
-                        "used": False,
-                        "frame_count": len(dense_frames),
-                        "logical_channel_count": len(native_joints) * len(_BONE_EXPORT_ATTRS),
-                        **route_inventory,
-                    }
-                    self._emit_diagnostics()
-                    set_native_sink = getattr(
-                        bone_channel_sampler,
-                        "set_diagnostics_sink",
-                        None,
-                    )
-                    if callable(set_native_sink):
-                        set_native_sink(self._accept_native_diagnostics)
                     native_started = time.perf_counter()
                     try:
                         if sampler_available is False:
