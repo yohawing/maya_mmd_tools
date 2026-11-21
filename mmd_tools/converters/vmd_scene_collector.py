@@ -68,6 +68,7 @@ from mmd_tools.converters.vmd_redirected_authoring_proxy import (
     redirected_authority_matches,
     resolve_redirected_authoring_proxy_authority,
 )
+from mmd_tools.converters.vmd_timeline import FPS_TIME_UNIT_MAPPING
 from mmd_tools.validation.snapshot import fingerprint_payload
 from mmd_tools.converters.vmd_curve_fit import fit_scene_track, fit_step_track, validation_times
 
@@ -215,15 +216,7 @@ _MAYA_DAG_NODE_TYPES = frozenset(
 )
 _MAX_TRACK_SELECTION_EVIDENCE = 128
 _MAX_KEY_REDUCTION_WITNESSES = 64
-_MAYA_TIME_UNIT_FPS = {
-    "game": 15.0,
-    "film": 24.0,
-    "pal": 25.0,
-    "ntsc": 30.0,
-    "show": 48.0,
-    "palf": 50.0,
-    "ntscf": 60.0,
-}
+_MAYA_TIME_UNIT_FPS = {name: fps for fps, name in FPS_TIME_UNIT_MAPPING.items()}
 
 
 def _new_key_reduction_report(enabled: bool) -> dict[str, Any]:
