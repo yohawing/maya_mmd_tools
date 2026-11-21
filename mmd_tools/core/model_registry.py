@@ -216,30 +216,20 @@ def unregister_model_members(
     return remaining
 
 
-def _registry_member_connections(
-    registry: str,
-    member_attr: str,
-) -> tuple[Dict[str, tuple[str, str]], List[str]]:
-    """Return canonical member to source/destination plug mappings.
-
-    Maya's ``connections=True, plugs=True`` result is an alternating source /
-    destination list.  A compact fallback retains compatibility with command
-    adapters that expose only node names; in that case actual sparse indices
-    are read from ``multiIndices`` when available.
-    """
-    endpoint = f"{registry}.{member_attr}"
-    records: Dict[str, tuple[str, str]] = {}
+def _destination_index(item: tuple[str, tuple[str, str]]) -> int:
+    """Return the multi index of a member record's destination plug."""
+    destination = item[1][1]
     try:
-        raw_pairs = cmds.listConnections(
-            endpoint,
-            source=True,
-            destination=False,
-            connections=True,
-            plugs=True,
-        ) or []
-    except (TypeError, RuntimeError):
-        raw_pairs = []
+        return int(destination.rsplit("[", 1)[1].rstrip("]"))
+    except (IndexError, ValueError) as exc:
+        raise ModelRegistryError(
+            f"registry member destination plug is malformed: {destination!r}"
+        ) from exc
 
+
+def _member_records_from_plug_pairs(endpoint, raw_pairs) -> Dict[str, tuple[str, str]]:
+    """Build member records from listConnections(plugs=True) source/destination pairs."""
+    records: Dict[str, tuple[str, str]] = {}
     values = [str(value) for value in raw_pairs]
     for left, right in zip(values[::2], values[1::2]):
         if left.endswith(".message") and right.startswith(endpoint + "["):
@@ -255,25 +245,12 @@ def _registry_member_connections(
         if canonical in records and records[canonical][1] != destination_plug:
             raise ModelRegistryError(f"registry member connection is ambiguous: {member}")
         records[canonical] = (source_plug, destination_plug)
+    return records
 
-    current_raw = list(cmds.listConnections(endpoint, source=True, destination=False) or [])
-    if records:
-        def destination_index(item: tuple[str, tuple[str, str]]) -> int:
-            destination = item[1][1]
-            try:
-                return int(destination.rsplit("[", 1)[1].rstrip("]"))
-            except (IndexError, ValueError) as exc:
-                raise ModelRegistryError(
-                    f"registry member destination plug is malformed: {destination!r}"
-                ) from exc
 
-        ordered = sorted(
-            records.items(),
-            key=destination_index,
-        )
-        return dict(records), [source.rsplit(".", 1)[0] for _, (source, _) in ordered]
-
-    current = [str(member) for member in current_raw]
+def _member_records_from_compact_list(endpoint, current) -> Dict[str, tuple[str, str]]:
+    """Build member records from a node-name list and the endpoint's multi indices."""
+    records: Dict[str, tuple[str, str]] = {}
     indices: list[int] = []
     try:
         raw_indices = cmds.getAttr(endpoint, multiIndices=True) or []
@@ -294,7 +271,40 @@ def _registry_member_connections(
         if canonical in records and records[canonical][1] != destination:
             raise ModelRegistryError(f"registry member connection is ambiguous: {member}")
         records[canonical] = (source, destination)
-    return records, current
+    return records
+
+
+def _registry_member_connections(
+    registry: str,
+    member_attr: str,
+) -> tuple[Dict[str, tuple[str, str]], List[str]]:
+    """Return canonical member to source/destination plug mappings.
+
+    Maya's ``connections=True, plugs=True`` result is an alternating source /
+    destination list.  A compact fallback retains compatibility with command
+    adapters that expose only node names; in that case actual sparse indices
+    are read from ``multiIndices`` when available.
+    """
+    endpoint = f"{registry}.{member_attr}"
+    try:
+        raw_pairs = cmds.listConnections(
+            endpoint,
+            source=True,
+            destination=False,
+            connections=True,
+            plugs=True,
+        ) or []
+    except (TypeError, RuntimeError):
+        raw_pairs = []
+
+    records = _member_records_from_plug_pairs(endpoint, raw_pairs)
+    current_raw = list(cmds.listConnections(endpoint, source=True, destination=False) or [])
+    if records:
+        ordered = sorted(records.items(), key=_destination_index)
+        return dict(records), [source.rsplit(".", 1)[0] for _, (source, _) in ordered]
+
+    current = [str(member) for member in current_raw]
+    return _member_records_from_compact_list(endpoint, current), current
 
 
 def list_model_registry_members(model_root: str, category: str) -> Optional[List[str]]:
