@@ -1168,33 +1168,7 @@ class BonePresenter:
                         name_english=self.view.bone_name_en_edit.text(),
                         transform_layer=self.view.deform_layer_spin.value(),
                         flags=flags,
-                        fixed_axis=(
-                            (
-                                self.view.fixed_axis_x_spin.value(),
-                                self.view.fixed_axis_y_spin.value(),
-                                self.view.fixed_axis_z_spin.value(),
-                            )
-                            if flags & PmxBoneFlag.AXIS_FIXED
-                            else None
-                        ),
-                        local_axis_x=(
-                            (
-                                self.view.local_x_axis_x_spin.value(),
-                                self.view.local_x_axis_y_spin.value(),
-                                self.view.local_x_axis_z_spin.value(),
-                            )
-                            if flags & PmxBoneFlag.LOCAL_AXIS
-                            else None
-                        ),
-                        local_axis_z=(
-                            (
-                                self.view.local_z_axis_x_spin.value(),
-                                self.view.local_z_axis_y_spin.value(),
-                                self.view.local_z_axis_z_spin.value(),
-                            )
-                            if flags & PmxBoneFlag.LOCAL_AXIS
-                            else None
-                        ),
+                        **self._axis_fields_from_view(flags),
                     )
                     result = selected_writer(root, replacement)
                     self._update_selected_row_after_patch(result)
@@ -1282,33 +1256,7 @@ class BonePresenter:
                 grant_parent_index=grant_parent_index,
                 grant_ratio=self.view.grant_rate_spin.value() if grant_enabled else 0.0,
                 grant_local=bool(flags & PmxBoneFlag.LOCAL),
-                fixed_axis=(
-                    (
-                        self.view.fixed_axis_x_spin.value(),
-                        self.view.fixed_axis_y_spin.value(),
-                        self.view.fixed_axis_z_spin.value(),
-                    )
-                    if flags & PmxBoneFlag.AXIS_FIXED
-                    else None
-                ),
-                local_axis_x=(
-                    (
-                        self.view.local_x_axis_x_spin.value(),
-                        self.view.local_x_axis_y_spin.value(),
-                        self.view.local_x_axis_z_spin.value(),
-                    )
-                    if flags & PmxBoneFlag.LOCAL_AXIS
-                    else None
-                ),
-                local_axis_z=(
-                    (
-                        self.view.local_z_axis_x_spin.value(),
-                        self.view.local_z_axis_y_spin.value(),
-                        self.view.local_z_axis_z_spin.value(),
-                    )
-                    if flags & PmxBoneFlag.LOCAL_AXIS
-                    else None
-                ),
+                **self._axis_fields_from_view(flags),
                 external_parent_key=(
                     self.view.external_parent_key_spin.value()
                     if flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM
@@ -1328,6 +1276,26 @@ class BonePresenter:
         except Exception as e:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("bone_changes_failed", error=str(e)))
+
+    def _axis_fields_from_view(self, flags) -> dict:
+        """Read the fixed and local axis spin boxes, or None when the flag is off."""
+        return {
+            "fixed_axis": (
+                self.view.fixed_axis_x_spin.value(),
+                self.view.fixed_axis_y_spin.value(),
+                self.view.fixed_axis_z_spin.value(),
+            ) if flags & PmxBoneFlag.AXIS_FIXED else None,
+            "local_axis_x": (
+                self.view.local_x_axis_x_spin.value(),
+                self.view.local_x_axis_y_spin.value(),
+                self.view.local_x_axis_z_spin.value(),
+            ) if flags & PmxBoneFlag.LOCAL_AXIS else None,
+            "local_axis_z": (
+                self.view.local_z_axis_x_spin.value(),
+                self.view.local_z_axis_y_spin.value(),
+                self.view.local_z_axis_z_spin.value(),
+            ) if flags & PmxBoneFlag.LOCAL_AXIS else None,
+        }
 
     def _structural_ui_state(self, existing_flags=None):
         """Return only controls that require reference/topology resolution."""
