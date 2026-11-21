@@ -1209,6 +1209,20 @@ def _write_stream_frame(sink: Any, section: str, frame: Mapping[str, Any]) -> No
     method(frame)
 
 
+def _dense_track_decision(
+    keyless_reason: Optional[str], source_key_count: int, has_route: bool
+) -> tuple[Optional[str], str, int]:
+    """Return the diagnostic decision, reason, and source key count for a dense bone track."""
+    if keyless_reason:
+        return "dependency_baked", keyless_reason, 0
+    if source_key_count:
+        if has_route:
+            return "dependency_baked", "routed_dependency", source_key_count
+        reason = "multiple_source_keys" if source_key_count > 1 else "conservative_dense_path"
+        return "authored_sampled", reason, source_key_count
+    return None, "", 0
+
+
 def _should_emit_morph_frame(frame: Mapping[str, Any]) -> bool:
     """Return whether a Morph frame has a name representable by standard VMD."""
 
@@ -2724,22 +2738,9 @@ class VmdSceneCollector:
                         emit_stream_payload(payload)
                 if force_dense_sample and not single_key and not direct_multi_key:
                     keyless_reason = keyless_dependency_joints.get(joint)
-                    if keyless_reason:
-                        decision = "dependency_baked"
-                        reason = keyless_reason
-                        source_key_count = 0
-                    elif sparse_frames:
-                        decision = "dependency_baked" if route else "authored_sampled"
-                        reason = "routed_dependency" if route else (
-                            "multiple_source_keys"
-                            if len(sparse_frames) > 1
-                            else "conservative_dense_path"
-                        )
-                        source_key_count = len(sparse_frames)
-                    else:
-                        decision = None
-                        reason = ""
-                        source_key_count = 0
+                    decision, reason, source_key_count = _dense_track_decision(
+                        keyless_reason, len(sparse_frames), bool(route)
+                    )
                     if decision is None:
                         continue
                     planned_key_count = (

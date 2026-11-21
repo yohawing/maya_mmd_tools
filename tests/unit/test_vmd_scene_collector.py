@@ -246,6 +246,18 @@ class FakeCmds:
 class TestVmdSceneCollector(unittest.TestCase):
     """VmdSceneCollector の最小収集契約を検証する。"""
 
+    def test_dense_track_decision(self):
+        cases = (
+            (("constraint", 2, True), ("dependency_baked", "constraint", 0)),
+            ((None, 2, True), ("dependency_baked", "routed_dependency", 2)),
+            ((None, 2, False), ("authored_sampled", "multiple_source_keys", 2)),
+            ((None, 1, False), ("authored_sampled", "conservative_dense_path", 1)),
+            ((None, 0, True), (None, "", 0)),
+        )
+        for inputs, expected in cases:
+            with self.subTest(inputs=inputs):
+                self.assertEqual(collector_module._dense_track_decision(*inputs), expected)
+
     def test_zero_weight_unencodable_morph_is_omittable(self):
         self.assertFalse(
             collector_module._should_emit_morph_frame(
