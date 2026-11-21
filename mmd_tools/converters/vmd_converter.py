@@ -2804,6 +2804,72 @@ class VmdConverter:
         """明示指定がない runtime bake 入力を VMD/scene metadata から復元する。"""
         return resolve_runtime_bake_sources(self, vmd_data, vmd_bytes, pmx_bytes, pmx_path, target_namespace)
 
+    def _create_runtime_physics_world(
+        self,
+        target_model: Optional[str],
+        resolved_pmx_bytes: bytes,
+        physics_routing: Dict[str, Any],
+    ) -> Optional["MmdRuntimePhysicsWorld"]:
+        """生成結果を physics_routing に記録し、ベイク用の物理ワールドを返す。"""
+        physics_world = None
+        if not HAS_MMD_RUNTIME or MmdRuntimePhysicsWorld is None:
+            physics_routing["reason"] = "runtime_unavailable"
+            self.logger.warning(
+                "Native physics bake requested but mmd-anim runtime is unavailable; "
+                "falling back to non-physics runtime batch"
+            )
+        elif not is_native_physics_available():
+            physics_routing["reason"] = "feature_flags_unavailable"
+            self.logger.warning(
+                "Native physics bake requested but feature flags missing "
+                "(flags=0x%x); falling back to non-physics runtime batch",
+                physics_routing["feature_flags"],
+            )
+        else:
+            if target_model:
+                try:
+                    from mmd_tools.core.physics_dag_descriptor import (
+                        build_descriptors_from_dag,
+                    )
+
+                    from mmd_tools.core.physics_solver import (
+                        _collect_bone_joints,
+                    )
+
+                    bone_joints = _collect_bone_joints(target_model)
+                    bone_count = len(bone_joints)
+                    physics_descriptors = build_descriptors_from_dag(
+                        target_model,
+                        bone_joints=bone_joints,
+                        bone_count=bone_count,
+                    )
+                    if physics_descriptors.validation_errors:
+                        raise ValueError("physics descriptor validation failed")
+                    physics_world = MmdRuntimePhysicsWorld.from_descriptors(
+                        physics_descriptors.rigid_bodies,
+                        physics_descriptors.joints,
+                    )
+                except Exception:
+                    physics_world = None
+                    self.logger.warning(
+                        "Scaled native physics world could not be created from Maya DAG; "
+                        "falling back to non-physics runtime batch",
+                        exc_info=True,
+                    )
+            else:
+                physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
+                    resolved_pmx_bytes
+                )
+            if physics_world is None:
+                physics_routing["reason"] = "physics_world_create_failed"
+                self.logger.warning(
+                    "Native physics world could not be created from PMX bytes; "
+                    "falling back to non-physics runtime batch"
+                )
+            else:
+                physics_routing["world_created"] = True
+        return physics_world
+
     def _convert_using_mmd_runtime(
         self,
         vmd_data: VmdData,
@@ -2938,63 +3004,10 @@ class VmdConverter:
                 "feature_flags": int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
                 "fps": float(self.fps),
             }
-            if use_native_physics_bake:
-                if not HAS_MMD_RUNTIME or MmdRuntimePhysicsWorld is None:
-                    physics_routing["reason"] = "runtime_unavailable"
-                    self.logger.warning(
-                        "Native physics bake requested but mmd-anim runtime is unavailable; "
-                        "falling back to non-physics runtime batch"
-                    )
-                elif not is_native_physics_available():
-                    physics_routing["reason"] = "feature_flags_unavailable"
-                    self.logger.warning(
-                        "Native physics bake requested but feature flags missing "
-                        "(flags=0x%x); falling back to non-physics runtime batch",
-                        physics_routing["feature_flags"],
-                    )
-                else:
-                    if target_model:
-                        try:
-                            from mmd_tools.core.physics_dag_descriptor import (
-                                build_descriptors_from_dag,
-                            )
-
-                            from mmd_tools.core.physics_solver import (
-                                _collect_bone_joints,
-                            )
-
-                            bone_joints = _collect_bone_joints(target_model)
-                            bone_count = len(bone_joints)
-                            physics_descriptors = build_descriptors_from_dag(
-                                target_model,
-                                bone_joints=bone_joints,
-                                bone_count=bone_count,
-                            )
-                            if physics_descriptors.validation_errors:
-                                raise ValueError("physics descriptor validation failed")
-                            physics_world = MmdRuntimePhysicsWorld.from_descriptors(
-                                physics_descriptors.rigid_bodies,
-                                physics_descriptors.joints,
-                            )
-                        except Exception:
-                            physics_world = None
-                            self.logger.warning(
-                                "Scaled native physics world could not be created from Maya DAG; "
-                                "falling back to non-physics runtime batch",
-                                exc_info=True,
-                            )
-                    else:
-                        physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(
-                            resolved_pmx_bytes
-                        )
-                    if physics_world is None:
-                        physics_routing["reason"] = "physics_world_create_failed"
-                        self.logger.warning(
-                            "Native physics world could not be created from PMX bytes; "
-                            "falling back to non-physics runtime batch"
-                        )
-                    else:
-                        physics_routing["world_created"] = True
+            physics_world = (
+                self._create_runtime_physics_world(target_model, resolved_pmx_bytes, physics_routing)
+                if use_native_physics_bake else None
+            )
 
             # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
             # Native physics batch (when used) reuses the same matrix/morph → channel apply path.
