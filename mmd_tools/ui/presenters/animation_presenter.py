@@ -1170,6 +1170,42 @@ class AnimationPresenter:
 
         return bind_world_contexts(canonical, parent_by_index, bind_space_by_index, local_records)
 
+    @staticmethod
+    def _mirror_control_bases(cmds, metadata) -> dict:
+        """Map each Control Rig control's long path to its validated authoring basis."""
+        from ...core.mmd_control_rig_basis import validate_basis_record
+
+        control_bases = {}
+        basis_records = metadata.get("authoringBases") or {}
+        for role, control_uuid in (metadata.get("controls") or {}).items():
+            control_paths = cmds.ls(control_uuid, long=True) or []
+            record = basis_records.get(role)
+            if len(control_paths) != 1 or record is None:
+                raise RuntimeError(f"Control Rig mirror basis is unavailable: {role}")
+            path = str(control_paths[0])
+            basis = validate_basis_record(record).quaternion
+            previous = control_bases.get(path)
+            if previous is not None and previous != basis:
+                raise RuntimeError(f"ambiguous Control Rig mirror basis: {path}")
+            control_bases[path] = basis
+        return control_bases
+
+    def _mirror_entry_names(self, candidate) -> list[str]:
+        """Return a joint's Japanese/English bone names, falling back to the name map."""
+        names = []
+        for attr in (ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN):
+            try:
+                value = self.maya_adapter.get_attr(f"{candidate}.{attr}")
+            except Exception:
+                value = None
+            if value:
+                names.append(str(value))
+        if not names:
+            for bone_name, mapped in self._bone_name_to_joint.items():
+                if mapped == candidate:
+                    names.append(str(bone_name))
+        return names
+
     def _mirror_entries(self):
         """Build UUID-authoritative joint/control entries for this model."""
 
@@ -1199,20 +1235,7 @@ class AnimationPresenter:
 
         control_bases = {}
         if owner == "CONTROL_OWNED" and cmds is not None:
-            from ...core.mmd_control_rig_basis import validate_basis_record
-
-            basis_records = metadata.get("authoringBases") or {}
-            for role, control_uuid in (metadata.get("controls") or {}).items():
-                control_paths = cmds.ls(control_uuid, long=True) or []
-                record = basis_records.get(role)
-                if len(control_paths) != 1 or record is None:
-                    raise RuntimeError(f"Control Rig mirror basis is unavailable: {role}")
-                path = str(control_paths[0])
-                basis = validate_basis_record(record).quaternion
-                previous = control_bases.get(path)
-                if previous is not None and previous != basis:
-                    raise RuntimeError(f"ambiguous Control Rig mirror basis: {path}")
-                control_bases[path] = basis
+            control_bases = self._mirror_control_bases(cmds, metadata)
 
         entries = []
         seen = set()
@@ -1237,18 +1260,7 @@ class AnimationPresenter:
                 # once through the name map; it is still one authoritative
                 # node, not an ambiguous pair.
                 continue
-            names = []
-            for attr in (ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN):
-                try:
-                    value = self.maya_adapter.get_attr(f"{candidate}.{attr}")
-                except Exception:
-                    value = None
-                if value:
-                    names.append(str(value))
-            if not names:
-                for bone_name, mapped in self._bone_name_to_joint.items():
-                    if mapped == candidate:
-                        names.append(str(bone_name))
+            names = self._mirror_entry_names(candidate)
             if not names:
                 continue
             joint_orient = (0.0, 0.0, 0.0, 1.0)
