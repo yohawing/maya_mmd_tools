@@ -208,7 +208,7 @@ def _solver_owned_joint_indices(cmds) -> dict[str, dict[str, Any]]:
             ik_name = solver_name
         for slot in range(64):
             destinations = cmds.listConnections(
-                f"{solver}.outputRotate[{slot}]",
+                f"{solver}.outputRotate[{slot}].outputRotateElementX",
                 source=False,
                 destination=True,
                 type="joint",
@@ -357,7 +357,7 @@ def _resolve_ik_solver(
     for index in range(32):
         for value in (
             cmds.listConnections(
-                f"{solver}.outputRotate[{index}]",
+                f"{solver}.outputRotate[{index}].outputRotateElementX",
                 source=False,
                 destination=True,
                 type="joint",
@@ -384,7 +384,7 @@ def _solver_link_joints(solver: str, index: int, cmds) -> list[str]:
     joints = []
     for value in (
         cmds.listConnections(
-            f"{solver}.outputRotate[{index}]",
+            f"{solver}.outputRotate[{index}].outputRotateElementX",
             source=False,
             destination=True,
             type="joint",
