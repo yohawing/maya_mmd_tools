@@ -876,44 +876,28 @@ class AnimationPresenter:
                 if resolved:
                     known_joints.add(resolved)
 
-        cmds_module = getattr(self.maya_adapter, "_cmds", None)
-        control_inspection = None
-        control_error = False
-        if root and cmds_module is not None:
-            try:
-                control_inspection = inspect_mmd_control_rig(
-                    root, cmds_module=cmds_module
-                )
-            except Exception:
-                control_error = True
+        boundary = self._control_rig_selection_boundary(root)
+        if boundary:
+            boundaries.append(boundary)
+        return tuple(boundaries), known_joints
 
-        if control_inspection is not None:
-            control_group = getattr(control_inspection, "control_group", None)
-            if isinstance(control_group, str) and control_group:
-                controls = set()
-                for node in getattr(control_inspection, "controls", {}).values():
-                    resolved = self._resolve_selection_path(node)
-                    if resolved:
-                        controls.add(resolved)
-                boundaries.append(
-                    {
-                        "group": control_group,
-                        "state": self._read_selection_group_state(control_group),
-                        "owned": controls,
-                    }
-                )
-        elif control_error and cmds_module is not None:
-            # A failed topology inspection must not turn validated UUIDs into
-            # selectable nodes.  Readable metadata is only used to resolve
-            # exact control identities; its topology/group is not trusted.
+    def _control_rig_selection_boundary(self, root: str) -> dict | None:
+        """Resolve the Control Rig selection boundary for the current model."""
+        cmds_module = getattr(self.maya_adapter, "_cmds", None)
+        if not root or cmds_module is None:
+            return None
+
+        try:
+            inspection = inspect_mmd_control_rig(root, cmds_module=cmds_module)
+        except Exception:
+            # Readable metadata can identify controls, but cannot establish
+            # their group or its visibility after a failed topology inspection.
             try:
                 from ...core.mmd_control_rig_builder import read_mmd_control_rig_metadata
 
-                metadata = read_mmd_control_rig_metadata(
-                    root, cmds_module=cmds_module
-                )
+                metadata = read_mmd_control_rig_metadata(root, cmds_module=cmds_module)
             except Exception:
-                metadata = None
+                return None
             if isinstance(metadata, dict):
                 owned = set()
                 for uuid in (metadata.get("controls") or {}).values():
@@ -921,14 +905,22 @@ class AnimationPresenter:
                     if resolved:
                         owned.add(resolved)
                 if owned:
-                    boundaries.append(
-                        {
-                            "group": None,
-                            "state": _SELECTION_UNKNOWN,
-                            "owned": owned,
-                        }
-                    )
-        return tuple(boundaries), known_joints
+                    return {"group": None, "state": _SELECTION_UNKNOWN, "owned": owned}
+            return None
+
+        control_group = getattr(inspection, "control_group", None)
+        if not isinstance(control_group, str) or not control_group:
+            return None
+        controls = set()
+        for node in getattr(inspection, "controls", {}).values():
+            resolved = self._resolve_selection_path(node)
+            if resolved:
+                controls.add(resolved)
+        return {
+            "group": control_group,
+            "state": self._read_selection_group_state(control_group),
+            "owned": controls,
+        }
 
     def _read_selection_group_state(self, group: str) -> str:
         """Read raw visibility/override plugs with fail-closed error handling."""
