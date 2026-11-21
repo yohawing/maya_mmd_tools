@@ -4134,6 +4134,7 @@ def _sample_control_rotation_group_to_bone(
         times = [time for time in times if start <= time <= end]
         if not times:
             times = [start, end]
+    control_samples = []
     samples = []
     try:
         control_rotate_order = int(cmds.getAttr(f"{control_node}.rotateOrder"))
@@ -4145,6 +4146,7 @@ def _sample_control_rotation_group_to_bone(
         target_rotate_order = 0
     for time in times:
         values = [float(cmds.getAttr(f"{control_node}.{axis}", time=time)) for axis in attrs]
+        control_samples.append((time, tuple(values)))
         control_quaternion = quaternion_from_euler_degrees(
             values,
             rotate_order=control_rotate_order,
@@ -4164,16 +4166,6 @@ def _sample_control_rotation_group_to_bone(
     # Persist its basis-space XYZ values before replacing the live converter
     # with bone-space curves; otherwise the next EDIT would duplicate the
     # converted bone curves and apply the authoring basis a second time.
-    control_samples = [
-        (
-            time,
-            tuple(
-                float(cmds.getAttr(f"{control_node}.{axis}", time=time))
-                for axis in attrs
-            ),
-        )
-        for time in times
-    ]
     for index, (axis, row) in enumerate(
         zip(attrs, (rows_by_attr[attr] for attr in attrs))
     ):
