@@ -145,6 +145,19 @@ def _schedule_uv_editor_refresh() -> None:
         logger.debug("Failed to schedule UV Editor refresh", exc_info=True)
 
 
+def _control_rig_warning(model_root: str, code: str, fallback: str, exc: Exception) -> Dict[str, Any]:
+    """Build the import warning recorded when an opt-in Control Rig step fails."""
+    return {
+        "source": "mmd_importer",
+        "code": code,
+        "message": str(exc),
+        "model_root": model_root,
+        "exception_type": type(exc).__name__,
+        "severity": "warning",
+        "fallback": fallback,
+    }
+
+
 def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any]) -> Optional[Any]:
     """Build and bind the opt-in MMD Control Rig after model import.
 
@@ -173,15 +186,9 @@ def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any])
     try:
         result = build_mmd_control_rig(model_root)
     except Exception as exc:
-        warning = {
-            "source": "mmd_importer",
-            "code": "control_rig_create_failed",
-            "message": str(exc),
-            "model_root": model_root,
-            "exception_type": type(exc).__name__,
-            "severity": "warning",
-            "fallback": "model_imported_without_control_rig",
-        }
+        warning = _control_rig_warning(
+            model_root, "control_rig_create_failed", "model_imported_without_control_rig", exc
+        )
         rig_profile["succeeded"] = False
         rig_profile["error"] = str(exc)
         # ImportModelAction consumes this top-level list when classifying a
@@ -205,15 +212,9 @@ def _post_model_import_control_rig(root: Optional[Any], options: Dict[str, Any])
     try:
         metadata = enter_mmd_control_rig_edit(model_root)
     except Exception as exc:
-        warning = {
-            "source": "mmd_importer",
-            "code": "control_rig_bind_failed",
-            "message": str(exc),
-            "model_root": model_root,
-            "exception_type": type(exc).__name__,
-            "severity": "warning",
-            "fallback": "model_imported_with_attached_control_rig",
-        }
+        warning = _control_rig_warning(
+            model_root, "control_rig_bind_failed", "model_imported_with_attached_control_rig", exc
+        )
         rig_profile["succeeded"] = False
         rig_profile["bound"] = False
         rig_profile["state"] = result.state
