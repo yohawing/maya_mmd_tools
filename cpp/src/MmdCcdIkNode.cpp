@@ -1559,7 +1559,9 @@ MStatus MmdCcdIkNode::initialize() {
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
-    nAttr.setReadable(false);
+    // Readable so VMD IK state keys can join Maya animation layers;
+    // animLayer rejects non-readable attributes without an error.
+    nAttr.setReadable(true);
     addAttribute(aEnabled);
 
     // --- Legacy 入力 (hidden): iterations(int, default 1, min 1) ---
