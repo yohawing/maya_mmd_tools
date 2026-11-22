@@ -241,7 +241,9 @@ def resolve_control_rig_direct_vmd_export_routes(
                 raise MmdControlRigBuildError(
                     f"duplicate authored channel: {role}.{logical_channel}"
                 )
-            canonical_target = _canonical_plug(cmds, target)
+            # EDIT journals a proxy-driven input under its authoring proxy
+            # channel, which also carries the same value as the input.
+            canonical_target = _canonical_plug(cmds, authoring_proxy_channel(target, cmds))
             if logical_channel in allowed_channels:
                 expected_control = _canonical_plug(
                     cmds, f"{control}.{logical_channel}"
@@ -797,7 +799,7 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                     # A VMD authoring proxy owns the authored curve or layer
                     # blend of a non-Transform input (e.g. IK link FK input).
                     # Edit the proxy channel; it keeps driving the input.
-                    target = _canonical_plug(cmds, authoring_proxy_channel(target))
+                    target = _canonical_plug(cmds, authoring_proxy_channel(target, cmds))
                     channel_policy = derive_mmd_control_rig_channel_policy(
                         str(role), binding
                     )

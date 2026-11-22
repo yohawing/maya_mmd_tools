@@ -159,20 +159,21 @@ def ensure_redirected_authoring_proxy(
         raise
 
 
-def authoring_proxy_channel(destination: str) -> str:
+def authoring_proxy_channel(destination: str, cmds_module=None) -> str:
     """Return the proxy channel authoring ``destination``, or ``destination``.
 
     A redirected destination is driven only by its proxy channel, which holds
     the authored curve or animation-layer blend. Editors should author that
     Transform channel instead of the non-Transform destination.
     """
-    sources = cmds.listConnections(
+    maya_cmds = cmds_module or cmds
+    sources = maya_cmds.listConnections(
         destination, source=True, destination=False, plugs=True
     ) or []
     if len(sources) != 1:
         return destination
     node = str(sources[0]).split(".", 1)[0]
-    if not cmds.attributeQuery(_MARKER, node=node, exists=True):
+    if not maya_cmds.attributeQuery(_MARKER, node=node, exists=True):
         return destination
     return str(sources[0])
 
