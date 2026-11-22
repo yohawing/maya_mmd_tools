@@ -229,12 +229,13 @@ class TestVmdSceneCollector(MayaTestBase):
             [],
         )
 
-    def test_bake_timeline_rejects_imported_fixture_unrepresentable_rotation(self):
+    def test_bake_timeline_imported_fixture_matches_exported_bone_payload(self):
+        # IK link legs import as quaternion tracks, so the fixture's sparse
+        # leg rotation is representable in VMD and must round-trip.
         self._assert_bake_timeline_fresh_import_bone_payload(
             "mmt_test_model",
             "mmt_test_model_test_motion",
             "bake_timeline_mmt_fixture_export.vmd",
-            expected_error="右足, frames 0..1",
         )
 
     def test_bake_timeline_one_bone_fixture_fresh_import_matches_exported_bone_payload(self):

@@ -175,11 +175,21 @@ class TestVmdBoneInterpolation(MayaTestBase):
                 )
             )
 
+        # IK link FK input is authored through the same Transform proxy as
+        # append, so registered imports can give it a quaternion track.
         chain_slot = 2
+        proxy_route, authority, claimed = resolve_redirected_authoring_proxy_authority(
+            ik_joint
+        )
+        self.assertTrue(claimed)
         for axis in "XYZ":
-            self._assert_authored_key_times(
-                self,
-                f"{ik_node}.inputRotate[{chain_slot}].inputRotateElement{axis}",
+            channel = f"rotate{axis}"
+            solver_attr = f"inputRotate[{chain_slot}].inputRotateElement{axis}"
+            self.assertEqual(authority[channel], (ik_node, solver_attr))
+            proxy, proxy_attr = proxy_route[channel]
+            self._assert_authored_key_times(self, f"{proxy}.{proxy_attr}")
+            self.assertIsNone(
+                cmds.keyframe(f"{ik_node}.{solver_attr}", query=True, timeChange=True)
             )
 
     def test_bone_bezier_tangents_use_api_on_animation_layer(self):

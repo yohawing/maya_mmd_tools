@@ -304,6 +304,22 @@ def build_legacy_bone_key_routes(converter) -> Dict[str, dict]:
             for channel in rotation_channels
         )
 
+        # An IK link's FK input lives on the solver's inputRotate[slot], a
+        # non-Transform XYZ compound. Author it as an ordinary redirected
+        # route so it gets the same Transform proxy and quaternion track as
+        # other bones instead of sparse Euler keys.
+        if (
+            ik_info
+            and ik_info.get("solver")
+            and ik_info.get("slot") is not None
+            and not any(channel in route["attr_targets"] for channel in rotation_channels)
+        ):
+            for axis in "XYZ":
+                route["attr_targets"][f"rotate{axis}"] = (
+                    ik_info["solver"],
+                    f"inputRotate[{ik_info['slot']}].inputRotateElement{axis}",
+                )
+
         # A CONTROL_OWNED MMD Control Rig is a single-writer path: when all
         # rotation channels are routed to an owned controller, author those
         # channels there and do not also key the solver's ``inputRotate``

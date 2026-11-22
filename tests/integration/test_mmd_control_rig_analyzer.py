@@ -2928,7 +2928,7 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         # show/hide section from this baked Control Rig route.
         self.assertEqual(parsed.ik_show_hide_frames, [])
 
-    def test_control_rig_vmd_export_rejects_unrepresentable_baked_rotation(self):
+    def test_control_rig_vmd_export_collects_baked_ik_link_rotation(self):
         root = self._import_fixture()
         self.assertTrue(
             import_mmd_file(
@@ -2959,10 +2959,10 @@ class TestMmdControlRigAnalyzerIntegration(MayaTestBase):
         frames = (0, 1, 3, 5)
         source_world = self._capture_indexed_world_matrices(root, frames)
         source_ik = self._capture_ik_states(root, frames)
-        # The baked Euler path leaves the VMD endpoint slerp arc by more
-        # than 0.1 degree within the first frame. Do not publish lossy motion.
-        with self.assertRaisesRegex(ValueError, "右足, frames 0..1"):
-            VmdSceneCollector().collect({"target_model": root})
+        # IK link legs import as quaternion tracks, so the baked leg rotation
+        # stays on the VMD slerp arc and collection must succeed.
+        collected = VmdSceneCollector().collect({"target_model": root})
+        self.assertIn("右足", {frame["bone_name"] for frame in collected["bone_frames"]})
         self.assertEqual(self._capture_ik_states(root, frames), source_ik)
         self.assertEqual(self._capture_indexed_world_matrices(root, frames), source_world)
 
