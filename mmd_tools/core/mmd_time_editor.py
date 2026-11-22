@@ -109,6 +109,11 @@ def _preflight(root):
 
 
 def _animated_inputs(root):
+    """Collect keyed authoring inputs and the VMD TT curves that drive them.
+
+    Rotation curves whose input is driven by a TT curve are excluded here;
+    ``_relay_time_curves`` routes their timing through owned clip inputs.
+    """
     from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
     joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
     routes = VmdSceneCollector()._scene_authored_input_routes(joints, target_model=root)
@@ -127,49 +132,67 @@ def _animated_inputs(root):
                 if not cmds.keyframe(source.split(".", 1)[0], query=True, keyframeCount=True):
                     continue
                 inputs[destination] = {"destination": _ref(destination), "source": _ref(source)}
-    if not inputs:
+    timed = {}
+    for destination, item in list(inputs.items()):
+        curve = _plug(item["source"]).split(".", 1)[0]
+        time_curve = _time_curve(curve)
+        if time_curve:
+            del inputs[destination]
+            timed.setdefault(time_curve, set()).add(_canonical(curve + ".input"))
+    if not inputs and not timed:
         raise MmdTimeEditorError("The model has no keyed bone authoring inputs")
-    for source in {_plug(item["source"]).split(".", 1)[0] for item in inputs.values()}:
-        _require_identity_time_input(source)
-    return inputs
+    return inputs, {curve: sorted(plugs) for curve, plugs in timed.items()}
 
 
-def _require_identity_time_input(curve):
-    """Typed Time Editor sources cannot preserve arbitrary time remapping."""
+def _scene_time(plug):
+    return bool(plug and plug.endswith(".outTime") and cmds.nodeType(plug.split(".", 1)[0]) == "time")
+
+
+def _time_curve(curve):
+    """Return the scene-timed animCurveTT driving ``curve``, or None."""
     driver = cmds.connectionInfo(curve + ".input", sourceFromDestination=True)
-
-    def scene_time(plug):
-        return bool(plug and plug.endswith(".outTime") and cmds.nodeType(plug.split(".", 1)[0]) == "time")
-
-    if not driver or scene_time(driver):
-        return
+    if not driver or _scene_time(driver):
+        return None
     if not driver.endswith(".output") or cmds.nodeType(driver.split(".", 1)[0]) != "animCurveTT":
         raise MmdTimeEditorError("Unsupported animation time input: " + curve)
     time_curve = driver.split(".", 1)[0]
-    if any(cmds.getAttr(node + "." + attr) != 0 for node in (curve, time_curve)
-           for attr in ("preInfinity", "postInfinity")):
-        raise MmdTimeEditorError("Time-remapped model clips require constant infinity: " + curve)
     upstream = cmds.connectionInfo(time_curve + ".input", sourceFromDestination=True)
     # Native VMD TT curves use Maya's implicit evaluation time when unconnected.
-    if upstream and not scene_time(upstream):
+    if upstream and not _scene_time(upstream):
         raise MmdTimeEditorError("Unsupported time remapping input: " + time_curve)
-    times = cmds.keyframe(time_curve, query=True, timeChange=True) or []
-    values = cmds.keyframe(time_curve, query=True, valueChange=True) or []
-    source_times = cmds.keyframe(curve, query=True, timeChange=True) or []
-    identity = (len(times) >= 2 and len(times) == len(values)
-                and all(math.isfinite(t) and math.isfinite(v) and abs(t-v) < 1e-7 for t, v in zip(times, values))
-                and source_times and times[0] <= min(source_times) and times[-1] >= max(source_times))
-    # Every Bezier control point must lie on y=x. Endpoint equality alone does
-    # not prove this; reject step tangents and inspect both handles per segment.
-    for angle_flag, type_flag, selection in (("outAngle", "outTangentType", slice(None, -1)),
-                                             ("inAngle", "inTangentType", slice(1, None))):
-        angles = cmds.keyTangent(time_curve, query=True, **{angle_flag: True}) or []
-        kinds = cmds.keyTangent(time_curve, query=True, **{type_flag: True}) or []
-        identity = identity and len(angles) == len(times) and len(kinds) == len(times)
-        identity = identity and all(math.isfinite(a) and abs(a-45.0) < 1e-5 for a in angles[selection])
-        identity = identity and all(k not in ("step", "stepnext") for k in kinds[selection])
-    if not identity:
-        raise MmdTimeEditorError("Non-identity time remapping is not supported by model clips: " + time_curve)
+    return time_curve
+
+
+def _relay_time_curves(timed, inputs):
+    """Route each TT curve through an owned double attribute the clip can own.
+
+    Time Editor evaluates clip curves at its local time and would bypass a TT
+    curve upstream of a rotation curve. A TU copy of the TT keys on a relay
+    attribute, connected straight into each rotation curve's time input,
+    lets the clip remap time while the original TT keys stay untouched.
+    copyKey/pasteKey also preserve the TT curve's pre/post infinity.
+    """
+    if not timed:
+        return []
+    relay = cmds.createNode("transform", name="MMD_TimeEditor_TimeRelay")
+    cmds.setAttr(relay + ".visibility", False)
+    cmds.setAttr(relay + ".hiddenInOutliner", True)
+    relays = []
+    for index, (time_curve, destinations) in enumerate(sorted(timed.items())):
+        attr = "time%d" % index
+        cmds.addAttr(relay, longName=attr, attributeType="double", keyable=True)
+        cmds.copyKey(time_curve)
+        cmds.pasteKey(relay, attribute=attr, option="replaceCompletely")
+        plug = relay + "." + attr
+        for destination in destinations:
+            cmds.connectAttr(plug, destination, force=True)
+        source = cmds.connectionInfo(plug, sourceFromDestination=True)
+        if not source or cmds.nodeType(source.split(".", 1)[0]) != "animCurveTU":
+            raise MmdTimeEditorError("Could not copy time remapping keys: " + time_curve)
+        inputs[_canonical(plug)] = {"destination": _ref(plug), "source": _ref(source)}
+        relays.append({"timeCurve": _uuid(time_curve), "relay": _ref(plug),
+                       "destinations": [_ref(p) for p in destinations]})
+    return relays
 
 
 def _external_inputs(owned):
@@ -207,6 +230,16 @@ def _validate(row):
         current = cmds.connectionInfo(destination, sourceFromDestination=True)
         if not current or _ref(current) != edge["source"]:
             raise MmdTimeEditorError("Original quaternion curve preservation connection changed")
+    for relay in row.get("timeRelays", []):
+        if cmds.nodeType(_node(relay["timeCurve"])) != "animCurveTT":
+            raise MmdTimeEditorError("Original time remapping curve was replaced")
+        plug = _plug(relay["relay"])
+        for destination in relay["destinations"]:
+            # Maya may insert an owned unitToTimeConversion (double -> time).
+            current = cmds.listConnections(_plug(destination), source=True, destination=False,
+                                           plugs=True, skipConversionNodes=True) or []
+            if len(current) != 1 or _ref(current[0]) != relay["relay"]:
+                raise MmdTimeEditorError("Time remapping relay connection changed: " + plug)
     allowed_external = set(row["externalOutputUuids"])
     for uuid in owned:
         node = _node(uuid)
@@ -275,10 +308,11 @@ def create_model_clip(root, name=None, start=None):
     if start is not None and not math.isfinite(float(start)):
         raise MmdTimeEditorError("Clip start must be a finite frame")
     _preflight(root)
-    inputs = _animated_inputs(root)
+    inputs, timed = _animated_inputs(root)
     name = str(name or "MMD_Motion")
     before = set(cmds.ls("*", uuid=True))
     with _transaction("Create MMD Time Editor Clip"):
+        time_relays = _relay_time_curves(timed, inputs)
         source = cmds.timeEditorAnimSource(
             name + "_Source", addObjects=";".join(sorted({p.split(".", 1)[0] for p in inputs})),
             type=list(_CURVE_TYPES), removeSceneAnimation=False, recursively=False,
@@ -305,10 +339,11 @@ def create_model_clip(root, name=None, start=None):
         owned = {uuid for uuid in set(cmds.ls("*", uuid=True)) - before if cmds.nodeType(_node(uuid)) != "timeEditor"}
         external = {_uuid(p.split(".", 1)[0]) for p in inputs}
         external.update(_uuid(n) for n in cmds.ls(type="timeEditor") or [])
+        external.update(d["uuid"] for relay in time_relays for d in relay["destinations"])
         row = {"version": 1, "modelUuid": _uuid(root), "sourceUuid": _uuid(source),
                "compositionUuid": _uuid(composition), "clipUuid": _uuid(clip),
                "inputs": list(inputs.values()), "ownedUuids": sorted(owned),
-               "preservationEdges": preservation_edges,
+               "preservationEdges": preservation_edges, "timeRelays": time_relays,
                "externalInputEdges": _external_inputs(owned),
                "externalOutputUuids": sorted(external)}
         _validate(row)
@@ -332,6 +367,10 @@ def remove_model_clip(root):
             current = cmds.connectionInfo(destination, sourceFromDestination=True)
             if not current or _ref(current) != item["source"]:
                 raise MmdTimeEditorError("Time Editor did not restore the original source: " + destination)
+        for relay in row.get("timeRelays", []):
+            time_curve = _node(relay["timeCurve"])
+            for destination in relay["destinations"]:
+                cmds.connectAttr(time_curve + ".output", _plug(destination), force=True)
         cmds.timeEditorComposition(composition, edit=True, delete=True)
         remaining = []
         for uuid in row["ownedUuids"]:
