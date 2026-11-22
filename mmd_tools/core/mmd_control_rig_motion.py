@@ -71,6 +71,7 @@ from mmd_tools.core.mmd_control_rig_anim_layers import (
     restore_mmd_control_rig_anim_layer_route,
 )
 from mmd_tools.core.maya_animation_utils import is_plug_animated_or_driven
+from mmd_tools.converters.vmd_redirected_authoring_proxy import authoring_proxy_channel
 from mmd_tools.core.mmd_control_rig_rotation_bake import (
     ROUTE_SAME_BASIS,
     ROUTE_SAMPLED,
@@ -240,7 +241,9 @@ def resolve_control_rig_direct_vmd_export_routes(
                 raise MmdControlRigBuildError(
                     f"duplicate authored channel: {role}.{logical_channel}"
                 )
-            canonical_target = _canonical_plug(cmds, target)
+            # EDIT journals a proxy-driven input under its authoring proxy
+            # channel, which also carries the same value as the input.
+            canonical_target = _canonical_plug(cmds, authoring_proxy_channel(target, cmds))
             if logical_channel in allowed_channels:
                 expected_control = _canonical_plug(
                     cmds, f"{control}.{logical_channel}"
@@ -793,6 +796,10 @@ def enter_mmd_control_rig_edit(model_root: str, *, cmds_module=None) -> Dict[str
                             f"unsupported control-rig route: {target} ({', '.join(route_reasons)})"
                         )
                     control_plug = f"{control}.{channel}"
+                    # A VMD authoring proxy owns the authored curve or layer
+                    # blend of a non-Transform input (e.g. IK link FK input).
+                    # Edit the proxy channel; it keeps driving the input.
+                    target = _canonical_plug(cmds, authoring_proxy_channel(target, cmds))
                     channel_policy = derive_mmd_control_rig_channel_policy(
                         str(role), binding
                     )
@@ -2933,6 +2940,25 @@ def _restore_curve_input_states(cmds, states) -> None:
                 cmds.connectAttr(source, input_plug, force=True)
 
 
+def _quaternion_curve_unchanged(cmds, original, current, saved) -> bool:
+    """Return whether a quaternion curve still holds its saved keys.
+
+    Quaternion slerp ignores tangents, and a plain backup curve reports
+    different tangents and last-digit float noise. Rewriting one curve of the
+    XYZ compound makes Maya re-solve its values, so leave it untouched.
+    """
+    node = original.split(".", 1)[0]
+    try:
+        if not str(cmds.rotationInterpolation(node, query=True)).startswith("quaternion"):
+            return False
+    except Exception:
+        return False
+    return current.get("times") == saved.get("times") and all(
+        math.isclose(now, value, rel_tol=1e-9, abs_tol=1e-9)
+        for now, value in zip(current.get("values") or (), saved.get("values") or ())
+    )
+
+
 def _restore_curve_snapshots(cmds, snapshots):
     for original, backup in snapshots:
         # A snapshot restore is part of the transaction's rollback contract.
@@ -2953,6 +2979,8 @@ def _restore_curve_snapshots(cmds, snapshots):
                 and current.get("preInfinite") == saved.get("preInfinite")
                 and current.get("postInfinite") == saved.get("postInfinite")
             ):
+                continue
+            if _quaternion_curve_unchanged(cmds, original, current, saved):
                 continue
         except Exception:
             pass

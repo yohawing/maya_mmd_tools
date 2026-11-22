@@ -1559,7 +1559,8 @@ MStatus MmdCcdIkNode::initialize() {
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
-    // Animation layers connect member plugs to dagSetMembers as sources.
+    // Readable so VMD IK state keys can join Maya animation layers;
+    // animLayer rejects non-readable attributes without an error.
     nAttr.setReadable(true);
     addAttribute(aEnabled);
 
