@@ -40,7 +40,8 @@ PMX_FILE = os.path.join(TESTS_DATA_DIR, "mmt_test_model.pmx")
 VMD_FILE = os.path.join(TESTS_DATA_DIR, "mmt_test_model_test_motion.vmd")
 FOR_UNIT_TEST_DIR = os.path.join(TESTS_DATA_DIR, "for_unit_test")
 
-FRAMES = [0, 10, 20, 30]
+# Frames 1-4 sit between the fixture keys at 0 and 5 and check interpolation.
+FRAMES = [0, 1, 2, 3, 4, 5, 10, 20, 30]
 ORACLE_CASES = [
     {
         "name": "one_bone_cube",
@@ -73,7 +74,7 @@ ORACLE_CASES = [
         "frames": FRAMES,
     },
 ]
-WORLD_POS_THRESHOLD = 0.05
+WORLD_POS_THRESHOLD = 0.01
 WORLD_ROT_THRESHOLD_DEG = 0.5
 VERTEX_REST_THRESHOLD = 0.05
 VERTEX_ANIM_THRESHOLD = 0.1
