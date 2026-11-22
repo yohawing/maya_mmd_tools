@@ -459,7 +459,8 @@ class TestVmdMotionClear(MayaTestBase):
         record_bind_poses(context)
 
         self.assertEqual(get_stored_bind_translate(joint), (1.0, 2.0, 3.0))
-        self.assertEqual(context.bone_bind_poses["test_bone"], (7.0, 8.0, 9.0))
+        # The key base follows the persisted bind, not the animated live pose.
+        self.assertEqual(context.bone_bind_poses["test_bone"], (1.0, 2.0, 3.0))
 
     def test_clear_existing_motion_does_not_clear_camera_or_light_keys(self):
         """clear_existing_motion はモデル motion だけを対象にし、camera/light key は残す。"""
