@@ -57,12 +57,6 @@ def poses(joints, frames=(0, 1, 2, 3, 4, 5)):
         cmds.undoInfo(stateWithoutFlush=enabled)
 
 
-def scene_uuids():
-    """Node identities, ignoring Maya's global Time Editor singleton."""
-    singleton = cmds.ls(type="timeEditor") or []
-    return set(cmds.ls(uuid=True)) - set(singleton) - set(cmds.ls(singleton, uuid=True) or [])
-
-
 def pose_error(a, b):
     return max(abs(x-y) for ma, mb in zip(a, b) for x, y in zip(ma, mb))
 
@@ -92,9 +86,7 @@ class TestMmdTimeEditor(MayaTestBase):
         untouched = poses(others)
         self.assertGreater(pose_error(baseline[0], baseline[5]), 1e-3)
         row = te.create_model_clip(root)
-        # 684 keyed bone inputs minus 33 TT-driven rotation curves (11 bones x XYZ),
-        # plus one time relay input per TT curve.
-        self.assertEqual(row["inputCount"], 662)
+        self.assertEqual(row["inputCount"], 684)
         self.assertTrue(row["active"])
         self.assert_poses(poses(joints), baseline)
         cmds.timeEditorClip(edit=True, moveClip=20, clipId=row["clipId"])
@@ -142,7 +134,7 @@ class TestMmdTimeEditor(MayaTestBase):
         self.assert_poses(poses(joints, frames), baseline)
         self.assertEqual(curve_payload(), original)
 
-    def test_nonidentity_time_curve_clip_moves_and_restores_scene(self):
+    def test_nonidentity_time_curve_is_rejected_without_scene_changes(self):
         root, joints = create_case()
         frames = [index / 4.0 for index in range(21)]
         linear_pose = poses(joints, frames)
@@ -155,35 +147,21 @@ class TestMmdTimeEditor(MayaTestBase):
         baseline = poses(joints, frames)
         self.assertGreater(max(pose_error(baseline[f], linear_pose[f]) for f in frames), 1e-3)
         original = curve_payload()
-        uuids = scene_uuids()
+        uuids = set(cmds.ls(uuid=True))
         curves = cmds.ls(type="animCurve") or []
-
-        def connections():
-            return {node: sorted(cmds.listConnections(node, source=True, destination=True,
-                                                      plugs=True, connections=True) or [])
-                    for node in curves}
-
-        before = connections()
-        row = te.create_model_clip(root)
-        self.assertTrue(row["active"])
-        self.assert_poses(poses(joints, frames), baseline)
-        cmds.undo()
-        self.assertFalse(te.inspect_model_clip(root)["active"])
-        self.assertEqual(scene_uuids(), uuids)
+        connections = {node: sorted(cmds.listConnections(node, source=True, destination=True,
+                                                       plugs=True, connections=True) or [])
+                       for node in curves}
+        metadata_exists = cmds.attributeQuery(te.METADATA_ATTRIBUTE, node=root, exists=True)
+        with self.assertRaises(te.MmdTimeEditorError):
+            te.create_model_clip(root)
+        self.assertEqual(set(cmds.ls(uuid=True)), uuids)
         self.assertEqual(curve_payload(), original)
-        self.assertEqual(connections(), before)
-        cmds.redo()
-        self.assertTrue(te.inspect_model_clip(root)["active"])
-        self.assert_poses(poses(joints, frames), baseline)
-        cmds.timeEditorClip(edit=True, moveClip=20, clipId=row["clipId"])
-        moved = poses(joints, [frame + 20 for frame in frames])
-        self.assert_poses({frame: moved[frame + 20] for frame in frames}, baseline)
-        self.assertEqual(curve_payload(original), original)
-        self.assertTrue(te.remove_model_clip(root))
+        self.assertEqual({node: sorted(cmds.listConnections(node, source=True, destination=True,
+                                                          plugs=True, connections=True) or [])
+                          for node in curves}, connections)
+        self.assertEqual(cmds.attributeQuery(te.METADATA_ATTRIBUTE, node=root, exists=True), metadata_exists)
         self.assertFalse(te.inspect_model_clip(root)["active"])
-        self.assertEqual(scene_uuids(), uuids)
-        self.assertEqual(curve_payload(), original)
-        self.assertEqual(connections(), before)
         self.assert_poses(poses(joints, frames), baseline)
 
     def test_create_and_remove_undo_redo(self):

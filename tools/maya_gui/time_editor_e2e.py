@@ -104,13 +104,6 @@ def probe(config_path, phase):
             check('public_vmd_import', bool(import_mmd_file(str(ROOT/'tests/data/mmt_test_model_test_motion.vmd'), options=options)))
             check('no_animation_layers', not (cmds.ls(type='animLayer') or []))
             joints = cmds.listRelatives(root, allDescendents=True, type='joint', fullPath=True)
-            # Same monotonic time warp as the integration test, so the saved
-            # and reloaded scenes exercise a non-identity VMD TT curve.
-            timing = next(node for node in cmds.ls(type='animCurveTT')
-                          if node.endswith(':head_vmdRotationTime'))
-            cmds.setKeyframe(timing, time=2.5, value=0.5)
-            cmds.keyTangent(timing, edit=True, inTangentType='linear', outTangentType='linear')
-            check('nonidentity_time_curve', abs(cmds.getAttr(timing + '.output', time=2.5) - 2.5) > 0.1)
             original = curve_payload()
             baseline = poses(joints)
             check('actual_vmd_motion', pose_error(baseline[0], baseline[5]) > 1e-3)
@@ -137,8 +130,7 @@ def probe(config_path, phase):
             manager.buttons['create'].click()
             row = inspect_model_clip(root)
             check('manager_create', row['active'], manager.message_label.text())
-            # 684 keyed inputs - 33 TT-driven rotation curves + 11 time relays.
-            check('exact_bone_input_count', row['inputCount'] == 662, row['inputCount'])
+            check('exact_bone_input_count', row['inputCount'] == 684, row['inputCount'])
             manager.buttons['open'].click()
             compare('clip_original_pose', joints, baseline)
             cmds.timeEditorClip(edit=True, moveClip=20, clipId=row['clipId'])
