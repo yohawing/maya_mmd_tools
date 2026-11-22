@@ -17,11 +17,21 @@ def _write(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf8')
 
 
+def _known_render_warning(message):
+    """Keep unrelated renderer limitations visible but out of the gate."""
+    return message.strip() in {
+        "不明なオブジェクト タイプ: dx11Shader",
+        "Unknown object type: dx11Shader",
+        "不明なオブジェクト タイプ: GLSLShader",
+        "Unknown object type: GLSLShader",
+        "MMD Render requires an active DirectX 11 renderer; override skipped.",
+    }
+
 def _source_hashes():
     sources = [ROOT/path for path in (
         'mmd_tools/core/mmd_time_editor.py', 'mmd_tools/ui/time_editor_manager.py',
         'mmd_tools/converters/vmd_scene_collector.py',
-        'mmd_tools/core/native_layer_routes.py', 'mmd_tools/plugin_main.py',
+        'mmd_tools/plugin_main.py',
         'mmd_tools/io/vmd_importer.py', 'mmd_tools/services/settings_service.py',
         'mmd_tools/ui/tabs/import_export_tab.py', 'mmd_tools/core/settings_keys.py',
         'tests/integration/test_mmd_time_editor.py', 'tools/maya_gui/time_editor_e2e.py')]
@@ -43,7 +53,6 @@ def probe(config_path, phase):
     from tests.integration.test_mmd_time_editor import curve_payload, poses, pose_error, MODEL, OPTIONS
     from mmd_tools.core.mmd_time_editor import inspect_model_clip
     from mmd_tools.ui.time_editor_manager import TimeEditorManagerWindow
-    from tools.maya_gui.pose_layers_e2e import _known_render_warning
     from tools.render_override.common import require_requested_plugin
     config = json.loads(Path(config_path).read_text(encoding='utf8'))
     output = Path(config['out'])

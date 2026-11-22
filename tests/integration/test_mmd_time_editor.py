@@ -1,4 +1,5 @@
 """Maya contracts for one model's reversible bone Time Editor clip."""
+from pathlib import Path
 from unittest.mock import patch
 
 from maya import cmds
@@ -6,7 +7,11 @@ from maya import cmds
 from mmd_tools.core import mmd_time_editor as te
 from mmd_tools.io.mmd_importer import import_mmd_file
 from tests.common.maya_test_base import MayaTestBase
-from tests.integration.test_control_rig_eye import ROOT, MODEL, OPTIONS
+
+ROOT = Path(__file__).resolve().parents[2]
+MODEL = ROOT / "tests/data/mmt_test_model.pmx"
+OPTIONS = {"setup_rig": True, "setup_bone_orientation": True, "import_physics": False,
+           "use_namespace": True}
 
 
 def create_case():
@@ -111,7 +116,8 @@ class TestMmdTimeEditor(MayaTestBase):
         """Cover intermediate times for the fixture's existing TT input curves."""
         root, joints = create_case()
         timing_curves = cmds.ls(type="animCurveTT") or []
-        self.assertEqual(len(timing_curves), 9)
+        # 9 joint curves plus both leg IK-link authoring proxies.
+        self.assertEqual(len(timing_curves), 11)
         self.assertTrue(all(cmds.keyframe(node, query=True, keyframeCount=True)
                             for node in timing_curves))
         original = curve_payload()
