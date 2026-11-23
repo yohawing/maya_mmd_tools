@@ -361,10 +361,13 @@ class ImportExportTab(BaseTab):
 
         animation_button_layout = QHBoxLayout()
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
+        self.import_vmd_time_editor_button = QPushButton(self.tr("import_animation_time_editor", "actions"))
+        self.import_vmd_time_editor_button.setToolTip(self.tr("import_animation_time_editor", "tooltips"))
         self.create_mmd_camera_button = QPushButton(
             self.tr("create_mmd_camera", "actions")
         )
         animation_button_layout.addWidget(self.import_vmd_button)
+        animation_button_layout.addWidget(self.import_vmd_time_editor_button)
         animation_button_layout.addWidget(self.create_mmd_camera_button)
         animation_button_layout.addStretch()
         animation_layout.addRow(animation_button_layout)
@@ -695,6 +698,8 @@ class ImportExportTab(BaseTab):
         self.import_button.setText(self.tr("import_model", "actions"))
         self.new_model_button.setText(self.tr("new_mmd_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
+        self.import_vmd_time_editor_button.setText(self.tr("import_animation_time_editor", "actions"))
+        self.import_vmd_time_editor_button.setToolTip(self.tr("import_animation_time_editor", "tooltips"))
         self.create_mmd_camera_button.setText(
             self.tr("create_mmd_camera", "actions")
         )

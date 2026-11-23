@@ -191,20 +191,6 @@ def open_control_rig_manager(*, app_state=None):
         raise
 
 
-def open_time_editor_manager():
-    """Open the model clip bridge to Maya's standard Time Editor."""
-    from mmd_tools.ui.time_editor_manager import TimeEditorManagerWindow
-    return TimeEditorManagerWindow.show_manager()
-
-
-def close_time_editor_manager():
-    """Release the model clip window without removing any scene clips."""
-    import sys
-    module = sys.modules.get("mmd_tools.ui.time_editor_manager")
-    if module is not None:
-        module.TimeEditorManagerWindow.close_manager()
-
-
 def open_animator_toolset(dockable=True):
     """Open the standalone Animator Toolset window."""
     global _animator_toolset_window
@@ -295,7 +281,6 @@ def install_mmd_menu():
         "Repair Texture Paths",
         "Tools",
         "Animator Toolset",
-        "MMD Time Editor",
         "コントロールリグを管理",
         "Manage Control Rig",
         "管理控制绑定",
@@ -335,12 +320,6 @@ def install_mmd_menu():
         "MMDControlRigManagerMenuItem",
         label="Manage Control Rig",
         command=lambda *args: open_control_rig_manager(),
-        parent="MMD",
-    )
-    cmds.menuItem(
-        "MMDTimeEditorMenuItem",
-        label="MMD Time Editor",
-        command=lambda *args: open_time_editor_manager(),
         parent="MMD",
     )
 
@@ -767,7 +746,6 @@ def uninitializePlugin(mobject):
         _remove_active_view_callback()
         _remove_after_open_callback()
         close_control_rig_manager()
-        close_time_editor_manager()
         close_animator_toolset()
         close_main_window()
         uninstall_mmd_menu()

@@ -77,6 +77,7 @@ class ImportExportPresenter(QObject):
         # VMD import signals
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
         self.view.import_vmd_button.clicked.connect(self.import_vmd_file)
+        self.view.import_vmd_time_editor_button.clicked.connect(self.import_vmd_to_time_editor)
         self.view.new_model_button.clicked.connect(self.open_create_model_dialog)
         self.view.create_mmd_camera_button.clicked.connect(self.create_mmd_camera)
 
@@ -706,14 +707,25 @@ class ImportExportPresenter(QObject):
             self.app_state.emit_status(tr_message_format("import_error", error=str(e)))
             self.app_state.emit_progress(0)
 
-    def import_vmd_file(self):
-        """VMDファイルのインポート"""
+    def import_vmd_to_time_editor(self):
+        """VMDのボーンモーションを現在モデルのTime Editorクリップとして読み込む。"""
+        self.import_vmd_file(time_editor_clip=True)
+
+    def import_vmd_file(self, *, time_editor_clip=False):
+        """VMDファイルのインポート。
+
+        Args:
+            time_editor_clip: True のとき通常のキー作成ではなく Time Editor クリップとして追加する。
+        """
         file_path = self.view.vmd_path_edit.text().strip()
         if not file_path:
             self.app_state.emit_status(tr_message("enter_vmd_file_path"))
             return
 
         target_model = self._get_vmd_target_model()
+        if time_editor_clip and not target_model:
+            self.app_state.emit_status(tr_message("time_editor_needs_model"))
+            return
 
         logger.info(f"Importing VMD file: {file_path}")
         if target_model:
@@ -724,6 +736,8 @@ class ImportExportPresenter(QObject):
 
         # アニメーション設定を収集
         animation_options = self._build_vmd_import_options(target_model)
+        if time_editor_clip:
+            animation_options["time_editor_clip"] = True
 
         try:
             request = ImportVmdRequest(
@@ -758,6 +772,10 @@ class ImportExportPresenter(QObject):
                 if animation_options.get("profile") is not None:
                     partial_kwargs["profile"] = animation_options.get("profile")
                 self._present_import_partial_outcome(result.warnings, **partial_kwargs)
+            elif time_editor_clip:
+                clip = result.root_node.get("clip") if isinstance(result.root_node, dict) else None
+                logger.info("Time Editor clip added: %s", clip)
+                self.app_state.emit_status(tr_message_format("time_editor_clip_added", clip=clip or file_path))
             else:
                 logger.info("VMD import successful.")
                 self.app_state.emit_status(
