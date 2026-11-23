@@ -14,6 +14,7 @@ import re
 from types import SimpleNamespace
 
 from maya import cmds
+from maya.api import OpenMaya as om, OpenMayaAnim as oma
 
 from .logger import get_logger
 
@@ -110,6 +111,61 @@ def _restore_inputs(edges):
             cmds.connectAttr(source, plug, force=True)
 
 
+def _bake_curves(plugs, start, end):
+    """Sample imported curves in Maya's internal units, sharing rotation time maps."""
+    channels = []
+    for plug in plugs:
+        source = cmds.connectionInfo(plug, sourceFromDestination=True)
+        curve, _, attr = source.partition(".")
+        if attr != "output" or cmds.nodeType(curve) not in _CURVE_TYPES:
+            break
+        driver = cmds.connectionInfo(curve + ".input", sourceFromDestination=True)
+        warp = None
+        if driver:
+            node, _, attr = driver.partition(".")
+            kind = cmds.nodeType(node)
+            if kind == "animCurveTT" and attr == "output" and not cmds.connectionInfo(
+                    node + ".input", isDestination=True):
+                warp = node
+            elif kind != "time" or attr != "outTime":
+                break
+        channels.append((plug, curve, warp))
+
+    if len(channels) != len(plugs):
+        cmds.bakeResults(plugs, time=(start, end), sampleBy=1, simulation=False,
+                         preserveOutsideKeys=False, sparseAnimCurveBake=False, minimizeRotation=False,
+                         disableImplicitControl=False)
+        return
+
+    def anim_curve(name):
+        selection = om.MSelectionList()
+        selection.add(name)
+        return oma.MFnAnimCurve(selection.getDependNode(0))
+
+    frames = [om.MTime(i, om.MTime.uiUnit()) for i in range(start, end + 1)]
+    times = om.MTimeArray(frames)
+    warped = {}
+    originals = set()
+    replacements = []
+    for plug, name, warp in channels:
+        if warp and warp not in warped:
+            evaluate = anim_curve(warp).evaluate
+            warped[warp] = [evaluate(t) for t in frames]
+        inputs = warped.get(warp, frames)
+        curve = anim_curve(name)
+        values = ([curve.evaluate(inputs[0])] * len(frames) if curve.numKeys == 1
+                  else [curve.evaluate(t) for t in inputs])
+        baked = oma.MFnAnimCurve()
+        baked.create(curve.animCurveType)
+        baked.addKeys(times, om.MDoubleArray(values), baked.kTangentLinear, baked.kTangentLinear)
+        replacements.append((baked.name(), plug))
+        originals.add(name)
+    # Quaternion rotation curves depend on their siblings while being sampled.
+    for name, plug in replacements:
+        cmds.connectAttr(name + ".output", plug, force=True)
+    cmds.delete(list(originals.union(warped)))
+
+
 def _bake_to_source(vmd_data, vmd_path, options, name, before):
     """Import, bake and wrap the new curves into an animation source. Returns (source, plugs)."""
     from ..io import vmd_importer
@@ -131,9 +187,7 @@ def _bake_to_source(vmd_data, vmd_path, options, name, before):
             cmds.setAttr(plug, keyable=True)
     times = cmds.keyframe(new_curves, query=True, timeChange=True)
     start, end = int(min(times)), int(max(times))
-    cmds.bakeResults(plugs, time=(start, max(end, start + 1)), sampleBy=1, simulation=False,
-                     preserveOutsideKeys=False, sparseAnimCurveBake=False, minimizeRotation=False,
-                     disableImplicitControl=False)
+    _bake_curves(plugs, start, max(end, start + 1))
     # Filter each rotation triplet together so equivalent Euler poses stay continuous.
     rotations = {}
     for plug in plugs:

@@ -204,6 +204,27 @@ class TestMmdTimeEditor(MayaTestBase):
         for frame in CAMERA_FRAMES:
             self.assertLess(pose_error(actual[frame + offset], base[frame]), 1e-3, str(frame + offset))
 
+    def test_bake_falls_back_for_mixed_drivers(self):
+        target = cmds.createNode("transform")
+        x, y = target + ".translateX", target + ".translateY"
+        for frame, value in ((1, 2), (3, 6)):
+            cmds.setKeyframe(x, time=frame, value=value)
+        cmds.connectAttr(x, y)
+        plugs = [x, y]
+        frames = range(1, 4)
+        expected = [cmds.getAttr(p, time=t) for p in plugs for t in frames]
+        original = cmds.connectionInfo(x, sourceFromDestination=True)
+        bake = cmds.bakeResults
+
+        def fallback(*args, **kwargs):
+            self.assertEqual(cmds.connectionInfo(x, sourceFromDestination=True), original)
+            return bake(*args, **kwargs)
+
+        with patch.object(cmds, "bakeResults", side_effect=fallback) as called:
+            te._bake_curves(plugs, 1, 3)
+        called.assert_called_once()
+        self.assertEqual([cmds.getAttr(p, time=t) for p in plugs for t in frames], expected)
+
     def test_first_clip_bakes_all_targets_into_source(self):
         self.baseline()
         root, joints = import_model()
