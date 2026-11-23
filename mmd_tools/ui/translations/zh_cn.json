@@ -275,7 +275,7 @@
     "import_partial_title": "导入警告",
     "vmd_import_complete": "VMD 导入完成: {file_path}",
     "time_editor_needs_model": "导入到Time Editor前，请选择MMD模型。",
-    "time_editor_clip_added": "已添加Time Editor剪辑: {clip}（仅骨骼；不包含表情、相机和灯光）",
+    "time_editor_clip_added": "已添加Time Editor剪辑: {clip}（骨骼、表情和IK状态；不包含相机和灯光）",
     "vmd_reduction_summary": "缩减关键帧: {source_key_count} -> {reduced_key_count}（缩减 {reduction_percent}%）",
     "vmd_import_partial": "VMD 导入完成但有警告 ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMD 导入警告",

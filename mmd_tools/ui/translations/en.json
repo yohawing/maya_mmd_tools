@@ -304,7 +304,7 @@
     "importing_vmd": "Importing VMD: {file_path}",
     "vmd_import_complete": "VMD import complete: {file_path}",
     "time_editor_needs_model": "Select an MMD model before importing to the Time Editor.",
-    "time_editor_clip_added": "Time Editor clip added: {clip} (bone motion only; morph/camera/light keys are not included)",
+    "time_editor_clip_added": "Time Editor clip added: {clip} (bones, morphs and IK state; camera/light keys are not included)",
     "vmd_reduction_summary": "Reduced keys: {source_key_count} -> {reduced_key_count} ({reduction_percent}% reduced)",
     "vmd_import_partial": "VMD import completed with warnings ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMD import warnings",

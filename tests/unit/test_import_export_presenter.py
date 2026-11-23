@@ -1525,7 +1525,7 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertTrue(options["time_editor_clip"])
         self.assertEqual(options["target_model"], "model_root")
         self.assertIn("dance_Clip", app_state.statuses[-1])
-        self.assertIn("bone motion only", app_state.statuses[-1])
+        self.assertIn("camera/light keys are not included", app_state.statuses[-1])
 
     def test_import_vmd_to_time_editor_requires_model(self):
         view = _FakeView()

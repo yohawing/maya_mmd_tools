@@ -1,4 +1,4 @@
-"""Maya contracts for adding VMD bone motion as baked Time Editor clips."""
+"""Maya contracts for adding VMD model motion as baked Time Editor clips."""
 from pathlib import Path
 from unittest.mock import patch
 
@@ -7,6 +7,8 @@ from maya import cmds
 from mmd_tools.core import mmd_time_editor as te
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.vmd_data import VmdData
+from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from mmd_tools.io import vmd_importer
 from mmd_tools.io.mmd_importer import import_mmd_file
 from tests.common.maya_test_base import MayaTestBase
@@ -18,6 +20,9 @@ OPTIONS = {"setup_rig": True, "setup_bone_orientation": True, "import_physics": 
            "use_namespace": True}
 VMD_OPTIONS = {"pmx_path": str(MODEL), "vmd_fps": 30}
 FRAMES = (0, 1, 2, 3, 4, 5)
+MORPH_MODEL = ROOT / "tests/data/test_morph_model.pmx"
+MORPH_VMD = "bone_and_morph.vmd"  # in-memory VmdData; the path only names the clip
+MORPH_VMD_OPTIONS = {"pmx_path": str(MORPH_MODEL), "vmd_fps": 30}
 
 
 def import_model():
@@ -34,6 +39,46 @@ def import_scene_vmd(root):
 
 def add_clip(root, **kwargs):
     return te.import_vmd_clip(root, VmdData().parse_file(str(VMD)), str(VMD), dict(VMD_OPTIONS), **kwargs)
+
+
+def bone_and_morph_vmd():
+    """In-memory VMD keying the morph model's only bone and both morphs."""
+    data = VmdData()
+    for frame_number, position, rotation in ((0, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)),
+                                             (5, (2.0, 1.0, 0.0), (0.0, 0.3826834, 0.0, 0.9238795))):
+        frame = VmdBoneFrame()
+        frame.bone_name, frame.frame_number = "全ての親", frame_number
+        frame.position, frame.rotation = position, rotation
+        data.bone_frames.append(frame)
+    for morph_name, frame_number, value in (("笑い", 0, 0.0), ("笑い", 5, 1.0), ("怒り", 1, 0.8), ("怒り", 4, 0.2)):
+        frame = VmdMorphFrame()
+        frame.morph_name, frame.frame_number, frame.value = morph_name, frame_number, value
+        data.morph_frames.append(frame)
+    return data
+
+
+def import_morph_model():
+    cmds.currentUnit(time="ntsc")
+    root = import_mmd_file(str(MORPH_MODEL), options=OPTIONS)
+    return root, cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True)
+
+
+def add_morph_clip(root, **kwargs):
+    return te.import_vmd_clip(root, bone_and_morph_vmd(), MORPH_VMD, dict(MORPH_VMD_OPTIONS), **kwargs)
+
+
+def morph_samples(root, joints, frames=FRAMES):
+    """Joint world matrices, morph controller inputs and final blendShape weights per frame."""
+    controller = cmds.listConnections(root + ".mmd_morph_controller", source=True, destination=False)[0]
+    blend_shape = cmds.ls(type="blendShape")[0]
+    result = {}
+    for frame in frames:
+        cmds.currentTime(frame)
+        result[frame] = [cmds.xform(j, query=True, worldSpace=True, matrix=True) for j in joints] + [
+            [cmds.getAttr("%s.inputWeight[%d]" % (controller, i)) for i in (0, 1)],
+            [cmds.getAttr(blend_shape + "." + alias) for alias in ("smile", "angry")],
+        ]
+    return result
 
 
 def poses(joints, frames=FRAMES):
@@ -69,6 +114,7 @@ def writers(root):
 
 class TestMmdTimeEditor(MayaTestBase):
     _baseline = None
+    _morph_baseline = None
 
     @classmethod
     def setUpClass(cls):
@@ -93,6 +139,22 @@ class TestMmdTimeEditor(MayaTestBase):
     def assert_matches(self, joints, offset=0):
         base = self.baseline()
         actual = poses(joints, [frame + offset for frame in FRAMES])
+        for frame in FRAMES:
+            self.assertLess(pose_error(actual[frame + offset], base[frame]), 1e-4, str(frame + offset))
+
+    def morph_baseline(self):
+        """Bone poses and morph weights of an ordinary import of the in-memory VMD."""
+        if TestMmdTimeEditor._morph_baseline is None:
+            root, joints = import_morph_model()
+            options = dict(MORPH_VMD_OPTIONS, target_model=root, use_animation_layers=False)
+            vmd_importer.import_vmd_file(bone_and_morph_vmd(), MORPH_VMD, options)
+            TestMmdTimeEditor._morph_baseline = morph_samples(root, joints)
+            cmds.file(new=True, force=True)
+        return TestMmdTimeEditor._morph_baseline
+
+    def assert_morph_matches(self, root, joints, offset=0):
+        base = self.morph_baseline()
+        actual = morph_samples(root, joints, [frame + offset for frame in FRAMES])
         for frame in FRAMES:
             self.assertLess(pose_error(actual[frame + offset], base[frame]), 1e-4, str(frame + offset))
 
@@ -181,4 +243,40 @@ class TestMmdTimeEditor(MayaTestBase):
             import_scene_vmd(root)
         self.assertEqual(raised.exception.reason_code, "time_editor_clip_owns_model")
         self.assertEqual(set(cmds.ls(type="animCurve")), curves)
+        self.assertEqual(writers(root), wired)
+
+    def test_bone_and_morph_share_one_clip(self):
+        self.morph_baseline()
+        root, joints = import_morph_model()
+        clip = add_morph_clip(root)
+        controller = cmds.listConnections(root + ".mmd_morph_controller", source=True, destination=False)[0]
+        targets = cmds.timeEditorAnimSource(clip["source"], query=True, targets=True)
+        self.assertTrue(any(plug.startswith(controller + ".") for plug in targets), targets)
+        self.assertTrue(any(plug.endswith(".translateX") for plug in targets), targets)
+        self.assertTrue(te.is_time_editor_driven(root))
+        self.assert_morph_matches(root, joints)
+        cmds.timeEditorClip(edit=True, moveClip=20, clipId=clip["clipId"])
+        self.assert_morph_matches(root, joints, 20)
+
+    def test_second_clip_added_while_clip_drives_morphs(self):
+        self.morph_baseline()
+        root, joints = import_morph_model()
+        add_morph_clip(root)
+        add_morph_clip(root, name="second", start=20)
+        self.assert_morph_matches(root, joints)
+        self.assert_morph_matches(root, joints, 20)
+
+    def test_clip_over_scene_morph_keys_restores_them_on_removal(self):
+        self.morph_baseline()
+        root, joints = import_morph_model()
+        controller = cmds.listConnections(root + ".mmd_morph_controller", source=True, destination=False)[0]
+        cmds.setKeyframe(controller, attribute="inputWeight[0]", time=0, value=0.25)
+        cmds.setKeyframe(controller, attribute="inputWeight[0]", time=30, value=0.75)
+        original = curve_payload()
+        wired = writers(root)
+        clip = add_morph_clip(root, start=10)
+        self.assert_morph_matches(root, joints, 10)
+        self.assertEqual(set(curve_payload()), set(original))
+        cmds.timeEditorClip(edit=True, removeClip=True, clipId=clip["clipId"])
+        self.assertEqual(curve_payload(), original)
         self.assertEqual(writers(root), wired)

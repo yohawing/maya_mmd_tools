@@ -1,15 +1,17 @@
-"""Add a VMD bone motion to Maya's Time Editor as a baked clip.
+"""Add a model VMD motion to Maya's Time Editor as a baked clip.
 
 Each call imports one VMD onto the model's authoring inputs, bakes every
 touched channel per frame, moves the baked curves into a new Time Editor
 animation source and places a clip for it on a new track. The model's
 previous writers (scene curves or earlier clips) are reconnected afterwards,
-so the same model can receive any number of clips. Morph, camera, light and
-shadow keys are outside this slice and are dropped.
+so the same model can receive any number of clips. Bone, morph and IK state
+keys share one clip; camera, light and shadow keys drive other objects and
+are dropped.
 """
 from collections import defaultdict
 from pathlib import Path
 import re
+from types import SimpleNamespace
 
 from maya import cmds
 
@@ -25,8 +27,9 @@ COMPOSITION_NAME = "MMD_Composition"
 
 
 def _target_plugs(root):
-    """Return every plug a model VMD import may key: bone authoring inputs and IK enabled."""
+    """Return every plug a model VMD import may key: bone authoring inputs, IK enabled and morph weights."""
     from ..converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+    from ..converters.vmd_morph_mapping import build_morph_mappings, iter_morph_mappings
     from ..converters.vmd_scene_collector import VmdSceneCollector
 
     joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
@@ -38,6 +41,11 @@ def _target_plugs(root):
             plugs.append(node + "." + attr)
     ik_nodes = set(collect_ik_nodes_by_bone_name(target_model=root).values())
     plugs += [node + ".enabled" for node in sorted(ik_nodes)]
+    # Same morph targets the importer keys (controller inputs, blendShape weights, morph networks).
+    morphs = SimpleNamespace()
+    build_morph_mappings(morphs, target_model=root)
+    plugs += sorted({node + "." + attr for entry in morphs.morph_name_mapping.values()
+                     for node, attr, _name in iter_morph_mappings(entry)})
     return plugs
 
 
@@ -99,7 +107,7 @@ def _bake_to_source(vmd_data, vmd_path, options, name, before):
         if cmds.nodeType(curve) in _CURVE_TYPES:
             plugs += cmds.listConnections(curve + ".output", plugs=True, source=False, destination=True) or []
     if not plugs:
-        raise ValueError("The VMD did not key any bone of this model")
+        raise ValueError("The VMD did not key any bone or morph of this model")
     times = cmds.keyframe(new_curves, query=True, timeChange=True)
     start, end = int(min(times)), int(max(times))
     cmds.bakeResults(plugs, time=(start, max(end, start + 1)), sampleBy=1, simulation=False,
@@ -129,11 +137,11 @@ def _tracks_node():
 
 
 def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
-    """Add the VMD bone motion to ``root`` as a new Time Editor clip on a new track.
+    """Add the VMD bone, morph and IK state motion to ``root`` as a new Time Editor clip on a new track.
 
     Args:
         root: MMD model root transform.
-        vmd_data: Parsed ``VmdData``. Its morph/camera/light/shadow frames are cleared.
+        vmd_data: Parsed ``VmdData``. Its camera/light/shadow frames are cleared.
         vmd_path: Source VMD path (used for the clip name and by the importer).
         options: VMD import options (``pmx_path``, ``vmd_fps``, ...).
         name: Optional clip name; defaults to the ASCII form of the file name.
@@ -142,14 +150,14 @@ def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
     Returns:
         dict with ``clipId``, ``clip``, ``source``, ``track`` and ``targets`` (baked plug count).
     """
-    if not vmd_data.bone_frames:
-        raise ValueError("Time Editor clips need VMD bone motion; this file has none")
-    dropped = [attr for attr in ("morph_frames", "camera_frames", "light_frames", "shadow_frames")
+    if not (vmd_data.bone_frames or vmd_data.morph_frames):
+        raise ValueError("Time Editor clips need VMD bone or morph motion; this file has none")
+    dropped = [attr for attr in ("camera_frames", "light_frames", "shadow_frames")
                if getattr(vmd_data, attr, None)]
     for attr in dropped:
         setattr(vmd_data, attr, [])
     if dropped:
-        logger.info("Time Editor clip keeps bone motion only; dropped: %s", ", ".join(dropped))
+        logger.info("Time Editor clip keeps model motion only; dropped: %s", ", ".join(dropped))
 
     import_options = dict(options or {})
     import_options.update(target_model=root, scene_animation_only=False, use_animation_layers=False,
