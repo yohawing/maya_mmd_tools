@@ -6049,9 +6049,12 @@ def _optional_float(value: Any) -> Optional[float]:
 
 
 def _reject_time_editor_model_export(options):
-    """Do not silently write an empty motion from Time Editor-owned inputs."""
+    """Do not silently write an empty motion from Time Editor-driven inputs."""
     if "character" not in _resolve_bake_timeline_track_targets(options):
         return
+    from ..core.mmd_time_editor import is_time_editor_driven
+    from ..core.model_registry import _is_model_root
+
     model = options.get("target_model") or options.get("model_root")
     nodes = list(options.get("joints") or [])
     if model:
@@ -6062,9 +6065,10 @@ def _reject_time_editor_model_export(options):
     for node in nodes:
         while node and node not in checked:
             checked.add(node)
-            if (cmds.attributeQuery("mmd_time_editor_json", node=node, exists=True)
-                    and cmds.getAttr(node + ".mmd_time_editor_json")):
-                raise ValueError("Remove this model's Time Editor clip before exporting VMD motion")
+            if _is_model_root(node) and is_time_editor_driven(node):
+                raise ValueError(
+                    "This model is driven by Time Editor clips; remove its clips before exporting VMD motion"
+                )
             parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
             node = parents[0] if parents else None
 

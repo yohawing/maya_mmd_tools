@@ -427,6 +427,10 @@ def import_mmd_file(
 
         elif suffix == ".vmd":
             _resolve_vmd_content_route(parsed_data, options)
+            if options.get("time_editor_clip"):
+                from mmd_tools.core.mmd_time_editor import import_vmd_clip
+
+                return import_vmd_clip(options.get("target_model"), parsed_data, filepath, options)
             return vmd_importer.import_vmd_file(
                 parsed_data,
                 filepath,

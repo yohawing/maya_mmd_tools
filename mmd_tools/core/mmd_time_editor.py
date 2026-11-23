@@ -1,343 +1,192 @@
-"""One model's bone authoring curves in a Maya Time Editor clip.
+"""Add a VMD bone motion to Maya's Time Editor as a baked clip.
 
-This first slice excludes Animation Layers, Control Rig EDIT, HumanIK,
-existing clips, morphs and IK-state channels. Clip mute does not restore scene
-animation; removing this owned clip does. No global Time Editor mute is used.
+Each call imports one VMD onto the model's authoring inputs, bakes every
+touched channel per frame, moves the baked curves into a new Time Editor
+animation source and places a clip for it on a new track. The model's
+previous writers (scene curves or earlier clips) are reconnected afterwards,
+so the same model can receive any number of clips. Morph, camera, light and
+shadow keys are outside this slice and are dropped.
 """
-from contextlib import contextmanager
-import json
-import math
-from uuid import uuid4
+from collections import defaultdict
+from pathlib import Path
+import re
 
 from maya import cmds
 
-from .model_registry import _is_model_root
-from .mmd_control_rig_builder import read_mmd_control_rig_metadata
 from .logger import get_logger
 
 logger = get_logger(__name__)
-METADATA_ATTRIBUTE = "mmd_time_editor_json"
+
 _CURVE_TYPES = ("animCurveTA", "animCurveTL", "animCurveTU")
+_DRIVER_TYPES = _CURVE_TYPES + ("timeEditorInterpolator",)
+_CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+_ROTATE = ("rotateX", "rotateY", "rotateZ")
+COMPOSITION_NAME = "MMD_Composition"
 
 
-class MmdTimeEditorError(ValueError):
-    """The bounded model clip cannot safely claim or restore its inputs."""
+def _target_plugs(root):
+    """Return every plug a model VMD import may key: bone authoring inputs and IK enabled."""
+    from ..converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
+    from ..converters.vmd_scene_collector import VmdSceneCollector
 
-
-def _node(uuid):
-    names = cmds.ls(uuid, long=True) or []
-    if len(names) != 1:
-        raise MmdTimeEditorError("Time Editor owned node is missing or ambiguous: " + uuid)
-    return names[0]
-
-
-def _uuid(node):
-    values = cmds.ls(node, uuid=True) or []
-    if len(values) != 1:
-        raise MmdTimeEditorError("Ambiguous Time Editor node: " + node)
-    return values[0]
-
-
-def _root(root):
-    root = _node(_uuid(root))
-    if not _is_model_root(root):
-        raise MmdTimeEditorError("Select an imported MMD model root")
-    return root
-
-
-def _ref(plug):
-    node, attribute = plug.split(".", 1)
-    return {"uuid": _uuid(node), "attribute": attribute}
-
-
-def _plug(ref):
-    plug = _node(ref["uuid"]) + "." + ref["attribute"]
-    if not cmds.objExists(plug):
-        raise MmdTimeEditorError("Time Editor recorded input is missing: " + plug)
-    return plug
-
-
-def _canonical(plug):
-    return _plug(_ref(plug))
-
-
-def _read(root):
-    if not cmds.attributeQuery(METADATA_ATTRIBUTE, node=root, exists=True):
-        return None
-    raw = cmds.getAttr(root + "." + METADATA_ATTRIBUTE)
-    if not raw:
-        return None
-    try:
-        row = json.loads(raw)
-    except (TypeError, ValueError) as exc:
-        raise MmdTimeEditorError("Invalid model Time Editor metadata") from exc
-    if row.get("version") != 1 or row.get("modelUuid") != _uuid(root):
-        raise MmdTimeEditorError("Time Editor metadata belongs to a different model or version")
-    return row
-
-
-@contextmanager
-def _transaction(label):
-    if not cmds.undoInfo(query=True, state=True):
-        raise MmdTimeEditorError("Time Editor model clips require Maya Undo")
-    name = label + "_" + uuid4().hex
-    cmds.undoInfo(openChunk=True, chunkName=name)
-    try:
-        yield
-    except Exception:
-        cmds.undoInfo(closeChunk=True)
-        if cmds.undoInfo(query=True, undoName=True) == name:
-            cmds.undo()
-        logger.error("Model Time Editor transaction failed", exc_info=True)
-        raise
-    else:
-        cmds.undoInfo(closeChunk=True)
-
-
-def _preflight(root):
-    rig = read_mmd_control_rig_metadata(root)
-    if rig and (rig.get("state") == "EDIT" or rig.get("owner") != "MMD_OWNED"):
-        raise MmdTimeEditorError("Restore or bake Control Rig before creating a Time Editor clip")
-    layers = cmds.ls(type="animLayer") or []
-    base = cmds.animLayer(query=True, root=True) if layers else None
-    if any(layer != base for layer in layers):
-        raise MmdTimeEditorError("This clip workflow requires no non-base Animation Layers")
-    if cmds.ls(type="timeEditorClip"):
-        raise MmdTimeEditorError("This first model-clip workflow requires an empty Time Editor")
-    if "HIKCharacterNode" in cmds.allNodeTypes() and cmds.ls(type="HIKCharacterNode"):
-        raise MmdTimeEditorError("This clip workflow does not support HumanIK scenes")
-
-
-def _animated_inputs(root):
-    from mmd_tools.converters.vmd_scene_collector import VmdSceneCollector
     joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
     routes = VmdSceneCollector()._scene_authored_input_routes(joints, target_model=root)
-    inputs = {}
+    plugs = []
     for joint in joints:
-        for family in ("translate", "rotate"):
-            for axis in "XYZ":
-                logical = family + axis
-                node, attr = routes.get(joint, {}).get(logical, (joint, logical))
-                destination = _canonical(node + "." + attr)
-                source = cmds.connectionInfo(destination, sourceFromDestination=True)
-                if not source:
-                    continue
-                if cmds.nodeType(source.split(".", 1)[0]) not in _CURVE_TYPES:
-                    raise MmdTimeEditorError("Unsupported authoring input writer: " + source)
-                if not cmds.keyframe(source.split(".", 1)[0], query=True, keyframeCount=True):
-                    continue
-                inputs[destination] = {"destination": _ref(destination), "source": _ref(source)}
-    if not inputs:
-        raise MmdTimeEditorError("The model has no keyed bone authoring inputs")
-    for source in {_plug(item["source"]).split(".", 1)[0] for item in inputs.values()}:
-        _require_identity_time_input(source)
-    return inputs
+        for channel in _CHANNELS:
+            node, attr = routes.get(joint, {}).get(channel, (joint, channel))
+            plugs.append(node + "." + attr)
+    ik_nodes = set(collect_ik_nodes_by_bone_name(target_model=root).values())
+    plugs += [node + ".enabled" for node in sorted(ik_nodes)]
+    return plugs
 
 
-def _require_identity_time_input(curve):
-    """Typed Time Editor sources cannot preserve arbitrary time remapping."""
-    driver = cmds.connectionInfo(curve + ".input", sourceFromDestination=True)
-
-    def scene_time(plug):
-        return bool(plug and plug.endswith(".outTime") and cmds.nodeType(plug.split(".", 1)[0]) == "time")
-
-    if not driver or scene_time(driver):
-        return
-    if not driver.endswith(".output") or cmds.nodeType(driver.split(".", 1)[0]) != "animCurveTT":
-        raise MmdTimeEditorError("Unsupported animation time input: " + curve)
-    time_curve = driver.split(".", 1)[0]
-    if any(cmds.getAttr(node + "." + attr) != 0 for node in (curve, time_curve)
-           for attr in ("preInfinity", "postInfinity")):
-        raise MmdTimeEditorError("Time-remapped model clips require constant infinity: " + curve)
-    upstream = cmds.connectionInfo(time_curve + ".input", sourceFromDestination=True)
-    # Native VMD TT curves use Maya's implicit evaluation time when unconnected.
-    if upstream and not scene_time(upstream):
-        raise MmdTimeEditorError("Unsupported time remapping input: " + time_curve)
-    times = cmds.keyframe(time_curve, query=True, timeChange=True) or []
-    values = cmds.keyframe(time_curve, query=True, valueChange=True) or []
-    source_times = cmds.keyframe(curve, query=True, timeChange=True) or []
-    identity = (len(times) >= 2 and len(times) == len(values)
-                and all(math.isfinite(t) and math.isfinite(v) and abs(t-v) < 1e-7 for t, v in zip(times, values))
-                and source_times and times[0] <= min(source_times) and times[-1] >= max(source_times))
-    # Every Bezier control point must lie on y=x. Endpoint equality alone does
-    # not prove this; reject step tangents and inspect both handles per segment.
-    for angle_flag, type_flag, selection in (("outAngle", "outTangentType", slice(None, -1)),
-                                             ("inAngle", "inTangentType", slice(1, None))):
-        angles = cmds.keyTangent(time_curve, query=True, **{angle_flag: True}) or []
-        kinds = cmds.keyTangent(time_curve, query=True, **{type_flag: True}) or []
-        identity = identity and len(angles) == len(times) and len(kinds) == len(times)
-        identity = identity and all(math.isfinite(a) and abs(a-45.0) < 1e-5 for a in angles[selection])
-        identity = identity and all(k not in ("step", "stepnext") for k in kinds[selection])
-    if not identity:
-        raise MmdTimeEditorError("Non-identity time remapping is not supported by model clips: " + time_curve)
+def is_time_editor_driven(root):
+    """Return True when a Time Editor clip writes any of the model's authoring inputs."""
+    if not root or not cmds.objExists(root):
+        return False
+    plugs = [plug for plug in _target_plugs(root) if cmds.objExists(plug)]
+    if not plugs:
+        return False
+    return bool(cmds.listConnections(plugs, source=True, destination=False, type="timeEditorInterpolator"))
 
 
-def _external_inputs(owned):
-    """Capture exact incoming plugs crossing the owned graph boundary."""
-    edges = []
-    for uuid in sorted(owned):
-        pairs = cmds.listConnections(
-            _node(uuid), source=True, destination=False, connections=True, plugs=True
-        ) or []
-        for destination, source in zip(pairs[::2], pairs[1::2]):
-            source_ref = _ref(source)
-            if source_ref["uuid"] not in owned:
-                edges.append({"source": source_ref, "destination": _ref(destination)})
-    return sorted(edges, key=lambda edge: json.dumps(edge, sort_keys=True))
+def _clip_name(name, vmd_path):
+    """Make an ASCII Maya node name from the given name or the VMD file name."""
+    raw = name or Path(str(vmd_path)).stem
+    return re.sub(r"[^0-9A-Za-z_]+", "_", raw).strip("_") or "VMD_Motion"
 
 
-def _validate(row):
-    source, composition, clip = (_node(row[key]) for key in ("sourceUuid", "compositionUuid", "clipUuid"))
-    if (cmds.nodeType(source), cmds.nodeType(composition), cmds.nodeType(clip)) != (
-        "timeEditorAnimSource", "timeEditorTracks", "timeEditorClip"
-    ):
-        raise MmdTimeEditorError("Time Editor owned node type changed")
-    clip_id = int(cmds.timeEditorClip(clip, query=True, clipIdFromNodeName=True))
-    if _uuid(cmds.timeEditorClip(clip_id, query=True, animSource=True)) != row["sourceUuid"]:
-        raise MmdTimeEditorError("The model clip animation source was replaced")
-    targets = {_canonical(p) for p in (cmds.timeEditorAnimSource(source, query=True, targets=True) or [])}
-    expected = {_plug(item["destination"]) for item in row["inputs"]}
-    if targets != expected:
-        raise MmdTimeEditorError("The model clip target attributes changed")
-    owned = set(row["ownedUuids"])
-    if _external_inputs(owned) != row.get("externalInputEdges"):
-        raise MmdTimeEditorError("Owned Time Editor external input connections changed")
-    for edge in row.get("preservationEdges", []):
-        destination = _plug(edge["destination"])
-        current = cmds.connectionInfo(destination, sourceFromDestination=True)
-        if not current or _ref(current) != edge["source"]:
-            raise MmdTimeEditorError("Original quaternion curve preservation connection changed")
-    allowed_external = set(row["externalOutputUuids"])
-    for uuid in owned:
-        node = _node(uuid)
-        if cmds.nodeType(node) == "transform" and cmds.listRelatives(node, children=True):
-            raise MmdTimeEditorError("Owned Time Editor curve preservation node has children")
-        for target in cmds.listConnections(node, source=False, destination=True) or []:
-            if _uuid(target) not in owned | allowed_external:
-                raise MmdTimeEditorError("Owned Time Editor node is used outside its recorded model clip: " + node + " -> " + target + " (" + cmds.nodeType(target) + ")")
-    for item in row["inputs"]:
-        destination, original = _plug(item["destination"]), _plug(item["source"])
-        current = cmds.connectionInfo(destination, sourceFromDestination=True)
-        if not current or _ref(current) not in (item["source"], item["clipWriter"]):
-            raise MmdTimeEditorError("Model input writer changed outside Time Editor: " + destination)
-        if cmds.nodeType(original.split(".", 1)[0]) not in _CURVE_TYPES:
-            raise MmdTimeEditorError("Original model curve was replaced")
-    clips = cmds.timeEditorTracks(composition + ":0", query=True, allClips=True) or []
-    scene_clips = {_uuid(node) for node in cmds.ls(type="timeEditorClip") or []}
-    if set(clips) != {clip_id} or scene_clips != {row["clipUuid"]}:
-        raise MmdTimeEditorError("Owned Time Editor composition contains additional clips")
-    return source, composition, clip, clip_id
+def _detach_inputs(plugs):
+    """Disconnect the current writers of ``plugs`` and return them for restoring.
 
-
-def _preserve_rotation_groups(inputs):
-    """Keep original XYZ curve siblings associated while the clip owns them.
-
-    Disconnected quaternion curves serialize different values in Maya 2024.
-    An owned transform preserves their native sibling context, without copying
-    key payloads or evaluating the MMD output a second time.
+    Every writer is checked before anything is disconnected, so an unsupported
+    driver (Animation Layer blend, constraint, HumanIK, ...) leaves the scene untouched.
     """
-    groups = {}
-    for destination, item in inputs.items():
-        if destination.endswith((".rotateX", ".rotateY", ".rotateZ")):
-            groups.setdefault(destination[:-1], []).append((destination, item))
     edges = []
-    for base, items in groups.items():
-        if len(items) != 3:
+    for plug in plugs:
+        source = cmds.connectionInfo(plug, sourceFromDestination=True)
+        if not source:
             continue
-        sink = cmds.createNode("transform", name="MMD_TimeEditor_CurveSiblings")
-        cmds.setAttr(sink + ".visibility", False)
-        cmds.setAttr(sink + ".hiddenInOutliner", True)
-        cmds.setAttr(sink + ".rotateOrder", cmds.getAttr(base[:-7] + ".rotateOrder"))
-        for destination, item in items:
-            target = sink + ".rotate" + destination[-1]
-            cmds.connectAttr(_plug(item["source"]), target)
-            edges.append({"source": item["source"], "destination": _ref(target)})
+        if cmds.nodeType(source.split(".", 1)[0]) not in _DRIVER_TYPES:
+            raise ValueError(
+                "Time Editor clips support only plain keys or other clips on this model; "
+                "unsupported driver: " + source + " -> " + plug
+            )
+        edges.append((source, plug))
+    for source, plug in edges:
+        cmds.disconnectAttr(source, plug)
     return edges
 
 
-def inspect_model_clip(root):
-    """Resolve UUID-backed clip identity and reject modified ownership."""
-    root = _root(root)
-    row = _read(root)
-    if not row:
-        return {"active": False, "model": root, "clipId": None, "clip": None,
-                "source": None, "composition": None, "inputCount": 0}
-    source, composition, clip, clip_id = _validate(row)
-    return {"active": True, "model": root, "clipId": clip_id, "clip": clip,
-            "source": source, "composition": composition, "inputCount": len(row["inputs"])}
+def _restore_inputs(edges):
+    for source, plug in edges:
+        if not cmds.isConnected(source, plug):
+            cmds.connectAttr(source, plug, force=True)
 
 
-def create_model_clip(root, name=None, start=None):
-    """Create one clip, preserving original curves and recording exact inputs."""
-    root = _root(root)
-    if _read(root):
-        raise MmdTimeEditorError("This model already owns a Time Editor clip")
-    if start is not None and not math.isfinite(float(start)):
-        raise MmdTimeEditorError("Clip start must be a finite frame")
-    _preflight(root)
-    inputs = _animated_inputs(root)
-    name = str(name or "MMD_Motion")
-    before = set(cmds.ls("*", uuid=True))
-    with _transaction("Create MMD Time Editor Clip"):
-        source = cmds.timeEditorAnimSource(
-            name + "_Source", addObjects=";".join(sorted({p.split(".", 1)[0] for p in inputs})),
-            type=list(_CURVE_TYPES), removeSceneAnimation=False, recursively=False,
-        )
-        targets = cmds.timeEditorAnimSource(source, query=True, targets=True) or []
-        for target in targets:
-            if _canonical(target) not in inputs:
-                cmds.timeEditorAnimSource(source, edit=True, removeSource=target)
-        actual = {_canonical(p) for p in (cmds.timeEditorAnimSource(source, query=True, targets=True) or [])}
-        if actual != set(inputs):
-            raise MmdTimeEditorError("Time Editor could not populate every exact authoring input: " + repr(sorted(set(inputs) - actual)[:5]))
-        timing = cmds.timeEditorAnimSource(source, query=True, calculateTiming=True)
-        composition = cmds.timeEditorComposition(name + "_Composition", createTrack=True)
-        composition = cmds.timeEditorComposition(composition, query=True, tracksNode=True)
-        clip_id = cmds.timeEditorClip(name, animSource=source, track=composition + ":0",
-                                     startTime=float(start) if start is not None else timing[0])
-        clip = cmds.timeEditorClip(clip_id, query=True, clipNode=True)
-        for destination, item in inputs.items():
-            writer = cmds.connectionInfo(destination, sourceFromDestination=True)
-            if not writer:
-                raise MmdTimeEditorError("Time Editor did not connect an authoring input")
-            item["clipWriter"] = _ref(writer)
-        preservation_edges = _preserve_rotation_groups(inputs)
-        owned = {uuid for uuid in set(cmds.ls("*", uuid=True)) - before if cmds.nodeType(_node(uuid)) != "timeEditor"}
-        external = {_uuid(p.split(".", 1)[0]) for p in inputs}
-        external.update(_uuid(n) for n in cmds.ls(type="timeEditor") or [])
-        row = {"version": 1, "modelUuid": _uuid(root), "sourceUuid": _uuid(source),
-               "compositionUuid": _uuid(composition), "clipUuid": _uuid(clip),
-               "inputs": list(inputs.values()), "ownedUuids": sorted(owned),
-               "preservationEdges": preservation_edges,
-               "externalInputEdges": _external_inputs(owned),
-               "externalOutputUuids": sorted(external)}
-        _validate(row)
-        if not cmds.attributeQuery(METADATA_ATTRIBUTE, node=root, exists=True):
-            cmds.addAttr(root, longName=METADATA_ATTRIBUTE, dataType="string")
-        cmds.setAttr(root + "." + METADATA_ATTRIBUTE, json.dumps(row), type="string")
-    return inspect_model_clip(root)
+def _bake_to_source(vmd_data, vmd_path, options, name, before):
+    """Import, bake and wrap the new curves into an animation source. Returns (source, plugs)."""
+    from ..io import vmd_importer
+
+    vmd_importer.import_vmd_file(vmd_data, str(vmd_path), options)
+    # The importer leaves a time curve selected and bakeResults deletes it;
+    # a stale selection entry crashes the next selection-reading command.
+    cmds.select(clear=True)
+    new_curves = sorted(set(cmds.ls(type="animCurve") or []) - before)
+    plugs = []
+    for curve in new_curves:
+        if cmds.nodeType(curve) in _CURVE_TYPES:
+            plugs += cmds.listConnections(curve + ".output", plugs=True, source=False, destination=True) or []
+    if not plugs:
+        raise ValueError("The VMD did not key any bone of this model")
+    times = cmds.keyframe(new_curves, query=True, timeChange=True)
+    start, end = int(min(times)), int(max(times))
+    cmds.bakeResults(plugs, time=(start, max(end, start + 1)), sampleBy=1, simulation=False,
+                     preserveOutsideKeys=False, sparseAnimCurveBake=False, minimizeRotation=False,
+                     disableImplicitControl=False)
+    # bakeResults resets rotation curves to Euler interpolation.
+    rotations = defaultdict(list)
+    for plug in plugs:
+        node, attr = plug.split(".", 1)
+        if attr in _ROTATE:
+            rotations[node].append(cmds.connectionInfo(plug, sourceFromDestination=True).split(".", 1)[0])
+    for curves in rotations.values():
+        if len(curves) == 3:
+            cmds.rotationInterpolation(*curves, convert="quaternionSlerp")
+    source = cmds.timeEditorAnimSource(name + "_Source", attribute=plugs, removeSceneAnimation=True)
+    return source, plugs
 
 
-def remove_model_clip(root):
-    """Remove only this owned clip and require exact original source restoration."""
-    root = _root(root)
-    row = _read(root)
-    if not row:
-        return False
-    _source, composition, _clip, clip_id = _validate(row)
-    with _transaction("Remove MMD Time Editor Clip"):
-        cmds.timeEditorClip(edit=True, removeClip=True, clipId=clip_id)
-        for item in row["inputs"]:
-            destination = _plug(item["destination"])
-            current = cmds.connectionInfo(destination, sourceFromDestination=True)
-            if not current or _ref(current) != item["source"]:
-                raise MmdTimeEditorError("Time Editor did not restore the original source: " + destination)
-        cmds.timeEditorComposition(composition, edit=True, delete=True)
-        remaining = []
-        for uuid in row["ownedUuids"]:
-            nodes = cmds.ls(uuid, long=True) or []
-            remaining.extend(nodes)
-        if remaining:
-            cmds.delete(remaining)
-        cmds.deleteAttr(root + "." + METADATA_ATTRIBUTE)
-    return True
+def _tracks_node():
+    """Return the active composition's tracks node, creating MMD_Composition when none exists."""
+    if cmds.timeEditorComposition(query=True, allCompositions=True):
+        tracks = cmds.timeEditorComposition(query=True, active=True)
+        if tracks:
+            return tracks
+    composition = cmds.timeEditorComposition(COMPOSITION_NAME, createTrack=False)
+    return cmds.timeEditorComposition(composition, query=True, tracksNode=True)
+
+
+def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
+    """Add the VMD bone motion to ``root`` as a new Time Editor clip on a new track.
+
+    Args:
+        root: MMD model root transform.
+        vmd_data: Parsed ``VmdData``. Its morph/camera/light/shadow frames are cleared.
+        vmd_path: Source VMD path (used for the clip name and by the importer).
+        options: VMD import options (``pmx_path``, ``vmd_fps``, ...).
+        name: Optional clip name; defaults to the ASCII form of the file name.
+        start: Optional clip start time; defaults to the source's first key.
+
+    Returns:
+        dict with ``clipId``, ``clip``, ``source``, ``track`` and ``targets`` (baked plug count).
+    """
+    if not vmd_data.bone_frames:
+        raise ValueError("Time Editor clips need VMD bone motion; this file has none")
+    dropped = [attr for attr in ("morph_frames", "camera_frames", "light_frames", "shadow_frames")
+               if getattr(vmd_data, attr, None)]
+    for attr in dropped:
+        setattr(vmd_data, attr, [])
+    if dropped:
+        logger.info("Time Editor clip keeps bone motion only; dropped: %s", ", ".join(dropped))
+
+    import_options = dict(options or {})
+    import_options.update(target_model=root, scene_animation_only=False, use_animation_layers=False,
+                          clear_existing_motion=False, bake_mode=False, create_mmd_control_rig=False,
+                          import_camera_animation=False, import_light_animation=False)
+    name = _clip_name(name, vmd_path)
+
+    selection = cmds.ls(selection=True, long=True) or []
+    undo_state = cmds.undoInfo(query=True, state=True)
+    cmds.undoInfo(stateWithoutFlush=False)
+    try:
+        cmds.select(clear=True)
+        before = set(cmds.ls(type="animCurve") or [])
+        edges = _detach_inputs(_target_plugs(root))
+        try:
+            source, plugs = _bake_to_source(vmd_data, vmd_path, import_options, name, before)
+        except Exception:
+            cmds.select(clear=True)
+            leftovers = list(set(cmds.ls(type="animCurve") or []) - before)
+            if leftovers:
+                cmds.delete(leftovers)
+            raise
+        finally:
+            _restore_inputs(edges)
+
+        tracks = _tracks_node()
+        index = cmds.timeEditorTracks(tracks, edit=True, addTrack=-1, trackType=0)
+        track = "%s:%d" % (tracks, index)
+        if start is None:
+            start = cmds.timeEditorAnimSource(source, query=True, calculateTiming=True)[0]
+        clip_id = cmds.timeEditorClip(name, animSource=source, track=track, startTime=float(start))
+        return {"clipId": clip_id, "clip": cmds.timeEditorClip(clip_id, query=True, clipNode=True),
+                "source": source, "track": track, "targets": len(plugs)}
+    finally:
+        cmds.undoInfo(stateWithoutFlush=undo_state)
+        existing = [node for node in selection if cmds.objExists(node)]
+        if existing:
+            cmds.select(existing, replace=True)
+        else:
+            cmds.select(clear=True)

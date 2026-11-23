@@ -276,15 +276,14 @@ class TestVmdSceneCollector(unittest.TestCase):
                 self.assertEqual(collector_module._dense_track_decision(*inputs), expected)
 
     def test_time_editor_model_export_rejected_before_collection(self):
-        with mock.patch.object(collector_module.cmds, "attributeQuery", return_value=True), \
-                mock.patch.object(collector_module.cmds, "getAttr", return_value="stale clip metadata"):
+        with mock.patch("mmd_tools.core.model_registry._is_model_root", return_value=True),                 mock.patch("mmd_tools.core.mmd_time_editor.is_time_editor_driven", return_value=True):
             collector = VmdSceneCollector()
             with mock.patch.object(collector, "_collect_impl") as collect:
-                with self.assertRaisesRegex(ValueError, "Time Editor clip"):
+                with self.assertRaisesRegex(ValueError, "Time Editor clips"):
                     collector.collect({"target_model": "model"})
                 collect.assert_not_called()
             sink = mock.Mock()
-            with self.assertRaisesRegex(ValueError, "Time Editor clip"):
+            with self.assertRaisesRegex(ValueError, "Time Editor clips"):
                 collector.collect_to_sink({"target_model": "model", "export_strategy": "bake_timeline"}, sink)
             self.assertEqual(sink.mock_calls, [])
             collector_module._reject_time_editor_model_export({"target_model": "model", "export_target": "camera"})
@@ -293,10 +292,11 @@ class TestVmdSceneCollector(unittest.TestCase):
         fake = FakeCmds()
         fake.node_types = {"model": "transform", "bone": "joint", "other": "transform", "otherBone": "joint"}
         fake.children = {"model": ["bone"], "other": ["otherBone"]}
-        fake.attrs[("model", "mmd_time_editor_json")] = "clip metadata"
-        with mock.patch.object(collector_module, "cmds", fake):
+        with mock.patch.object(collector_module, "cmds", fake),                 mock.patch("mmd_tools.core.model_registry._is_model_root",
+                           side_effect=lambda node: node in ("model", "other")),                 mock.patch("mmd_tools.core.mmd_time_editor.is_time_editor_driven",
+                           side_effect=lambda node: node == "model"):
             for options in ({}, {"joints": ["bone"]}, {"target_model": "other", "joints": ["bone"]}):
-                with self.subTest(options=options), self.assertRaisesRegex(ValueError, "Time Editor clip"):
+                with self.subTest(options=options), self.assertRaisesRegex(ValueError, "Time Editor clips"):
                     collector_module._reject_time_editor_model_export(options)
             collector_module._reject_time_editor_model_export({"joints": ["otherBone"]})
             collector_module._reject_time_editor_model_export({"export_target": "camera"})

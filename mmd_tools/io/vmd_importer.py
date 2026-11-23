@@ -191,13 +191,14 @@ def import_vmd_file(
             if "target_model" in options:
                 raise MMDImportException("Camera Motion must not specify target_model")
         elif target_model:
-            # Even stale clip metadata retains ownership of the original curves.
-            # Reject before clear_existing_motion can remove their time curves.
-            from ..core.mmd_time_editor import METADATA_ATTRIBUTE
-            if (cmds.objExists(target_model + "." + METADATA_ATTRIBUTE)
-                    and cmds.getAttr(target_model + "." + METADATA_ATTRIBUTE)):
+            # Keys written under a Time Editor clip would be hidden by it (and
+            # clear_existing_motion could break it). The clip import path
+            # detaches the clips before calling this importer, so it passes.
+            from ..core.mmd_time_editor import is_time_editor_driven
+            if is_time_editor_driven(target_model):
                 raise MMDImportException(
-                    "Remove this model's Time Editor clip before importing VMD motion",
+                    "This model is driven by Time Editor clips. Add the VMD as a Time Editor clip, "
+                    "or remove the model's clips before importing VMD motion",
                     reason_code="time_editor_clip_owns_model",
                 )
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
