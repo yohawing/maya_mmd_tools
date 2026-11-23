@@ -8,6 +8,7 @@ from mmd_tools.core import mmd_time_editor as te
 from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
 from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from mmd_tools.io import vmd_importer
 from mmd_tools.io.mmd_importer import import_mmd_file
@@ -211,13 +212,42 @@ class TestMmdTimeEditor(MayaTestBase):
         self.assertEqual(result["clip"], "mmt_test_model_test_motion")
         self.assertEqual(curve_payload(), {})
         self.assertEqual(cmds.ls(type="animCurveTT"), [])
-        rotations = [c for c in cmds.listConnections(result["source"], type="animCurveTA") or []]
-        self.assertTrue(rotations)
-        self.assertEqual({cmds.getAttr(c + ".rotationInterpolation") for c in set(rotations)}, {4})  # quaternion slerp
         self.assertTrue(te.is_time_editor_driven(root))
         self.assert_matches(joints)
         cmds.timeEditorClip(edit=True, moveClip=20, clipId=result["clipId"])
         self.assert_matches(joints, 20)
+
+    def test_clip_preserves_baked_rotation_at_integer_frame(self):
+        root, joints = import_morph_model()
+        options = dict(MORPH_VMD_OPTIONS, target_model=root, use_animation_layers=False)
+        vmd_importer.import_vmd_file(bone_and_morph_vmd(), MORPH_VMD, options)
+        cmds.currentTime(5)
+        expected = cmds.getAttr(joints[0] + ".rotate")[0]
+        self.assertGreater(max(map(abs, expected)), 1.0)
+
+        cmds.file(new=True, force=True)
+        root, joints = import_morph_model()
+        add_morph_clip(root)
+        cmds.currentTime(5)
+        for actual, reference in zip(cmds.getAttr(joints[0] + ".rotate")[0], expected):
+            self.assertAlmostEqual(actual, reference, delta=1e-10)
+
+    def test_baked_rotation_keys_cross_180_continuously(self):
+        cmds.currentUnit(time="ntsc")
+        data = VmdData()
+        for number, angle in enumerate((2.9, 3.0, -3.0)):
+            frame = VmdCameraFrame()
+            frame.frame_number = number
+            frame.rotation = (0.0, 0.0, angle)
+            frame.viewing_angle = 45
+            data.camera_frames.append(frame)
+        result = te.import_vmd_clip(None, data, "camera_wrap.vmd", dict(CAMERA_OPTIONS))
+        curves = cmds.listConnections(result["source"], type="animCurveTA") or []
+        self.assertTrue(curves)
+        for curve in curves:
+            values = cmds.keyframe(curve, query=True, valueChange=True)
+            self.assertGreaterEqual(len(values), 2)
+            self.assertLessEqual(max(abs(b - a) for a, b in zip(values, values[1:])), 180.0, curve)
 
     def test_second_clip_added_at_non_rest_time(self):
         self.baseline()

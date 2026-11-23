@@ -9,7 +9,6 @@ Bone, morph and IK state keys share one model clip; a camera-only VMD becomes
 a camera clip. Light and shadow keys are dropped, and so are camera keys of a
 model VMD.
 """
-from collections import defaultdict
 from pathlib import Path
 import re
 from types import SimpleNamespace
@@ -23,7 +22,6 @@ logger = get_logger(__name__)
 _CURVE_TYPES = ("animCurveTA", "animCurveTL", "animCurveTU")
 _DRIVER_TYPES = _CURVE_TYPES + ("timeEditorInterpolator",)
 _CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
-_ROTATE = ("rotateX", "rotateY", "rotateZ")
 COMPOSITION_NAME = "MMD_Composition"
 
 
@@ -136,15 +134,20 @@ def _bake_to_source(vmd_data, vmd_path, options, name, before):
     cmds.bakeResults(plugs, time=(start, max(end, start + 1)), sampleBy=1, simulation=False,
                      preserveOutsideKeys=False, sparseAnimCurveBake=False, minimizeRotation=False,
                      disableImplicitControl=False)
-    # bakeResults resets rotation curves to Euler interpolation.
-    rotations = defaultdict(list)
+    # Filter each rotation triplet together so equivalent Euler poses stay continuous.
+    rotations = {}
     for plug in plugs:
-        node, attr = plug.split(".", 1)
-        if attr in _ROTATE:
-            rotations[node].append(cmds.connectionInfo(plug, sourceFromDestination=True).split(".", 1)[0])
-    for curves in rotations.values():
-        if len(curves) == 3:
-            cmds.rotationInterpolation(*curves, convert="quaternionSlerp")
+        node, attr = plug.rsplit(".", 1)
+        if attr in ("rotateX", "rotateY", "rotateZ"):
+            source_plug = cmds.connectionInfo(plug, sourceFromDestination=True)
+            rotations.setdefault(node, {})[attr] = source_plug.split(".")[0]
+    for axes in rotations.values():
+        if len(axes) == 3:
+            cmds.filterCurve(axes["rotateX"], axes["rotateY"], axes["rotateZ"], filter="euler")
+        else:
+            # The camera rig splits rotation across its target (X/Y) and camera (Z).
+            for curve in axes.values():
+                cmds.filterCurve(curve, filter="euler")
     source = cmds.timeEditorAnimSource(name + "_Source", attribute=plugs, removeSceneAnimation=True)
     return source, plugs
 
