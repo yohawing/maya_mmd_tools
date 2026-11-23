@@ -286,7 +286,14 @@ class TestVmdSceneCollector(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Time Editor clips"):
                 collector.collect_to_sink({"target_model": "model", "export_strategy": "bake_timeline"}, sink)
             self.assertEqual(sink.mock_calls, [])
+        with mock.patch("mmd_tools.core.mmd_time_editor.is_time_editor_driven", side_effect=bool):
             collector_module._reject_time_editor_model_export({"target_model": "model", "export_target": "camera"})
+
+    def test_time_editor_camera_export_rejected(self):
+        with mock.patch("mmd_tools.core.mmd_time_editor.is_time_editor_driven",
+                        side_effect=lambda node: node is None):
+            with self.assertRaisesRegex(ValueError, "MMD camera is driven by Time Editor clips"):
+                collector_module._reject_time_editor_model_export({"export_target": "camera+light"})
 
     def test_time_editor_guard_covers_targetless_and_explicit_joint_owners(self):
         fake = FakeCmds()

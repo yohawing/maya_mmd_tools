@@ -190,6 +190,15 @@ def import_vmd_file(
         if scene_animation_only:
             if "target_model" in options:
                 raise MMDImportException("Camera Motion must not specify target_model")
+            # Same reason as the model check below: keys would be hidden by the clip.
+            from ..core.mmd_time_editor import is_time_editor_driven
+            if (getattr(parser, "camera_frames", None) and options.get("import_camera_animation", True)
+                    and is_time_editor_driven(None)):
+                raise MMDImportException(
+                    "The MMD camera is driven by Time Editor clips. Add the VMD as a Time Editor clip, "
+                    "or remove the camera's clips before importing camera motion",
+                    reason_code="time_editor_clip_owns_camera",
+                )
         elif target_model:
             # Keys written under a Time Editor clip would be hidden by it (and
             # clear_existing_motion could break it). The clip import path

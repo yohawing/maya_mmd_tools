@@ -708,7 +708,7 @@ class ImportExportPresenter(QObject):
             self.app_state.emit_progress(0)
 
     def import_vmd_to_time_editor(self):
-        """VMDのボーンモーションを現在モデルのTime Editorクリップとして読み込む。"""
+        """VMDを Time Editor クリップとして読み込む（モデルモーションは現在モデル、カメラモーションは MMD カメラ）。"""
         self.import_vmd_file(time_editor_clip=True)
 
     def import_vmd_file(self, *, time_editor_clip=False):
@@ -722,11 +722,8 @@ class ImportExportPresenter(QObject):
             self.app_state.emit_status(tr_message("enter_vmd_file_path"))
             return
 
+        # モデル無しでモデルモーションを読もうとした場合は importer の内容判定が中止する。
         target_model = self._get_vmd_target_model()
-        if time_editor_clip and not target_model:
-            self.app_state.emit_status(tr_message("time_editor_needs_model"))
-            return
-
         logger.info(f"Importing VMD file: {file_path}")
         if target_model:
             logger.debug(f"Current model: {target_model}")

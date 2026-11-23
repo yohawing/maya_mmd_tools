@@ -1,12 +1,13 @@
-"""Add a model VMD motion to Maya's Time Editor as a baked clip.
+"""Add a model or camera VMD motion to Maya's Time Editor as a baked clip.
 
-Each call imports one VMD onto the model's authoring inputs, bakes every
-touched channel per frame, moves the baked curves into a new Time Editor
-animation source and places a clip for it on a new track. The model's
-previous writers (scene curves or earlier clips) are reconnected afterwards,
-so the same model can receive any number of clips. Bone, morph and IK state
-keys share one clip; camera, light and shadow keys drive other objects and
-are dropped.
+Each call imports one VMD onto the model's authoring inputs (or the MMD
+camera rig), bakes every touched channel per frame, moves the baked curves
+into a new Time Editor animation source and places a clip for it on a new
+track. The previous writers (scene curves or earlier clips) are reconnected
+afterwards, so the same model or camera can receive any number of clips.
+Bone, morph and IK state keys share one model clip; a camera-only VMD becomes
+a camera clip. Light and shadow keys are dropped, and so are camera keys of a
+model VMD.
 """
 from collections import defaultdict
 from pathlib import Path
@@ -49,11 +50,29 @@ def _target_plugs(root):
     return plugs
 
 
-def is_time_editor_driven(root):
-    """Return True when a Time Editor clip writes any of the model's authoring inputs."""
-    if not root or not cmds.objExists(root):
+def _camera_plugs():
+    """Return the existing MMD camera rig's plugs written by a curve or a clip (empty without a rig)."""
+    from ..converters.vmd_camera_animation import ATTR_MMD_CAMERA
+
+    # Same lookup as the importer's get_or_create_camera.
+    cameras = cmds.ls("*." + ATTR_MMD_CAMERA, objectsOnly=True, long=True)
+    if not cameras:
+        return []
+    top = "|" + cameras[0].split("|")[1]
+    nodes = [top] + (cmds.listRelatives(top, allDescendents=True, fullPath=True) or [])
+    pairs = cmds.listConnections(nodes, source=True, destination=False, connections=True, plugs=True) or []
+    return sorted({plug for plug, source in zip(pairs[::2], pairs[1::2])
+                   if cmds.nodeType(source.split(".", 1)[0]) in _DRIVER_TYPES})
+
+
+def is_time_editor_driven(root=None):
+    """Return True when a Time Editor clip writes the model's authoring inputs.
+
+    Without a ``root`` the MMD camera rig is checked instead.
+    """
+    if root and not cmds.objExists(root):
         return False
-    plugs = [plug for plug in _target_plugs(root) if cmds.objExists(plug)]
+    plugs = [plug for plug in (_target_plugs(root) if root else _camera_plugs()) if cmds.objExists(plug)]
     if not plugs:
         return False
     return bool(cmds.listConnections(plugs, source=True, destination=False, type="timeEditorInterpolator"))
@@ -107,7 +126,11 @@ def _bake_to_source(vmd_data, vmd_path, options, name, before):
         if cmds.nodeType(curve) in _CURVE_TYPES:
             plugs += cmds.listConnections(curve + ".output", plugs=True, source=False, destination=True) or []
     if not plugs:
-        raise ValueError("The VMD did not key any bone or morph of this model")
+        raise ValueError("The VMD did not key anything for the Time Editor clip")
+    for plug in plugs:
+        # bakeResults and Time Editor sources skip non-keyable attributes (e.g. camera orthographicWidth).
+        if not cmds.getAttr(plug, keyable=True):
+            cmds.setAttr(plug, keyable=True)
     times = cmds.keyframe(new_curves, query=True, timeChange=True)
     start, end = int(min(times)), int(max(times))
     cmds.bakeResults(plugs, time=(start, max(end, start + 1)), sampleBy=1, simulation=False,
@@ -137,11 +160,15 @@ def _tracks_node():
 
 
 def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
-    """Add the VMD bone, morph and IK state motion to ``root`` as a new Time Editor clip on a new track.
+    """Add the VMD motion as a new Time Editor clip on a new track.
+
+    With a model ``root`` the bone, morph and IK state motion drives the model;
+    without one the camera motion drives the MMD camera rig (created if needed).
 
     Args:
-        root: MMD model root transform.
-        vmd_data: Parsed ``VmdData``. Its camera/light/shadow frames are cleared.
+        root: MMD model root transform, or None for a camera VMD.
+        vmd_data: Parsed ``VmdData``. Frames the clip does not take (light,
+            shadow, and camera for a model clip) are cleared.
         vmd_path: Source VMD path (used for the clip name and by the importer).
         options: VMD import options (``pmx_path``, ``vmd_fps``, ...).
         name: Optional clip name; defaults to the ASCII form of the file name.
@@ -150,19 +177,25 @@ def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
     Returns:
         dict with ``clipId``, ``clip``, ``source``, ``track`` and ``targets`` (baked plug count).
     """
-    if not (vmd_data.bone_frames or vmd_data.morph_frames):
-        raise ValueError("Time Editor clips need VMD bone or morph motion; this file has none")
-    dropped = [attr for attr in ("camera_frames", "light_frames", "shadow_frames")
-               if getattr(vmd_data, attr, None)]
+    import_options = dict(options or {})
+    import_options.update(use_animation_layers=False, clear_existing_motion=False, bake_mode=False,
+                          create_mmd_control_rig=False, import_light_animation=False)
+    if root:
+        if not (vmd_data.bone_frames or vmd_data.morph_frames):
+            raise ValueError("Time Editor clips need VMD bone or morph motion for a model; this file has none")
+        dropped = ("camera_frames", "light_frames", "shadow_frames")
+        import_options.update(target_model=root, scene_animation_only=False, import_camera_animation=False)
+    else:
+        if not getattr(vmd_data, "camera_frames", None):
+            raise ValueError("Time Editor clips need VMD bone, morph or camera motion; this file has none")
+        dropped = ("light_frames", "shadow_frames")
+        import_options.pop("target_model", None)
+        import_options.update(scene_animation_only=True, import_camera_animation=True)
+    dropped = [attr for attr in dropped if getattr(vmd_data, attr, None)]
     for attr in dropped:
         setattr(vmd_data, attr, [])
     if dropped:
-        logger.info("Time Editor clip keeps model motion only; dropped: %s", ", ".join(dropped))
-
-    import_options = dict(options or {})
-    import_options.update(target_model=root, scene_animation_only=False, use_animation_layers=False,
-                          clear_existing_motion=False, bake_mode=False, create_mmd_control_rig=False,
-                          import_camera_animation=False, import_light_animation=False)
+        logger.info("Time Editor clip skips other motion; dropped: %s", ", ".join(dropped))
     name = _clip_name(name, vmd_path)
 
     selection = cmds.ls(selection=True, long=True) or []
@@ -171,7 +204,7 @@ def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
     try:
         cmds.select(clear=True)
         before = set(cmds.ls(type="animCurve") or [])
-        edges = _detach_inputs(_target_plugs(root))
+        edges = _detach_inputs(_target_plugs(root) if root else _camera_plugs())
         try:
             source, plugs = _bake_to_source(vmd_data, vmd_path, import_options, name, before)
         except Exception:

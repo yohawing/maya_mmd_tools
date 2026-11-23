@@ -1525,18 +1525,21 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertTrue(options["time_editor_clip"])
         self.assertEqual(options["target_model"], "model_root")
         self.assertIn("dance_Clip", app_state.statuses[-1])
-        self.assertIn("camera/light keys are not included", app_state.statuses[-1])
+        self.assertIn("light and self-shadow keys are not included", app_state.statuses[-1])
 
-    def test_import_vmd_to_time_editor_requires_model(self):
+    def test_import_vmd_to_time_editor_without_model_leaves_route_to_importer(self):
+        # A camera VMD needs no model; the importer's content route rejects model motion.
         view = _FakeView()
         app_state = _FakeAppState()
-        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node={"clip": "camera_Clip"}, succeeded=True))
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
         presenter.import_vmd_to_time_editor()
 
-        self.assertEqual(action.requests, [])
-        self.assertIn("Select an MMD model", app_state.statuses[-1])
+        options = action.requests[0].options
+        self.assertTrue(options["time_editor_clip"])
+        self.assertFalse(options.get("target_model"))
+        self.assertIn("camera_Clip", app_state.statuses[-1])
 
     def test_import_vmd_without_time_editor_does_not_set_clip_option(self):
         view = _FakeView()

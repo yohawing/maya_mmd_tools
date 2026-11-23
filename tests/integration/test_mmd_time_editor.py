@@ -23,6 +23,11 @@ FRAMES = (0, 1, 2, 3, 4, 5)
 MORPH_MODEL = ROOT / "tests/data/test_morph_model.pmx"
 MORPH_VMD = "bone_and_morph.vmd"  # in-memory VmdData; the path only names the clip
 MORPH_VMD_OPTIONS = {"pmx_path": str(MORPH_MODEL), "vmd_fps": 30}
+# Camera keys at 0, 1 (a cut), 15, 30, 45 and 60.
+CAMERA_VMD = ROOT / "tests/data/camera_motion/camera-edge-generated.vmd"
+OTHER_CAMERA_VMD = ROOT / "tests/data/camera_motion/camera-interpolation-isolated.vmd"
+CAMERA_OPTIONS = {"vmd_fps": 30, "use_animation_layers": False}
+CAMERA_FRAMES = (0, 1, 2, 8, 15, 22, 30, 37, 45, 52, 60)
 
 
 def import_model():
@@ -65,6 +70,30 @@ def import_morph_model():
 
 def add_morph_clip(root, **kwargs):
     return te.import_vmd_clip(root, bone_and_morph_vmd(), MORPH_VMD, dict(MORPH_VMD_OPTIONS), **kwargs)
+
+
+def morph_only_vmd():
+    data = bone_and_morph_vmd()
+    data.bone_frames = []
+    return data
+
+
+def import_camera(path, **options):
+    """Camera VMD import (ordinary keys, or a clip with ``time_editor_clip=True``)."""
+    cmds.currentUnit(time="ntsc")
+    return import_mmd_file(str(path), options=dict(CAMERA_OPTIONS, **options))
+
+
+def camera_samples(frames=CAMERA_FRAMES):
+    """MMD camera world matrix plus focal length and orthographic width per frame."""
+    camera = cmds.ls("*.mmd_camera", objectsOnly=True, long=True)[0]
+    shape = cmds.listRelatives(camera, shapes=True, type="camera", fullPath=True)[0]
+    result = {}
+    for frame in frames:
+        cmds.currentTime(frame)
+        result[frame] = [cmds.xform(camera, query=True, worldSpace=True, matrix=True),
+                         [cmds.getAttr(shape + ".focalLength"), cmds.getAttr(shape + ".orthographicWidth")]]
+    return result
 
 
 def morph_samples(root, joints, frames=FRAMES):
@@ -115,6 +144,7 @@ def writers(root):
 class TestMmdTimeEditor(MayaTestBase):
     _baseline = None
     _morph_baseline = None
+    _camera_baselines = {}
 
     @classmethod
     def setUpClass(cls):
@@ -157,6 +187,21 @@ class TestMmdTimeEditor(MayaTestBase):
         actual = morph_samples(root, joints, [frame + offset for frame in FRAMES])
         for frame in FRAMES:
             self.assertLess(pose_error(actual[frame + offset], base[frame]), 1e-4, str(frame + offset))
+
+    def camera_baseline(self, path):
+        """Camera samples of an ordinary camera VMD import, computed once per file."""
+        if path not in TestMmdTimeEditor._camera_baselines:
+            cmds.file(new=True, force=True)
+            self.assertTrue(import_camera(path))
+            TestMmdTimeEditor._camera_baselines[path] = camera_samples()
+            cmds.file(new=True, force=True)
+        return TestMmdTimeEditor._camera_baselines[path]
+
+    def assert_camera_matches(self, path, offset=0):
+        base = self.camera_baseline(path)
+        actual = camera_samples([frame + offset for frame in CAMERA_FRAMES])
+        for frame in CAMERA_FRAMES:
+            self.assertLess(pose_error(actual[frame + offset], base[frame]), 1e-3, str(frame + offset))
 
     def test_first_clip_bakes_all_targets_into_source(self):
         self.baseline()
@@ -280,3 +325,55 @@ class TestMmdTimeEditor(MayaTestBase):
         cmds.timeEditorClip(edit=True, removeClip=True, clipId=clip["clipId"])
         self.assertEqual(curve_payload(), original)
         self.assertEqual(writers(root), wired)
+
+    def test_morph_only_vmd_makes_clip(self):
+        root, joints = import_morph_model()
+        options = dict(MORPH_VMD_OPTIONS, target_model=root, use_animation_layers=False)
+        vmd_importer.import_vmd_file(morph_only_vmd(), MORPH_VMD, options)
+        base = morph_samples(root, joints)
+        cmds.file(new=True, force=True)
+        root, joints = import_morph_model()
+        clip = te.import_vmd_clip(root, morph_only_vmd(), MORPH_VMD, dict(MORPH_VMD_OPTIONS))
+        targets = cmds.timeEditorAnimSource(clip["source"], query=True, targets=True)
+        self.assertFalse(any(plug.endswith(".translateX") for plug in targets), targets)
+        self.assertTrue(te.is_time_editor_driven(root))
+        actual = morph_samples(root, joints)
+        for frame in FRAMES:
+            self.assertLess(pose_error(actual[frame], base[frame]), 1e-4, str(frame))
+
+    def test_camera_vmd_becomes_camera_clip(self):
+        self.camera_baseline(CAMERA_VMD)
+        result = import_camera(CAMERA_VMD, time_editor_clip=True)
+        self.assertEqual(result["clip"], "camera_edge_generated")
+        self.assertEqual(curve_payload(), {})
+        self.assertTrue(te.is_time_editor_driven(None))
+        self.assert_camera_matches(CAMERA_VMD)
+        cmds.timeEditorClip(edit=True, moveClip=20, clipId=result["clipId"])
+        self.assert_camera_matches(CAMERA_VMD, 20)
+        # Ordinary camera keys would be hidden under the clip.
+        with self.assertRaises(MMDImportException) as raised:
+            import_camera(OTHER_CAMERA_VMD)
+        self.assertEqual(raised.exception.reason_code, "time_editor_clip_owns_camera")
+
+    def test_camera_clip_over_scene_camera_restores_it_on_removal(self):
+        self.camera_baseline(CAMERA_VMD)
+        self.camera_baseline(OTHER_CAMERA_VMD)
+        self.assertTrue(import_camera(OTHER_CAMERA_VMD))
+        original = curve_payload()
+        clip = import_camera(CAMERA_VMD, time_editor_clip=True)
+        self.assert_camera_matches(CAMERA_VMD)
+        cmds.timeEditorClip(edit=True, removeClip=True, clipId=clip["clipId"])
+        self.assertEqual(curve_payload(), original)
+        self.assertFalse(te.is_time_editor_driven(None))
+        self.assert_camera_matches(OTHER_CAMERA_VMD)
+
+    def test_second_camera_clip_and_removal(self):
+        self.camera_baseline(CAMERA_VMD)
+        first = import_camera(CAMERA_VMD, time_editor_clip=True)
+        second = te.import_vmd_clip(None, VmdData().parse_file(str(CAMERA_VMD)), str(CAMERA_VMD),
+                                    dict(CAMERA_OPTIONS), name="second", start=100)
+        self.assertNotEqual(first["track"], second["track"])
+        self.assert_camera_matches(CAMERA_VMD)
+        self.assert_camera_matches(CAMERA_VMD, 100)
+        cmds.timeEditorClip(edit=True, removeClip=True, clipId=first["clipId"])
+        self.assert_camera_matches(CAMERA_VMD, 100)

@@ -6050,9 +6050,15 @@ def _optional_float(value: Any) -> Optional[float]:
 
 def _reject_time_editor_model_export(options):
     """Do not silently write an empty motion from Time Editor-driven inputs."""
-    if "character" not in _resolve_bake_timeline_track_targets(options):
-        return
     from ..core.mmd_time_editor import is_time_editor_driven
+
+    targets = _resolve_bake_timeline_track_targets(options)
+    if "camera" in targets and is_time_editor_driven(None):
+        raise ValueError(
+            "The MMD camera is driven by Time Editor clips; remove its clips before exporting camera motion"
+        )
+    if "character" not in targets:
+        return
     from ..core.model_registry import _is_model_root
 
     model = options.get("target_model") or options.get("model_root")

@@ -40,7 +40,7 @@ Legend: ✅ Supported · ℹ️ Partial / with caveats · 🧪 Experimental
 | Physics | ℹ️ | Supports Bullet-based real-time physics and physics bake. Live evaluation is off by default and can be enabled from the Physics tab. Accuracy is still limited. |
 | HumanIK / retargeting | 🧪 | Experimental support for retargeting between imported MMD models. Try it from `MMD > HumanIK (Experimental)`. |
 | Control Rig | 🧪 | An optional Control Rig can be generated from the semi-standard bone layout. Restore and bake have known issues. |
-| Time Editor | 🧪 | `Import to Time Editor` adds a VMD's model motion (bones, morphs and IK state, baked every frame) to the selected model as one Maya Time Editor clip; add as many as needed. Camera and light keys are not included, and ordinary VMD import/export is blocked while clips exist. See the [workflow and limits (Japanese)](docs/time-editor.md). |
+| Time Editor | 🧪 | `Import to Time Editor` adds a VMD's model motion (bones, morphs and IK state, baked every frame) to the selected model, or a camera VMD to the MMD camera, as one Maya Time Editor clip; add as many as needed. Light and self-shadow keys are not included, and ordinary VMD import/export of the clip-driven model or camera is blocked while clips exist. See the [workflow and limits (Japanese)](docs/time-editor.md). |
 | Export | 🧪 | Supports VMD export for characters, cameras, and lights, as well as VPD export. Export is currently bake-only. Self-shadow is unsupported. |
 
 ## Known Limitations
