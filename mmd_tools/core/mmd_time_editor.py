@@ -111,6 +111,34 @@ def _detach_inputs(plugs):
     return edges
 
 
+def _plug_key(plug):
+    node, _, attr = plug.partition(".")
+    uuids = cmds.ls(node, uuid=True) or [node]
+    return uuids[0], attr
+
+
+def _follow_track(tracks, plugs):
+    """Return (track, end) of the latest-ending clip that animates any of ``plugs``.
+
+    Clips on different tracks that overlap in time are averaged by the Time
+    Editor, so a clip sharing channels goes after that clip on the same track
+    (overlapping it there crossfades). Returns (None, None) when nothing is shared.
+    """
+    keys = {_plug_key(plug) for plug in plugs}
+    best = (None, None)
+    for track in cmds.timeEditorTracks(tracks, query=True, allTracksRecursive=True) or []:
+        for clip in cmds.timeEditorTracks(track, query=True, allClips=True) or []:
+            source = cmds.timeEditorClip(clip, query=True, animSource=True)
+            targets = cmds.timeEditorAnimSource(source, query=True, targets=True) if source else None
+            if not targets or keys.isdisjoint(_plug_key(target) for target in targets):
+                continue
+            end = (cmds.timeEditorClip(clip, query=True, startTime=True)
+                   + cmds.timeEditorClip(clip, query=True, duration=True))
+            if best[1] is None or end > best[1]:
+                best = (track, end)
+    return best
+
+
 def _restore_inputs(edges):
     for source, plug in edges:
         if not cmds.isConnected(source, plug):
@@ -280,10 +308,13 @@ def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
             _restore_inputs(edges)
 
         tracks = _tracks_node()
-        index = cmds.timeEditorTracks(tracks, edit=True, addTrack=-1, trackType=0)
-        track = "%s:%d" % (tracks, index)
+        track, end = _follow_track(tracks, plugs)
+        if track is None:
+            index = cmds.timeEditorTracks(tracks, edit=True, addTrack=-1, trackType=0)
+            track = "%s:%d" % (tracks, index)
         if start is None:
-            start = cmds.timeEditorAnimSource(source, query=True, calculateTiming=True)[0]
+            start = end if end is not None else cmds.timeEditorAnimSource(
+                source, query=True, calculateTiming=True)[0]
         clip_id = cmds.timeEditorClip(name, animSource=source, track=track, startTime=float(start))
         return {"clipId": clip_id, "clip": cmds.timeEditorClip(clip_id, query=True, clipNode=True),
                 "source": source, "track": track, "targets": len(plugs)}

@@ -288,11 +288,23 @@ class TestMmdTimeEditor(MayaTestBase):
         cmds.currentTime(3)
         second = add_clip(root, name="second take!", start=20)
         self.assertEqual(second["clip"], "second_take")
-        self.assertNotEqual(first["track"], second["track"])
+        self.assertEqual(first["track"], second["track"])
         self.assert_matches(joints)
         self.assert_matches(joints, 20)
         cmds.timeEditorClip(edit=True, removeClip=True, clipId=first["clipId"])
         self.assert_matches(joints, 20)
+
+    def test_clip_sharing_channels_follows_previous_clip(self):
+        """Overlapping clips on separate tracks are averaged, so the next take goes after the last one."""
+        self.baseline()
+        root, joints = import_model()
+        first = add_clip(root)
+        second = add_clip(root)
+        self.assertEqual(first["track"], second["track"])
+        self.assertEqual(cmds.timeEditorClip(second["clipId"], query=True, startTime=True), 5.0)
+        self.assert_matches(joints, 5)
+        morph_root, _ = import_morph_model()
+        self.assertNotEqual(add_morph_clip(morph_root)["track"], first["track"])
 
     def test_clip_over_scene_animation_restores_it_on_removal(self):
         self.baseline()
@@ -434,7 +446,7 @@ class TestMmdTimeEditor(MayaTestBase):
         first = import_camera(CAMERA_VMD, time_editor_clip=True)
         second = te.import_vmd_clip(None, VmdData().parse_file(str(CAMERA_VMD)), str(CAMERA_VMD),
                                     dict(CAMERA_OPTIONS), name="second", start=100)
-        self.assertNotEqual(first["track"], second["track"])
+        self.assertEqual(first["track"], second["track"])
         self.assert_camera_matches(CAMERA_VMD)
         self.assert_camera_matches(CAMERA_VMD, 100)
         cmds.timeEditorClip(edit=True, removeClip=True, clipId=first["clipId"])

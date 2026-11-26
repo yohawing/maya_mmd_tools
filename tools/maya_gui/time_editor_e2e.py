@@ -156,7 +156,7 @@ def probe(config_path, phase):
 
             mel.eval('TimeEditorWindow')
             second = add_clip(root, name='second', start=20)
-            check('second_clip_new_track', second['track'] != first['track'], [first['track'], second['track']])
+            check('second_clip_same_track', second['track'] == first['track'], [first['track'], second['track']])
             compare('two_clips_first_pose', joints, baseline)
             compare('two_clips_second_pose', joints, baseline, offset=20)
 
