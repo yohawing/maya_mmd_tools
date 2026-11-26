@@ -274,6 +274,7 @@
     "import_partial": "导入完成但有警告 ({warning_count}): {root_node}",
     "import_partial_title": "导入警告",
     "vmd_import_complete": "VMD 导入完成: {file_path}",
+    "vmd_blocked_by_time_editor": "该模型（或MMD相机）由Time Editor剪辑驱动，无法进行普通VMD导入。请使用“导入到Time Editor”继续添加。",
     "time_editor_clip_added": "已添加Time Editor剪辑: {clip}（不包含灯光和自阴影）",
     "vmd_reduction_summary": "缩减关键帧: {source_key_count} -> {reduced_key_count}（缩减 {reduction_percent}%）",
     "vmd_import_partial": "VMD 导入完成但有警告 ({warning_count}): {file_path}",

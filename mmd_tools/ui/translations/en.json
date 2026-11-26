@@ -308,6 +308,7 @@
     "vmd_import_partial": "VMD import completed with warnings ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMD import warnings",
     "vmd_import_failed": "VMD import failed",
+    "vmd_blocked_by_time_editor": "This model (or the MMD camera) is driven by Time Editor clips, so ordinary VMD import is not available. Use \"Import to Time Editor\" to add more motions.",
     "vmd_import_error": "VMD import error: {error}",
     "select_joint": "Please select a joint",
     "select_joint_for_ik_link": "Please select a joint to add as an IK link",

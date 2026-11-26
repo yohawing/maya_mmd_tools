@@ -1552,6 +1552,20 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertNotIn("time_editor_clip", action.requests[0].options)
 
+    def test_vmd_blocked_by_time_editor_shows_how_to_message(self):
+        from mmd_tools.core.exceptions import MMDImportException
+        from mmd_tools.ui.presenters.list_presenter_helpers import tr_message
+
+        try:
+            try:
+                raise MMDImportException("driven", reason_code="time_editor_clip_owns_model")
+            except MMDImportException as inner:
+                raise MMDImportException("Failed to import x.vmd: driven") from inner
+        except MMDImportException as wrapped:
+            status = ImportExportPresenter._vmd_error_status(wrapped)
+        self.assertEqual(status, tr_message("vmd_blocked_by_time_editor"))
+        self.assertIn("boom", ImportExportPresenter._vmd_error_status(RuntimeError("boom")))
+
     def test_import_vmd_drops_target_not_in_current_model_list(self):
         view = _FakeView()
         app_state = _FakeAppState(_FakeSceneModelService(models=["explicit_model_root"]))

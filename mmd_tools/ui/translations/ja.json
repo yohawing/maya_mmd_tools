@@ -308,6 +308,7 @@
     "vmd_import_partial": "警告付きでVMDインポート完了 ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMDインポート警告",
     "vmd_import_failed": "VMDインポートに失敗しました",
+    "vmd_blocked_by_time_editor": "このモデル（またはMMDカメラ）はTime Editorのクリップで動いているため、通常のVMD読み込みはできません。2本目以降も「Time Editorに読み込む」で追加してください。",
     "vmd_import_error": "VMDインポートエラー: {error}",
     "select_joint": "ジョイントを選択してください",
     "select_joint_for_ik_link": "IKリンクとして追加するジョイントを選択してください",

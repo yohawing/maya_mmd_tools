@@ -711,6 +711,16 @@ class ImportExportPresenter(QObject):
         """VMDを Time Editor クリップとして読み込む（モデルモーションは現在モデル、カメラモーションは MMD カメラ）。"""
         self.import_vmd_file(time_editor_clip=True)
 
+    @staticmethod
+    def _vmd_error_status(error):
+        """Status text for a failed VMD import; Time Editor blocks get a plain how-to message."""
+        cause = error
+        while cause is not None:
+            if getattr(cause, "reason_code", None) in ("time_editor_clip_owns_model", "time_editor_clip_owns_camera"):
+                return tr_message("vmd_blocked_by_time_editor")
+            cause = cause.__cause__
+        return tr_message_format("vmd_import_error", error=str(error))
+
     def import_vmd_file(self, *, time_editor_clip=False):
         """VMDファイルのインポート。
 
@@ -750,7 +760,7 @@ class ImportExportPresenter(QObject):
                 # Fatal must not add history or emit a success status.
                 if result.error is not None:
                     logger.error("VMD import failed: %s", result.error)
-                    self.app_state.emit_status(tr_message_format("vmd_import_error", error=str(result.error)))
+                    self.app_state.emit_status(self._vmd_error_status(result.error))
                 else:
                     logger.error("VMD import failed.")
                     self.app_state.emit_status(tr_message("vmd_import_failed"))
@@ -780,5 +790,5 @@ class ImportExportPresenter(QObject):
                 )
         except Exception as e:
             logger.error(f"VMD import failed: {e}", exc_info=True)
-            self.app_state.emit_status(tr_message_format("vmd_import_error", error=str(e)))
+            self.app_state.emit_status(self._vmd_error_status(e))
             self.app_state.emit_progress(0)
