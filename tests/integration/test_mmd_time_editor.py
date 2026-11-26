@@ -225,6 +225,17 @@ class TestMmdTimeEditor(MayaTestBase):
         called.assert_called_once()
         self.assertEqual([cmds.getAttr(p, time=t) for p in plugs for t in frames], expected)
 
+    def test_physics_model_targets_driver_inputs(self):
+        """Physics drivers own their joints, so the clip keys the drivers' pre-physics inputs."""
+        cmds.currentUnit(time="ntsc")
+        root = import_mmd_file(str(ROOT / "tests/data/yw_test_model.pmx"),
+                               options={"import_physics": True, "create_mmd_shaders": False, "setup_rig": True})
+        plugs = te._target_plugs(root)
+        self.assertTrue(any(".inPreRotate" in plug for plug in plugs))
+        result = add_clip(root)
+        self.assertGreater(result["targets"], 0)
+        self.assertTrue(te.is_time_editor_driven(root))
+
     def test_first_clip_bakes_all_targets_into_source(self):
         self.baseline()
         root, joints = import_model()

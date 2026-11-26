@@ -38,7 +38,13 @@ def _target_plugs(root):
     for joint in joints:
         for channel in _CHANNELS:
             node, attr = routes.get(joint, {}).get(channel, (joint, channel))
-            plugs.append(node + "." + attr)
+            plug = node + "." + attr
+            if node == joint:
+                # Physics bones: the driver owns the joint; VMD keys go to its pre-physics input.
+                driver = (cmds.connectionInfo(plug, sourceFromDestination=True) or ".").split(".", 1)[0]
+                if driver and cmds.nodeType(driver) == "mmdPhysicsBoneDriver":
+                    plug = driver + ".inPre" + channel[0].upper() + channel[1:]
+            plugs.append(plug)
     ik_nodes = set(collect_ik_nodes_by_bone_name(target_model=root).values())
     plugs += [node + ".enabled" for node in sorted(ik_nodes)]
     # Same morph targets the importer keys (controller inputs, blendShape weights, morph networks).
