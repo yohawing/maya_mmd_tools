@@ -184,9 +184,11 @@
     "humanik_none": "(none)"
   },
   "tooltips": {
+    "use_animation_layers": "Add normal VMD imports to animation layers. Turn off to key inputs directly. Existing layers are not deleted.",
     "shader_outline_requires_dx11": "Shader Outline is only supported by the legacy DX11 shader. Use Edge Drawing for this material.",
     "morph_runtime_unsupported": "This morph type is not supported by the current runtime",
     "import_file": "Import PMD/PMX/VMD files",
+    "import_animation_time_editor": "Add the VMD as a new Time Editor clip (baked every frame): bone, morph and IK state motion to the selected model, or a camera motion to the MMD camera. Light and self-shadow keys are not included.",
     "export_file": "Export selected objects as PMX file",
     "import_scale": "Specify the import scale",
     "browse_file": "Select a file",
@@ -301,10 +303,12 @@
     "select_vmd_target_model": "Select a target model, or choose Camera Motion.",
     "importing_vmd": "Importing VMD: {file_path}",
     "vmd_import_complete": "VMD import complete: {file_path}",
+    "time_editor_clip_added": "Time Editor clip added: {clip} (light and self-shadow keys are not included)",
     "vmd_reduction_summary": "Reduced keys: {source_key_count} -> {reduced_key_count} ({reduction_percent}% reduced)",
     "vmd_import_partial": "VMD import completed with warnings ({warning_count}): {file_path}",
     "vmd_import_partial_title": "VMD import warnings",
     "vmd_import_failed": "VMD import failed",
+    "vmd_blocked_by_time_editor": "This model (or the MMD camera) is driven by Time Editor clips, so ordinary VMD import is not available. Use \"Import to Time Editor\" to add more motions.",
     "vmd_import_error": "VMD import error: {error}",
     "select_joint": "Please select a joint",
     "select_joint_for_ik_link": "Please select a joint to add as an IK link",
@@ -481,6 +485,7 @@
     "joint_values": "Joint Values"
   },
   "checkboxes": {
+    "use_animation_layers": "Use Animation Layers",
     "vmd_bake_export": "Bake Export",
     "vmd_export_camera": "Camera",
     "vmd_export_light": "Light",
@@ -627,6 +632,7 @@
     "new_mmd_model": "New MMD Model",
     "create_mmd_model": "Create Model",
     "import_animation": "Import Animation",
+    "import_animation_time_editor": "Import to Time Editor",
     "create_mmd_camera": "Create MMD Camera",
     "export": "Export",
     "auto_detect": "<Auto Detect>",

@@ -158,6 +158,7 @@ def import_vmd_file(
             - reduce_bake_keys: True かつ bake_mode のとき runtime pose reduction を試行する（default False）
             - reduce_translate_tolerance / reduce_rotate_tolerance / reduce_morph_tolerance: reduction tolerances
             - vmd_fps: VMDインポート時のMayaシーンFPS (24, 30, or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
+            - use_animation_layers: 通常読込でアニメーションレイヤーを使用する（既定True）。Falseでも既存レイヤーは削除しない。
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
@@ -189,7 +190,26 @@ def import_vmd_file(
         if scene_animation_only:
             if "target_model" in options:
                 raise MMDImportException("Camera Motion must not specify target_model")
+            # Same reason as the model check below: keys would be hidden by the clip.
+            from ..core.mmd_time_editor import is_time_editor_driven
+            if (getattr(parser, "camera_frames", None) and options.get("import_camera_animation", True)
+                    and is_time_editor_driven(None)):
+                raise MMDImportException(
+                    "The MMD camera is driven by Time Editor clips. Add the VMD as a Time Editor clip, "
+                    "or remove the camera's clips before importing camera motion",
+                    reason_code="time_editor_clip_owns_camera",
+                )
         elif target_model:
+            # Keys written under a Time Editor clip would be hidden by it (and
+            # clear_existing_motion could break it). The clip import path
+            # detaches the clips before calling this importer, so it passes.
+            from ..core.mmd_time_editor import is_time_editor_driven
+            if is_time_editor_driven(target_model):
+                raise MMDImportException(
+                    "This model is driven by Time Editor clips. Add the VMD as a Time Editor clip, "
+                    "or remove the model's clips before importing VMD motion",
+                    reason_code="time_editor_clip_owns_model",
+                )
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
                 logger.debug(f"Target namespace: {target_namespace}")
@@ -228,6 +248,7 @@ def import_vmd_file(
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
+        converter.use_animation_layers = bool(options.get("use_animation_layers", True))
         # Apply VMD import FPS setting (sets Maya scene time unit; VMD frame numbers are not rescaled)
         vmd_fps = _normalize_vmd_fps(options.get("vmd_fps", 30), logger)
         converter.fps = float(vmd_fps)

@@ -231,6 +231,10 @@ class ImportExportTab(BaseTab):
         fps_layout.addWidget(self.vmd_fps_combo)
         fps_layout.addStretch()
         anim_settings_layout.addLayout(fps_layout)
+        self.use_animation_layers_check = self._bind_checkbox(
+            "use_animation_layers", setting_keys.IMPORT_ANIMATION_USE_ANIMATION_LAYERS,
+            True, anim_settings_layout, tooltip_key="use_animation_layers",
+        )
 
         # Motion scale
         self.motion_scale_row = QWidget()
@@ -357,10 +361,13 @@ class ImportExportTab(BaseTab):
 
         animation_button_layout = QHBoxLayout()
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
+        self.import_vmd_time_editor_button = QPushButton(self.tr("import_animation_time_editor", "actions"))
+        self.import_vmd_time_editor_button.setToolTip(self.tr("import_animation_time_editor", "tooltips"))
         self.create_mmd_camera_button = QPushButton(
             self.tr("create_mmd_camera", "actions")
         )
         animation_button_layout.addWidget(self.import_vmd_button)
+        animation_button_layout.addWidget(self.import_vmd_time_editor_button)
         animation_button_layout.addWidget(self.create_mmd_camera_button)
         animation_button_layout.addStretch()
         animation_layout.addRow(animation_button_layout)
@@ -611,6 +618,9 @@ class ImportExportTab(BaseTab):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
         if hasattr(self, "vmd_fps_label"):
             self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
+        if hasattr(self, "use_animation_layers_check"):
+            self.use_animation_layers_check.setText(self.tr("use_animation_layers", "checkboxes"))
+            self.use_animation_layers_check.setToolTip(self.tr("use_animation_layers", "tooltips"))
         if hasattr(self, "motion_scale_label"):
             self.motion_scale_label.setText(self.tr("motion_scale", "fields"))
         if hasattr(self, "import_path_label"):
@@ -688,6 +698,8 @@ class ImportExportTab(BaseTab):
         self.import_button.setText(self.tr("import_model", "actions"))
         self.new_model_button.setText(self.tr("new_mmd_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
+        self.import_vmd_time_editor_button.setText(self.tr("import_animation_time_editor", "actions"))
+        self.import_vmd_time_editor_button.setToolTip(self.tr("import_animation_time_editor", "tooltips"))
         self.create_mmd_camera_button.setText(
             self.tr("create_mmd_camera", "actions")
         )

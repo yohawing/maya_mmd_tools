@@ -29,6 +29,7 @@ IMPORT_NATIVE_USE_CPP_RIG_NODES = "import.native.use_cpp_rig_nodes"
 
 IMPORT_ANIMATION_START_FRAME = "import.animation.animation_start_frame"
 IMPORT_ANIMATION_VMD_FPS = "import.animation.vmd_fps"
+IMPORT_ANIMATION_USE_ANIMATION_LAYERS = "import.animation.use_animation_layers"
 IMPORT_ANIMATION_IMPORT_ANIMATIONS = "import.animation.import_animations"
 IMPORT_ANIMATION_IMPORT_MORPH_ANIMATION = "import.animation.import_morph_animation"
 IMPORT_ANIMATION_IMPORT_CAMERA_ANIMATION = "import.animation.import_camera_animation"

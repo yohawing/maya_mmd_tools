@@ -1370,6 +1370,7 @@ class VmdSceneCollector:
         self._source_omission_identities = set()
         try:
             options = options or {}
+            _reject_time_editor_model_export(options)
             result = self._collect_impl(options)
             self._diagnostics["status"] = "completed"
             return result
@@ -1399,6 +1400,7 @@ class VmdSceneCollector:
         if sink is None:
             raise TypeError("VMD stream collection requires a sink")
         options = options or {}
+        _reject_time_editor_model_export(options)
         export_strategy = str(options.get("export_strategy", "") or "").lower()
         if export_strategy not in {"bake_timeline", "preserve_keys"}:
             raise ValueError("unsupported VMD export strategy")
@@ -6044,6 +6046,37 @@ def _optional_float(value: Any) -> Optional[float]:
     if value is None:
         return None
     return float(value)
+
+
+def _reject_time_editor_model_export(options):
+    """Do not silently write an empty motion from Time Editor-driven inputs."""
+    from ..core.mmd_time_editor import is_time_editor_driven
+
+    targets = _resolve_bake_timeline_track_targets(options)
+    if "camera" in targets and is_time_editor_driven(None):
+        raise ValueError(
+            "The MMD camera is driven by Time Editor clips; remove its clips before exporting camera motion"
+        )
+    if "character" not in targets:
+        return
+    from ..core.model_registry import _is_model_root
+
+    model = options.get("target_model") or options.get("model_root")
+    nodes = list(options.get("joints") or [])
+    if model:
+        nodes.append(model)
+    elif not nodes:
+        nodes = cmds.ls(type="joint", long=True) or []
+    checked = set()
+    for node in nodes:
+        while node and node not in checked:
+            checked.add(node)
+            if _is_model_root(node) and is_time_editor_driven(node):
+                raise ValueError(
+                    "This model is driven by Time Editor clips; remove its clips before exporting VMD motion"
+                )
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            node = parents[0] if parents else None
 
 
 def _resolve_collection_frame_range(

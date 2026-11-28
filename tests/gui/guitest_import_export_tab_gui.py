@@ -283,8 +283,11 @@ class TestImportExportTabGUI(GuiTestBase):
             )
             self.assertIsNotNone(button_layout)
             self.assertEqual(
-                button_layout.indexOf(tab.import_vmd_button) + 1,
-                button_layout.indexOf(tab.create_mmd_camera_button),
+                [button_layout.indexOf(tab.import_vmd_button) + offset for offset in (1, 2)],
+                [
+                    button_layout.indexOf(tab.import_vmd_time_editor_button),
+                    button_layout.indexOf(tab.create_mmd_camera_button),
+                ],
             )
         finally:
             tab.deleteLater()

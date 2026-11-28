@@ -822,6 +822,12 @@ def maya_pmx_import_performance(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_time_editor(session: nox.Session) -> None:
+    """Verify one model clip, time shift and original-input restoration in Maya."""
+    session.run(sys.executable, "tools/maya_gui/time_editor_e2e.py", *session.posargs)
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 

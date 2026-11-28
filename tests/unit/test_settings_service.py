@@ -410,6 +410,11 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
 
         self.assertFalse(options["import_physics"])
 
+    def test_vmd_animation_layers_default_on_and_explicit_off(self):
+        self.assertTrue(self.service.build_vmd_import_options()["use_animation_layers"])
+        self.service.set("import.animation.use_animation_layers", False)
+        self.assertFalse(self.service.build_vmd_import_options()["use_animation_layers"])
+
     def test_build_vmd_import_options_forces_resample_curves_in_normal_mode(self):
         options = self.service.build_vmd_import_options(target_model="model")
 

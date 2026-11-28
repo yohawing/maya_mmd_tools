@@ -82,6 +82,7 @@ class _FakeView:
         self.import_button = _FakeButton()
         self.vmd_path_button = _FakeButton()
         self.import_vmd_button = _FakeButton()
+        self.import_vmd_time_editor_button = _FakeButton()
         self.create_mmd_camera_button = _RecordingButton()
         self.new_model_button = _RecordingButton()
         self.import_path_edit = _FakeLineEdit("model.pmx")
@@ -1510,6 +1511,60 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(len(action.requests), 1)
         options = action.requests[0].options
         self.assertEqual(options["target_model"], "model_root")
+
+    def test_import_vmd_to_time_editor_adds_clip_option_and_reports_clip(self):
+        view = _FakeView()
+        app_state = _FakeAppState(_FakeSceneModelService(models=["model_root"]))
+        app_state.current_model_root = "model_root"
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node={"clip": "dance_Clip"}, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_to_time_editor()
+
+        options = action.requests[0].options
+        self.assertTrue(options["time_editor_clip"])
+        self.assertEqual(options["target_model"], "model_root")
+        self.assertIn("dance_Clip", app_state.statuses[-1])
+        self.assertIn("light and self-shadow keys are not included", app_state.statuses[-1])
+
+    def test_import_vmd_to_time_editor_without_model_leaves_route_to_importer(self):
+        # A camera VMD needs no model; the importer's content route rejects model motion.
+        view = _FakeView()
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node={"clip": "camera_Clip"}, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_to_time_editor()
+
+        options = action.requests[0].options
+        self.assertTrue(options["time_editor_clip"])
+        self.assertFalse(options.get("target_model"))
+        self.assertIn("camera_Clip", app_state.statuses[-1])
+
+    def test_import_vmd_without_time_editor_does_not_set_clip_option(self):
+        view = _FakeView()
+        app_state = _FakeAppState(_FakeSceneModelService(models=["model_root"]))
+        app_state.current_model_root = "model_root"
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertNotIn("time_editor_clip", action.requests[0].options)
+
+    def test_vmd_blocked_by_time_editor_shows_how_to_message(self):
+        from mmd_tools.core.exceptions import MMDImportException
+        from mmd_tools.ui.presenters.list_presenter_helpers import tr_message
+
+        try:
+            try:
+                raise MMDImportException("driven", reason_code="time_editor_clip_owns_model")
+            except MMDImportException as inner:
+                raise MMDImportException("Failed to import x.vmd: driven") from inner
+        except MMDImportException as wrapped:
+            status = ImportExportPresenter._vmd_error_status(wrapped)
+        self.assertEqual(status, tr_message("vmd_blocked_by_time_editor"))
+        self.assertIn("boom", ImportExportPresenter._vmd_error_status(RuntimeError("boom")))
 
     def test_import_vmd_drops_target_not_in_current_model_list(self):
         view = _FakeView()
