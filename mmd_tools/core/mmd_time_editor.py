@@ -1,17 +1,7 @@
-"""Add a model or camera VMD motion to Maya's Time Editor as a baked clip.
-
-Each call imports one VMD onto the model's authoring inputs (or the MMD
-camera rig), bakes every touched channel per frame, moves the baked curves
-into a new Time Editor animation source and places a clip for it on a new
-track. The previous writers (scene curves or earlier clips) are reconnected
-afterwards, so the same model or camera can receive any number of clips.
-Bone, morph and IK state keys share one model clip; a camera-only VMD becomes
-a camera clip. Light and shadow keys are dropped, and so are camera keys of a
-model VMD.
-"""
+"""Import VMD motion normally and move its scene animation into the Time Editor."""
+import math
 from pathlib import Path
 import re
-from types import SimpleNamespace
 
 from maya import cmds
 from maya.api import OpenMaya as om, OpenMayaAnim as oma
@@ -21,94 +11,42 @@ from .logger import get_logger
 logger = get_logger(__name__)
 
 _CURVE_TYPES = ("animCurveTA", "animCurveTL", "animCurveTU")
-_DRIVER_TYPES = _CURVE_TYPES + ("timeEditorInterpolator",)
-_CHANNELS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 COMPOSITION_NAME = "MMD_Composition"
 
 
-def _target_plugs(root):
-    """Return every plug a model VMD import may key: bone authoring inputs, IK enabled and morph weights."""
-    from ..converters.vmd_ik_enabled_animation import collect_ik_nodes_by_bone_name
-    from ..converters.vmd_morph_mapping import build_morph_mappings, iter_morph_mappings
-    from ..converters.vmd_scene_collector import VmdSceneCollector
-
-    joints = cmds.listRelatives(root, allDescendents=True, type="joint", fullPath=True) or []
-    routes = VmdSceneCollector()._scene_authored_input_routes(joints, target_model=root)
-    plugs = []
-    for joint in joints:
-        for channel in _CHANNELS:
-            node, attr = routes.get(joint, {}).get(channel, (joint, channel))
-            plug = node + "." + attr
-            if node == joint:
-                # Physics bones: the driver owns the joint; VMD keys go to its pre-physics input.
-                driver = (cmds.connectionInfo(plug, sourceFromDestination=True) or ".").split(".", 1)[0]
-                if driver and cmds.nodeType(driver) == "mmdPhysicsBoneDriver":
-                    plug = driver + ".inPre" + channel[0].upper() + channel[1:]
-            plugs.append(plug)
-    ik_nodes = set(collect_ik_nodes_by_bone_name(target_model=root).values())
-    plugs += [node + ".enabled" for node in sorted(ik_nodes)]
-    # Same morph targets the importer keys (controller inputs, blendShape weights, morph networks).
-    morphs = SimpleNamespace()
-    build_morph_mappings(morphs, target_model=root)
-    plugs += sorted({node + "." + attr for entry in morphs.morph_name_mapping.values()
-                     for node, attr, _name in iter_morph_mappings(entry)})
-    return plugs
-
-
-def _camera_plugs():
-    """Return the existing MMD camera rig's plugs written by a curve or a clip (empty without a rig)."""
-    from ..converters.vmd_camera_animation import ATTR_MMD_CAMERA
-
-    # Same lookup as the importer's get_or_create_camera.
-    cameras = cmds.ls("*." + ATTR_MMD_CAMERA, objectsOnly=True, long=True)
-    if not cameras:
+def _upstream(root, node_type):
+    """Find upstream writers for a model's skeleton and meshes, or the MMD camera."""
+    if root:
+        nodes = (cmds.listRelatives(root, allDescendents=True, type=("joint", "mesh"), fullPath=True)
+                 if cmds.objExists(root) else [])
+    else:
+        cameras = cmds.ls("*.mmd_camera", objectsOnly=True, long=True)
+        if not cameras:
+            return []
+        # The rig root recorded by the camera importer; a user group above it is not the rig.
+        roots = (cmds.listConnections(cameras[0] + ".mmd_camera_root_node", source=True, destination=False)
+                 if cmds.attributeQuery("mmd_camera_root_node", node=cameras[0], exists=True) else None)
+        top = (cmds.ls(roots, long=True) if roots else None) or cmds.listRelatives(
+            cameras[0], parent=True, fullPath=True) or [cameras[0]]
+        top = top[0]
+        nodes = [top] + (cmds.listRelatives(top, allDescendents=True, fullPath=True) or [])
+    if not nodes:
         return []
-    top = "|" + cameras[0].split("|")[1]
-    nodes = [top] + (cmds.listRelatives(top, allDescendents=True, fullPath=True) or [])
-    pairs = cmds.listConnections(nodes, source=True, destination=False, connections=True, plugs=True) or []
-    return sorted({plug for plug, source in zip(pairs[::2], pairs[1::2])
-                   if cmds.nodeType(source.split(".", 1)[0]) in _DRIVER_TYPES})
+    history = set(cmds.listHistory(nodes, pruneDagObjects=False) or []).union(nodes)
+    # Maya history can stop at a controller or omit a camera transform's local keys.
+    inputs = cmds.listConnections(list(history), source=True, destination=False, type=node_type) or []
+    return set(cmds.ls(list(history), type=node_type) or []).union(inputs)
 
 
 def is_time_editor_driven(root=None):
-    """Return True when a Time Editor clip writes the model's authoring inputs.
-
-    Without a ``root`` the MMD camera rig is checked instead.
-    """
-    if root and not cmds.objExists(root):
-        return False
-    plugs = [plug for plug in (_target_plugs(root) if root else _camera_plugs()) if cmds.objExists(plug)]
-    if not plugs:
-        return False
-    return bool(cmds.listConnections(plugs, source=True, destination=False, type="timeEditorInterpolator"))
+    """Return whether a Time Editor interpolator drives the model or camera."""
+    return bool(_upstream(root, "timeEditorInterpolator"))
 
 
 def _clip_name(name, vmd_path):
     """Make an ASCII Maya node name from the given name or the VMD file name."""
     raw = name or Path(str(vmd_path)).stem
     return re.sub(r"[^0-9A-Za-z_]+", "_", raw).strip("_") or "VMD_Motion"
-
-
-def _detach_inputs(plugs):
-    """Disconnect the current writers of ``plugs`` and return them for restoring.
-
-    Every writer is checked before anything is disconnected, so an unsupported
-    driver (Animation Layer blend, constraint, HumanIK, ...) leaves the scene untouched.
-    """
-    edges = []
-    for plug in plugs:
-        source = cmds.connectionInfo(plug, sourceFromDestination=True)
-        if not source:
-            continue
-        if cmds.nodeType(source.split(".", 1)[0]) not in _DRIVER_TYPES:
-            raise ValueError(
-                "Time Editor clips support only plain keys or other clips on this model; "
-                "unsupported driver: " + source + " -> " + plug
-            )
-        edges.append((source, plug))
-    for source, plug in edges:
-        cmds.disconnectAttr(source, plug)
-    return edges
 
 
 def _plug_key(plug):
@@ -200,31 +138,44 @@ def _bake_curves(plugs, start, end):
     cmds.delete(list(originals.union(warped)))
 
 
-def _bake_to_source(vmd_data, vmd_path, options, name, before):
-    """Import, bake and wrap the new curves into an animation source. Returns (source, plugs)."""
-    from ..io import vmd_importer
-
-    vmd_importer.import_vmd_file(vmd_data, str(vmd_path), options)
-    # The importer leaves a time curve selected and bakeResults deletes it;
-    # a stale selection entry crashes the next selection-reading command.
-    cmds.select(clear=True)
-    new_curves = sorted(set(cmds.ls(type="animCurve") or []) - before)
+def _scene_source(root, name):
+    """Keep ordinary scene curves and sample only VMD time-warped channels."""
+    curves = _upstream(root, "animCurve")
     plugs = []
-    for curve in new_curves:
-        if cmds.nodeType(curve) in _CURVE_TYPES:
-            plugs += cmds.listConnections(curve + ".output", plugs=True, source=False, destination=True) or []
+    warped = []
+    warps = set()
+    for curve in sorted(curves):
+        if cmds.nodeType(curve) not in _CURVE_TYPES:
+            continue
+        driver = cmds.listConnections(curve + ".input", source=True, destination=False) or []
+        warp = None
+        if driver and cmds.nodeType(driver[0]) != "time":
+            warp = driver[0]
+            if cmds.nodeType(warp) != "animCurveTT" or cmds.connectionInfo(warp + ".input", isDestination=True):
+                continue
+        for plug in cmds.listConnections(curve + ".output", plugs=True, source=False, destination=True) or []:
+            kind = cmds.nodeType(plug.split(".", 1)[0])
+            if kind == "timeEditorAnimSource":
+                continue
+            if kind.startswith("animBlendNode") or kind in ("pairBlend", "blendWeighted", "unitConversion"):
+                raise ValueError("Unsupported Time Editor curve destination: " + curve + " -> " + plug)
+            plugs.append(plug)
+            if warp:
+                warped.append(plug)
+                warps.add(warp)
     if not plugs:
-        raise ValueError("The VMD did not key anything for the Time Editor clip")
+        raise ValueError("No scene animation found for the Time Editor clip")
     for plug in plugs:
         # bakeResults and Time Editor sources skip non-keyable attributes (e.g. camera orthographicWidth).
         if not cmds.getAttr(plug, keyable=True):
             cmds.setAttr(plug, keyable=True)
-    times = cmds.keyframe(new_curves, query=True, timeChange=True)
-    start, end = int(min(times)), int(max(times))
-    _bake_curves(plugs, start, max(end, start + 1))
+    if warped:
+        times = cmds.keyframe(list(warps), query=True, timeChange=True)
+        start, end = math.floor(min(times)), math.ceil(max(times))
+        _bake_curves(warped, start, max(end, start + 1))
     # Filter each rotation triplet together so equivalent Euler poses stay continuous.
     rotations = {}
-    for plug in plugs:
+    for plug in warped:
         node, attr = plug.rsplit(".", 1)
         if attr in ("rotateX", "rotateY", "rotateZ"):
             source_plug = cmds.connectionInfo(plug, sourceFromDestination=True)
@@ -250,8 +201,23 @@ def _tracks_node():
     return cmds.timeEditorComposition(composition, query=True, tracksNode=True)
 
 
+def _place_clip(source, plugs, name, start):
+    """Append to the last track sharing channels or create an independent track."""
+    tracks = _tracks_node()
+    track, end = _follow_track(tracks, plugs)
+    if track is None:
+        index = cmds.timeEditorTracks(tracks, edit=True, addTrack=-1, trackType=0)
+        track = "%s:%d" % (tracks, index)
+    if start is None:
+        start = end if end is not None else cmds.timeEditorAnimSource(
+            source, query=True, calculateTiming=True)[0]
+    clip_id = cmds.timeEditorClip(name, animSource=source, track=track, startTime=float(start))
+    return {"clipId": clip_id, "clip": cmds.timeEditorClip(clip_id, query=True, clipNode=True),
+            "source": source, "track": track, "targets": len(plugs)}
+
+
 def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
-    """Add the VMD motion as a new Time Editor clip on a new track.
+    """Import the VMD motion and move the resulting scene curves into a clip.
 
     With a model ``root`` the bone, morph and IK state motion drives the model;
     without one the camera motion drives the MMD camera rig (created if needed).
@@ -263,14 +229,15 @@ def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
         vmd_path: Source VMD path (used for the clip name and by the importer).
         options: VMD import options (``pmx_path``, ``vmd_fps``, ...).
         name: Optional clip name; defaults to the ASCII form of the file name.
-        start: Optional clip start time; defaults to the source's first key.
+        start: Optional clip start time; defaults to the previous overlapping channel clip's end or the first key.
 
     Returns:
-        dict with ``clipId``, ``clip``, ``source``, ``track`` and ``targets`` (baked plug count).
+        dict with ``clipId``, ``clip``, ``source``, ``track`` and ``targets`` (animated plug count).
     """
+    from ..io import vmd_importer
+
     import_options = dict(options or {})
-    import_options.update(use_animation_layers=False, clear_existing_motion=False, bake_mode=False,
-                          create_mmd_control_rig=False, import_light_animation=False)
+    import_options.update(use_animation_layers=False, clear_existing_motion=False, import_light_animation=False)
     if root:
         if not (vmd_data.bone_frames or vmd_data.morph_frames):
             raise ValueError("Time Editor clips need VMD bone or morph motion for a model; this file has none")
@@ -295,29 +262,33 @@ def import_vmd_clip(root, vmd_data, vmd_path, options, name=None, start=None):
     try:
         cmds.select(clear=True)
         before = set(cmds.ls(type="animCurve") or [])
-        edges = _detach_inputs(_target_plugs(root) if root else _camera_plugs())
+        edges = []
+        source_node = None
         try:
-            source, plugs = _bake_to_source(vmd_data, vmd_path, import_options, name, before)
+            for node in cmds.ls(type="timeEditorInterpolator") or []:
+                pairs = cmds.listConnections(node, source=False, destination=True, connections=True, plugs=True) or []
+                for source, plug in zip(pairs[::2], pairs[1::2]):
+                    if source.endswith(".message"):
+                        continue
+                    cmds.disconnectAttr(source, plug)
+                    edges.append((source, plug))
+            vmd_importer.import_vmd_file(vmd_data, str(vmd_path), import_options)
+            cmds.select(clear=True)
+            source_node, plugs = _scene_source(root, name)
+            # Reconnect before placement so Maya reuses the existing interpolators.
+            _restore_inputs(edges)
+            edges.clear()
+            return _place_clip(source_node, plugs, name, start)
         except Exception:
             cmds.select(clear=True)
+            if source_node and cmds.objExists(source_node):
+                cmds.delete(source_node)
             leftovers = list(set(cmds.ls(type="animCurve") or []) - before)
             if leftovers:
                 cmds.delete(leftovers)
             raise
         finally:
             _restore_inputs(edges)
-
-        tracks = _tracks_node()
-        track, end = _follow_track(tracks, plugs)
-        if track is None:
-            index = cmds.timeEditorTracks(tracks, edit=True, addTrack=-1, trackType=0)
-            track = "%s:%d" % (tracks, index)
-        if start is None:
-            start = end if end is not None else cmds.timeEditorAnimSource(
-                source, query=True, calculateTiming=True)[0]
-        clip_id = cmds.timeEditorClip(name, animSource=source, track=track, startTime=float(start))
-        return {"clipId": clip_id, "clip": cmds.timeEditorClip(clip_id, query=True, clipNode=True),
-                "source": source, "track": track, "targets": len(plugs)}
     finally:
         cmds.undoInfo(stateWithoutFlush=undo_state)
         existing = [node for node in selection if cmds.objExists(node)]

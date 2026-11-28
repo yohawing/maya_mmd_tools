@@ -138,8 +138,9 @@ def curve_payload():
     return result
 
 
-def writers(root):
-    return {plug: cmds.connectionInfo(plug, sourceFromDestination=True) for plug in te._target_plugs(root)}
+def writers():
+    return sorted((node, plug) for node in cmds.ls(type="timeEditorInterpolator")
+                  for plug in cmds.listConnections(node, source=False, destination=True, plugs=True) or [])
 
 
 class TestMmdTimeEditor(MayaTestBase):
@@ -230,13 +231,19 @@ class TestMmdTimeEditor(MayaTestBase):
         cmds.currentUnit(time="ntsc")
         root = import_mmd_file(str(ROOT / "tests/data/yw_test_model.pmx"),
                                options={"import_physics": True, "create_mmd_shaders": False, "setup_rig": True})
-        plugs = te._target_plugs(root)
-        self.assertTrue(any(".inPreRotate" in plug for plug in plugs))
+        # Normal import may move this input onto an upstream authoring transform.
+        driver = cmds.ls(type="mmdPhysicsBoneDriver")[0]
+        cmds.setKeyframe(driver + ".inPreRotateX", time=0, value=5)
         result = add_clip(root)
+        plugs = cmds.timeEditorAnimSource(result["source"], query=True, targets=True)
+        pre = driver + ".inPreRotateX"
+        upstream = cmds.connectionInfo(pre, sourceFromDestination=True)
+        self.assertTrue(upstream)
+        self.assertTrue(pre in plugs or upstream in plugs, upstream)
         self.assertGreater(result["targets"], 0)
         self.assertTrue(te.is_time_editor_driven(root))
 
-    def test_first_clip_bakes_all_targets_into_source(self):
+    def test_first_clip_moves_all_targets_into_source(self):
         self.baseline()
         root, joints = import_model()
         result = import_mmd_file(str(VMD), options=dict(VMD_OPTIONS, target_model=root, time_editor_clip=True))
@@ -264,7 +271,7 @@ class TestMmdTimeEditor(MayaTestBase):
         for actual, reference in zip(cmds.getAttr(joints[0] + ".rotate")[0], expected):
             self.assertAlmostEqual(actual, reference, delta=1e-10)
 
-    def test_baked_rotation_keys_cross_180_continuously(self):
+    def test_camera_rotation_crossing_180_matches_scene(self):
         cmds.currentUnit(time="ntsc")
         data = VmdData()
         for number, angle in enumerate((2.9, 3.0, -3.0)):
@@ -273,13 +280,14 @@ class TestMmdTimeEditor(MayaTestBase):
             frame.rotation = (0.0, 0.0, angle)
             frame.viewing_angle = 45
             data.camera_frames.append(frame)
-        result = te.import_vmd_clip(None, data, "camera_wrap.vmd", dict(CAMERA_OPTIONS))
-        curves = cmds.listConnections(result["source"], type="animCurveTA") or []
-        self.assertTrue(curves)
-        for curve in curves:
-            values = cmds.keyframe(curve, query=True, valueChange=True)
-            self.assertGreaterEqual(len(values), 2)
-            self.assertLessEqual(max(abs(b - a) for a, b in zip(values, values[1:])), 180.0, curve)
+        vmd_importer.import_vmd_file(data, "camera_wrap.vmd", dict(CAMERA_OPTIONS, scene_animation_only=True))
+        expected = camera_samples(range(3))
+        cmds.file(new=True, force=True)
+        cmds.currentUnit(time="ntsc")
+        te.import_vmd_clip(None, data, "camera_wrap.vmd", dict(CAMERA_OPTIONS))
+        actual = camera_samples(range(3))
+        for frame in expected:
+            self.assertLess(pose_error(actual[frame], expected[frame]), 1e-6)
 
     def test_second_clip_added_at_non_rest_time(self):
         self.baseline()
@@ -306,27 +314,44 @@ class TestMmdTimeEditor(MayaTestBase):
         morph_root, _ = import_morph_model()
         self.assertNotEqual(add_morph_clip(morph_root)["track"], first["track"])
 
-    def test_clip_over_scene_animation_restores_it_on_removal(self):
-        self.baseline()
+    def test_clip_includes_hand_keyed_channel(self):
         root, joints = import_model()
-        import_scene_vmd(root)
-        original = curve_payload()
-        wired = writers(root)
+        plug = joints[0] + ".scaleX"
+        cmds.setKeyframe(plug, time=0, value=1)
+        cmds.setKeyframe(plug, time=5, value=2)
         clip = add_clip(root, start=10)
-        self.assert_matches(joints, 10)
-        # Maya's Time Editor adjusts the scene curves while a clip is on top of
-        # them; the curves themselves must survive and come back on removal.
-        self.assertEqual(set(curve_payload()), set(original))
+        cmds.currentTime(15)
+        self.assertAlmostEqual(cmds.getAttr(plug), 2)
         cmds.timeEditorClip(edit=True, removeClip=True, clipId=clip["clipId"])
-        self.assertEqual(curve_payload(), original)
-        self.assertEqual(writers(root), wired)
-        self.assert_matches(joints)
+        self.assertFalse(cmds.listConnections(plug, source=True, destination=False, type="animCurve"))
+
+    def assert_route_matches(self, **route):
+        root, joints = import_model()
+        options = dict(VMD_OPTIONS, target_model=root, use_animation_layers=False, **route)
+        self.assertTrue(import_mmd_file(str(VMD), options=options))
+        expected = poses(joints)
+        cmds.file(new=True, force=True)
+        root, joints = import_model()
+        result = te.import_vmd_clip(root, VmdData().parse_file(str(VMD)), VMD, dict(VMD_OPTIONS, **route))
+        # Moving the clip proves every curve left the scene: a stray scene curve would stay at frame 0.
+        cmds.timeEditorClip(edit=True, moveClip=20, clipId=result["clipId"])
+        actual = poses(joints, [frame + 20 for frame in FRAMES])
+        for frame in FRAMES:
+            self.assertLess(pose_error(expected[frame], actual[frame + 20]), 1e-6)
+
+    def test_bake_mode_matches_ordinary_import(self):
+        if not vmd_importer.is_mmd_runtime_available():
+            self.skipTest("native bake runtime unavailable")
+        self.assert_route_matches(bake_mode=True)
+
+    def test_control_rig_matches_ordinary_import(self):
+        self.assert_route_matches(create_mmd_control_rig=True)
 
     def test_failure_after_import_leaves_scene_unchanged(self):
         root, joints = import_model()
         add_clip(root)
         curves = set(cmds.ls(type="animCurve"))
-        wired = writers(root)
+        wired = writers()
         clips = cmds.ls(type="timeEditorClip")
         real = vmd_importer.import_vmd_file
 
@@ -338,7 +363,7 @@ class TestMmdTimeEditor(MayaTestBase):
             with self.assertRaisesRegex(RuntimeError, "injected"):
                 add_clip(root, name="fail")
         self.assertEqual(set(cmds.ls(type="animCurve")), curves)
-        self.assertEqual(writers(root), wired)
+        self.assertEqual(writers(), wired)
         self.assertEqual(cmds.ls(type="timeEditorClip"), clips)
         self.assert_matches(joints)
 
@@ -357,12 +382,12 @@ class TestMmdTimeEditor(MayaTestBase):
         root, _joints = import_model()
         add_clip(root)
         curves = set(cmds.ls(type="animCurve"))
-        wired = writers(root)
+        wired = writers()
         with self.assertRaises(MMDImportException) as raised:
             import_scene_vmd(root)
         self.assertEqual(raised.exception.reason_code, "time_editor_clip_owns_model")
         self.assertEqual(set(cmds.ls(type="animCurve")), curves)
-        self.assertEqual(writers(root), wired)
+        self.assertEqual(writers(), wired)
 
     def test_bone_and_morph_share_one_clip(self):
         self.morph_baseline()
@@ -385,20 +410,16 @@ class TestMmdTimeEditor(MayaTestBase):
         self.assert_morph_matches(root, joints)
         self.assert_morph_matches(root, joints, 20)
 
-    def test_clip_over_scene_morph_keys_restores_them_on_removal(self):
+    def test_clip_consumes_scene_morph_keys(self):
         self.morph_baseline()
         root, joints = import_morph_model()
         controller = cmds.listConnections(root + ".mmd_morph_controller", source=True, destination=False)[0]
         cmds.setKeyframe(controller, attribute="inputWeight[0]", time=0, value=0.25)
         cmds.setKeyframe(controller, attribute="inputWeight[0]", time=30, value=0.75)
-        original = curve_payload()
-        wired = writers(root)
         clip = add_morph_clip(root, start=10)
         self.assert_morph_matches(root, joints, 10)
-        self.assertEqual(set(curve_payload()), set(original))
         cmds.timeEditorClip(edit=True, removeClip=True, clipId=clip["clipId"])
-        self.assertEqual(curve_payload(), original)
-        self.assertEqual(writers(root), wired)
+        self.assertFalse(cmds.listConnections(controller, source=True, destination=False, type="animCurve"))
 
     def test_morph_only_vmd_makes_clip(self):
         root, joints = import_morph_model()
@@ -429,17 +450,15 @@ class TestMmdTimeEditor(MayaTestBase):
             import_camera(OTHER_CAMERA_VMD)
         self.assertEqual(raised.exception.reason_code, "time_editor_clip_owns_camera")
 
-    def test_camera_clip_over_scene_camera_restores_it_on_removal(self):
+    def test_camera_clip_consumes_scene_keys(self):
         self.camera_baseline(CAMERA_VMD)
         self.camera_baseline(OTHER_CAMERA_VMD)
         self.assertTrue(import_camera(OTHER_CAMERA_VMD))
-        original = curve_payload()
         clip = import_camera(CAMERA_VMD, time_editor_clip=True)
         self.assert_camera_matches(CAMERA_VMD)
         cmds.timeEditorClip(edit=True, removeClip=True, clipId=clip["clipId"])
-        self.assertEqual(curve_payload(), original)
+        self.assertEqual(curve_payload(), {})
         self.assertFalse(te.is_time_editor_driven(None))
-        self.assert_camera_matches(OTHER_CAMERA_VMD)
 
     def test_second_camera_clip_and_removal(self):
         self.camera_baseline(CAMERA_VMD)
